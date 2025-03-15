@@ -9,7 +9,6 @@ import (
 	"tgfile/dao"
 	"tgfile/dao/cache"
 	"tgfile/entity"
-	"tgfile/utils"
 	"time"
 
 	"github.com/xxxsen/common/logutil"
@@ -74,8 +73,12 @@ func (d *defaultFileManager) Open(ctx context.Context, fileid uint64) (io.ReadSe
 	return rsc, nil
 }
 
+func (d *defaultFileManager) internalCalcFileBlockCount(sz uint64, blksz uint64) int {
+	return int((sz + blksz - 1) / blksz)
+}
+
 func (d *defaultFileManager) Create(ctx context.Context, size int64, reader io.Reader) (uint64, error) {
-	blkcnt := utils.CalcFileBlockCount(uint64(size), uint64(d.bkio.MaxFileSize()))
+	blkcnt := d.internalCalcFileBlockCount(uint64(size), uint64(d.bkio.MaxFileSize()))
 	fileid, err := d.internalCreateFileDraft(ctx, size, int32(blkcnt))
 	if err != nil {
 		return 0, fmt.Errorf("create file draft failed, err:%w", err)
