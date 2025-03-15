@@ -80,8 +80,6 @@ func initStorage(c *config.Config) error {
 	}
 	fmgr := filemgr.NewFileManager(bkio)
 	filemgr.SetFileManagerImpl(fmgr)
-	lkmgr := filemgr.NewLinkManager(fmgr)
-	filemgr.SetLinkManagerImpl(lkmgr)
 	return nil
 }
 
