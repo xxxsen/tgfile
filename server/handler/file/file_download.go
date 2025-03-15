@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"tgfile/filemgr"
 	"tgfile/proxyutil"
-	"tgfile/utils"
 
 	"github.com/gin-gonic/gin"
 )
@@ -14,7 +13,8 @@ import (
 func FileDownload(c *gin.Context) {
 	ctx := c.Request.Context()
 	key := c.Param("key")
-	fileid, err := utils.DecodeFileId(key)
+	path := defaultUploadPrefix + key
+	fileid, err := filemgr.ResolveLink(ctx, path)
 	if err != nil {
 		proxyutil.Fail(c, http.StatusBadRequest, fmt.Errorf("invalid down key, key:%s, err:%w", key, err))
 		return

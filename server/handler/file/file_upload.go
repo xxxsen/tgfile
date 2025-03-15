@@ -12,6 +12,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const (
+	defaultUploadPrefix = "/defauls/"
+)
+
 func FileUpload(c *gin.Context, ctx context.Context, request interface{}) {
 	req := request.(*model.UploadFileRequest)
 	header := req.File
@@ -26,7 +30,15 @@ func FileUpload(c *gin.Context, ctx context.Context, request interface{}) {
 		proxyutil.Fail(c, http.StatusInternalServerError, fmt.Errorf("upload file fail, err:%w", err))
 		return
 	}
+	key := utils.EncodeFileId(fileid)
+
+	path := defaultUploadPrefix + key
+	if err := filemgr.CreateLink(ctx, path, fileid); err != nil {
+		proxyutil.Fail(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
+		return
+	}
+
 	proxyutil.Success(c, &model.UploadFileResponse{
-		Key: utils.EncodeFileId(fileid),
+		Key: key,
 	})
 }
