@@ -6,7 +6,9 @@ import (
 	"io"
 	"io/fs"
 	"tgfile/blockio"
-	"tgfile/service"
+	"tgfile/dao"
+	"tgfile/dao/cache"
+	"tgfile/entity"
 	"tgfile/utils"
 	"time"
 
@@ -15,18 +17,22 @@ import (
 )
 
 type defaultFileManager struct {
-	bkio blockio.IBlockIO
+	fileDao        dao.IFileDao
+	filePartDao    dao.IFilePartDao
+	fileMappingDao dao.IFileMappingDao
+	bkio           blockio.IBlockIO
 }
 
 func (d *defaultFileManager) CreateLink(ctx context.Context, link string, fileid uint64) error {
-	if err := service.FileMappingService.CreateFileMapping(ctx, link, fileid); err != nil {
-		return err
-	}
-	return nil
+	_, err := d.fileMappingDao.CreateFileMapping(ctx, &entity.CreateFileMappingRequest{
+		FileName: link,
+		FileId:   fileid,
+	})
+	return err
 }
 
 func (d *defaultFileManager) ResolveLink(ctx context.Context, link string) (uint64, error) {
-	fid, ok, err := service.FileMappingService.GetFileMapping(ctx, link)
+	fid, ok, err := d.internalGetFileMapping(ctx, link)
 	if err != nil {
 		return 0, fmt.Errorf("open mapping failed, err:%w", err)
 	}
@@ -37,26 +43,26 @@ func (d *defaultFileManager) ResolveLink(ctx context.Context, link string) (uint
 }
 
 func (d *defaultFileManager) IterLink(ctx context.Context, cb IterLinkFunc) error {
-	return service.FileMappingService.IterFileMapping(ctx, func(ctx context.Context, filename string, fileid uint64) (bool, error) {
-		return cb(ctx, filename, fileid)
+	return d.fileMappingDao.IterFileMapping(ctx, func(ctx context.Context, name string, fileid uint64) (bool, error) {
+		return cb(ctx, name, fileid)
 	})
 }
 
 func (d *defaultFileManager) Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {
-	finfo, ok, err := service.FileService.GetFileInfo(ctx, fileid)
+	finfo, ok, err := d.internalGetFileInfo(ctx, fileid)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		return nil, fmt.Errorf("file not found")
 	}
-	rsc := newFsIO(ctx, d.bkio, func(ctx context.Context, blkid int32) (fk string, err error) {
+	rsc := newFileStream(ctx, d.bkio, func(ctx context.Context, blkid int32) (fk string, err error) {
 		defer func() {
 			if err != nil {
 				logutil.GetLogger(ctx).Error("convert blockid to filekey failed", zap.Error(err), zap.Uint64("file_id", fileid), zap.Int32("blkid", blkid))
 			}
 		}()
-		pinfo, ok, err := service.FileService.GetFilePartInfo(ctx, fileid, blkid)
+		pinfo, ok, err := d.internalGetFilePartInfo(ctx, fileid, blkid)
 		if err != nil {
 			return "", fmt.Errorf("read file part info failed, err:%w", err)
 		}
@@ -70,7 +76,7 @@ func (d *defaultFileManager) Open(ctx context.Context, fileid uint64) (io.ReadSe
 
 func (d *defaultFileManager) Create(ctx context.Context, size int64, reader io.Reader) (uint64, error) {
 	blkcnt := utils.CalcFileBlockCount(uint64(size), uint64(d.bkio.MaxFileSize()))
-	fileid, err := service.FileService.CreateFileDraft(ctx, size, int32(blkcnt))
+	fileid, err := d.internalCreateFileDraft(ctx, size, int32(blkcnt))
 	if err != nil {
 		return 0, fmt.Errorf("create file draft failed, err:%w", err)
 	}
@@ -80,19 +86,19 @@ func (d *defaultFileManager) Create(ctx context.Context, size int64, reader io.R
 		if err != nil {
 			return 0, fmt.Errorf("upload part failed, err:%w", err)
 		}
-		if err := service.FileService.CreateFilePart(ctx, fileid, int32(i), fileKey); err != nil {
+		if err := d.internalCreateFilePart(ctx, fileid, int32(i), fileKey); err != nil {
 			return 0, fmt.Errorf("create part record failed, err:%w", err)
 		}
 	}
 
-	if err := service.FileService.FinishCreateFile(ctx, fileid); err != nil {
+	if err := d.internalFinishCreateFile(ctx, fileid); err != nil {
 		return 0, fmt.Errorf("finish create file failed, err:%w", err)
 	}
 	return fileid, nil
 }
 
 func (d *defaultFileManager) Stat(ctx context.Context, fileid uint64) (fs.FileInfo, error) {
-	finfo, ok, err := service.FileService.GetFileInfo(ctx, fileid)
+	finfo, ok, err := d.internalGetFileInfo(ctx, fileid)
 	if err != nil {
 		return nil, err
 	}
@@ -106,8 +112,82 @@ func (d *defaultFileManager) Stat(ctx context.Context, fileid uint64) (fs.FileIn
 	}, nil
 }
 
+func (d *defaultFileManager) internalCreateFileDraft(ctx context.Context, filesize int64, filepartcount int32) (uint64, error) {
+	rs, err := d.fileDao.CreateFileDraft(ctx, &entity.CreateFileDraftRequest{
+		FileSize:      filesize,
+		FilePartCount: filepartcount,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return rs.FileId, nil
+}
+
+func (d *defaultFileManager) internalCreateFilePart(ctx context.Context, fileid uint64, pidx int32, filekey string) error {
+	if _, err := d.filePartDao.CreateFilePart(ctx, &entity.CreateFilePartRequest{
+		FileId:     fileid,
+		FilePartId: pidx,
+		FileKey:    filekey,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (d *defaultFileManager) internalFinishCreateFile(ctx context.Context, fileid uint64) error {
+	if _, err := d.fileDao.MarkFileReady(ctx, &entity.MarkFileReadyRequest{
+		FileID: fileid,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (d *defaultFileManager) internalGetFileInfo(ctx context.Context, fileid uint64) (*entity.FileInfoItem, bool, error) {
+	rs, err := d.fileDao.GetFileInfo(ctx, &entity.GetFileInfoRequest{
+		FileIds: []uint64{fileid},
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if len(rs.List) == 0 {
+		return nil, false, nil
+	}
+	return rs.List[0], true, nil
+}
+
+func (d *defaultFileManager) internalGetFilePartInfo(ctx context.Context, fileid uint64, partid int32) (*entity.FilePartInfoItem, bool, error) {
+	rs, err := d.filePartDao.GetFilePartInfo(ctx, &entity.GetFilePartInfoRequest{
+		FileId:     fileid,
+		FilePartId: []int32{partid},
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	if len(rs.List) == 0 {
+		return nil, false, nil
+	}
+	return rs.List[0], true, nil
+}
+
+func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filename string) (uint64, bool, error) {
+	rsp, ok, err := d.fileMappingDao.GetFileMapping(ctx, &entity.GetFileMappingRequest{
+		FileName: filename,
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	if !ok {
+		return 0, false, nil
+	}
+	return rsp.Item.FileId, true, nil
+}
+
 func NewFileManager(bkio blockio.IBlockIO) IFileManager {
 	return &defaultFileManager{
-		bkio: bkio,
+		fileDao:        cache.NewFileDao(dao.NewFileDao()),
+		filePartDao:    cache.NewFilePartDao(dao.NewFilePartDao()),
+		fileMappingDao: cache.NewFileMappingDao(dao.NewFileMappingDao()),
+		bkio:           bkio,
 	}
 }

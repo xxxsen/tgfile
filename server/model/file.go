@@ -19,12 +19,11 @@ type GetFileInfoRequest struct {
 }
 
 type FileInfoItem struct {
-	Key           string `json:"key"`
-	Exist         bool   `json:"exist"`
-	FileSize      int64  `json:"file_size"`
-	Ctime         int64  `json:"ctime"`
-	Mtime         int64  `json:"mtime"`
-	FilePartCount int32  `json:"file_part_count"`
+	Key      string `json:"key"`
+	Exist    bool   `json:"exist"`
+	FileSize int64  `json:"file_size"`
+	Ctime    int64  `json:"ctime"`
+	Mtime    int64  `json:"mtime"`
 }
 
 type GetFileInfoResponse struct {

@@ -24,7 +24,7 @@ type defaultFsIO struct {
 	tmpReader io.ReadCloser
 }
 
-func newFsIO(ctx context.Context, bkio blockio.IBlockIO, b2f BlockIdToFileKeyConvertFunc, fsize int64) io.ReadSeekCloser {
+func newFileStream(ctx context.Context, bkio blockio.IBlockIO, b2f BlockIdToFileKeyConvertFunc, fsize int64) io.ReadSeekCloser {
 	return &defaultFsIO{
 		ctx:    ctx,
 		bkio:   bkio,
