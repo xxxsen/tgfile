@@ -41,9 +41,9 @@ func (f *fakeIO) Download(ctx context.Context, filekey string, pos int64) (io.Re
 }
 
 func TestRotateIO(t *testing.T) {
-	const maxBytes = 10000
+	const maxBytes = 100000
 	fakeio := &fakeIO{}
-	for rotateVal := 1; rotateVal < 255; rotateVal++ {
+	for rotateVal := 0; rotateVal < 258; rotateVal++ {
 		stream := NewRotateIO(fakeio, rotateVal)
 		ctx := context.Background()
 		data := bytes.NewBuffer(nil)
@@ -54,7 +54,11 @@ func TestRotateIO(t *testing.T) {
 		raw := data.Bytes()
 		key, err := stream.Upload(ctx, bytes.NewReader(raw))
 		assert.NoError(t, err)
-		assert.NotEqual(t, raw, fakeio.data)
+		if rotateVal%256 != 0 {
+			assert.NotEqual(t, raw, fakeio.data)
+		} else {
+			assert.Equal(t, raw, fakeio.data)
+		}
 		for i := 0; i < 10; i++ {
 			randpos := int64(rand.Int() % maxBytes)
 			rc, err := stream.Download(ctx, key, randpos)
