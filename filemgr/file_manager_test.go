@@ -37,15 +37,15 @@ func (f *fakeMgr) ResolveLink(ctx context.Context, link string) (uint64, error) 
 }
 
 func (f *fakeMgr) IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error {
-	filem := map[string]uint64{
-		"/root/p1/p2/f1.jpg":    123,
-		"/root/p1/p2/p3/f2.jpg": 234,
-		"/root/p1/p2/f3.jpg":    2345,
-		"/root/f4.jpg":          5555,
-		"/root/p1/f5.jpg":       666,
+	links := []string{
+		"/root/p1/p2/f1.jpg",
+		"/root/p1/p2/p3/f2.jpg",
+		"/root/p1/p2/f3.jpg",
+		"/root/p1/f5.jpg",
+		"/root/f4.jpg",
 	}
-	for k, v := range filem {
-		next, err := cb(ctx, k, v)
+	for idx, link := range links {
+		next, err := cb(ctx, link, uint64(idx)+1)
 		if err != nil {
 			return err
 		}
@@ -71,7 +71,7 @@ func TestReadDir(t *testing.T) {
 			top += "/"
 		}
 		level++
-		dirs, err := ReadDir(ctx, top)
+		dirs, err := internalReadDir(ctx, top)
 		assert.NoError(t, err)
 		for _, dir := range dirs {
 			t.Logf("level:%d, dir:%s, is dir:%t", level, dir.Name(), dir.IsDir())

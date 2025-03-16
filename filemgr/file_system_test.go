@@ -255,7 +255,7 @@ func TestFileSystemIter(t *testing.T) {
 		if err != nil {
 			t.Logf("read file failed, fullpath:%s, err:%v", fullpath, err)
 		}
-		t.Logf("-F- read file succ, fsize:%d, filemode:%d, mod time:%d, data:%s", stinfo.Size(), stinfo.Mode(), stinfo.ModTime().UnixMilli(), string(data))
+		t.Logf("-F- read file succ, filename:%s, fsize:%d, filemode:%d, mod time:%d, data:%s", fullpath, stinfo.Size(), stinfo.Mode(), stinfo.ModTime().UnixMilli(), string(data))
 		return nil
 	})
 	assert.NoError(t, err)

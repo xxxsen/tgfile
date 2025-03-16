@@ -3,11 +3,8 @@ package filemgr
 import (
 	"context"
 	"fmt"
-	"io"
 	"io/fs"
-	"path/filepath"
 	"strings"
-	"time"
 )
 
 type fileSystemWrap struct {
@@ -18,7 +15,7 @@ func AsFileSystem(ctx context.Context) fs.FS {
 	return &fileSystemWrap{ctx: ctx}
 }
 
-func (f *fileSystemWrap) isDir(name string) (bool, error) {
+func (f *fileSystemWrap) checkIsDir(name string) (bool, error) {
 	isFile := false
 	isExist := false
 	if err := IterLink(f.ctx, name, func(ctx context.Context, link string, fileid uint64) (bool, error) {
@@ -52,7 +49,7 @@ func (f *fileSystemWrap) Open(name string) (fs.File, error) {
 	if !strings.HasPrefix(name, "/") {
 		name = "/" + name
 	}
-	isDir, err := f.isDir(name)
+	isDir, err := f.checkIsDir(name)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +60,7 @@ func (f *fileSystemWrap) Open(name string) (fs.File, error) {
 }
 
 func (f *fileSystemWrap) openDir(name string) (fs.File, error) {
-	return &fsDirWrap{ctx: f.ctx, name: filepath.Base(name)}, nil
+	return newFileSystemDirEntry(f.ctx, name), nil
 }
 
 func (f *fileSystemWrap) openFile(name string) (fs.File, error) {
@@ -71,72 +68,9 @@ func (f *fileSystemWrap) openFile(name string) (fs.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	//返回的名字, 只有最终的文件名而不能有路径
-	stream, err := Open(f.ctx, fid)
-	if err != nil {
-		return nil, err
-	}
-	return &fsFileWrap{ctx: f.ctx, fid: fid, name: filepath.Base(name), ReadSeekCloser: stream}, nil
+	return newFileSystemFileEntry(f.ctx, name, fid), nil
 }
 
 func (f *fileSystemWrap) ReadDir(name string) ([]fs.DirEntry, error) {
-	return ReadDir(f.ctx, name)
-}
-
-type fsDirWrap struct {
-	ctx  context.Context
-	name string
-}
-
-type fsFileWrap struct {
-	io.ReadSeekCloser
-	ctx  context.Context
-	name string
-	fid  uint64
-	rc   io.ReadCloser
-}
-
-func (f *fsDirWrap) Stat() (fs.FileInfo, error) {
-	return &defaultFileInfo{
-		FieldSize:  0,
-		FieldMtime: time.Time{},
-		FieldName:  f.name,
-		FieldMode:  0644,
-		FieldIsDir: true,
-		FieldSys:   nil,
-	}, nil
-}
-
-func (f *fsDirWrap) Read(p0 []byte) (int, error) {
-	return 0, fmt.Errorf("cant read on dir")
-}
-
-func (f *fsDirWrap) Close() error {
-	return nil
-}
-
-func (f *fsDirWrap) ReadDir(n int) ([]fs.DirEntry, error) {
-	ents, err := ReadDir(f.ctx, f.name)
-	if err != nil {
-		return nil, err
-	}
-	if n <= 0 || len(ents) < n {
-		return ents, nil
-	}
-	return ents[:n], nil
-}
-
-func (f *fsFileWrap) Stat() (fs.FileInfo, error) {
-	info, err := Stat(f.ctx, f.fid)
-	if err != nil {
-		return nil, err
-	}
-	return &defaultFileInfo{
-		FieldSize:  info.Size(),
-		FieldMtime: info.ModTime(),
-		FieldName:  f.name,
-		FieldMode:  info.Mode(),
-		FieldIsDir: false,
-		FieldSys:   nil,
-	}, nil
+	return internalReadDir(f.ctx, name)
 }
