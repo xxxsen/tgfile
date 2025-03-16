@@ -10,15 +10,15 @@ import (
 	"time"
 )
 
-type fsWrap struct {
+type fileSystemWrap struct {
 	ctx context.Context
 }
 
 func AsFileSystem(ctx context.Context) fs.FS {
-	return &fsWrap{ctx: ctx}
+	return &fileSystemWrap{ctx: ctx}
 }
 
-func (f *fsWrap) isDir(name string) (bool, error) {
+func (f *fileSystemWrap) isDir(name string) (bool, error) {
 	isFile := false
 	isExist := false
 	if err := IterLink(f.ctx, name, func(ctx context.Context, link string, fileid uint64) (bool, error) {
@@ -44,7 +44,14 @@ func (f *fsWrap) isDir(name string) (bool, error) {
 	return !isFile, nil
 }
 
-func (f *fsWrap) Open(name string) (fs.File, error) {
+func (f *fileSystemWrap) Open(name string) (fs.File, error) {
+	//重建名字, 必须以"/"开头
+	if strings.HasPrefix(name, ".") {
+		name = strings.TrimLeft(name, ".")
+	}
+	if !strings.HasPrefix(name, "/") {
+		name = "/" + name
+	}
 	isDir, err := f.isDir(name)
 	if err != nil {
 		return nil, err
@@ -55,28 +62,34 @@ func (f *fsWrap) Open(name string) (fs.File, error) {
 	return f.openFile(name)
 }
 
-func (f *fsWrap) openDir(name string) (fs.File, error) {
-	return &fsDirWrap{name: filepath.Base(name)}, nil
+func (f *fileSystemWrap) openDir(name string) (fs.File, error) {
+	return &fsDirWrap{ctx: f.ctx, name: filepath.Base(name)}, nil
 }
 
-func (f *fsWrap) openFile(name string) (fs.File, error) {
+func (f *fileSystemWrap) openFile(name string) (fs.File, error) {
 	fid, err := ResolveLink(f.ctx, name)
 	if err != nil {
 		return nil, err
 	}
 	//返回的名字, 只有最终的文件名而不能有路径
-	return &fsFileWrap{ctx: f.ctx, fid: fid, name: filepath.Base(name)}, nil
+	stream, err := Open(f.ctx, fid)
+	if err != nil {
+		return nil, err
+	}
+	return &fsFileWrap{ctx: f.ctx, fid: fid, name: filepath.Base(name), ReadSeekCloser: stream}, nil
 }
 
-func (f *fsWrap) ReadDir(name string) ([]fs.DirEntry, error) {
+func (f *fileSystemWrap) ReadDir(name string) ([]fs.DirEntry, error) {
 	return ReadDir(f.ctx, name)
 }
 
 type fsDirWrap struct {
+	ctx  context.Context
 	name string
 }
 
 type fsFileWrap struct {
+	io.ReadSeekCloser
 	ctx  context.Context
 	name string
 	fid  uint64
@@ -102,6 +115,17 @@ func (f *fsDirWrap) Close() error {
 	return nil
 }
 
+func (f *fsDirWrap) ReadDir(n int) ([]fs.DirEntry, error) {
+	ents, err := ReadDir(f.ctx, f.name)
+	if err != nil {
+		return nil, err
+	}
+	if n <= 0 || len(ents) < n {
+		return ents, nil
+	}
+	return ents[:n], nil
+}
+
 func (f *fsFileWrap) Stat() (fs.FileInfo, error) {
 	info, err := Stat(f.ctx, f.fid)
 	if err != nil {
@@ -115,22 +139,4 @@ func (f *fsFileWrap) Stat() (fs.FileInfo, error) {
 		FieldIsDir: false,
 		FieldSys:   nil,
 	}, nil
-}
-
-func (f *fsFileWrap) Read(p0 []byte) (int, error) {
-	var err error
-	if f.rc == nil {
-		f.rc, err = Open(f.ctx, f.fid)
-	}
-	if err != nil {
-		return 0, err
-	}
-	return f.rc.Read(p0)
-}
-
-func (f *fsFileWrap) Close() error {
-	if f.rc != nil {
-		return f.rc.Close()
-	}
-	return nil
 }

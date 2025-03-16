@@ -1,7 +1,10 @@
 package server
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"tgfile/filemgr"
 	"tgfile/proxyutil"
 	"tgfile/server/handler/backup"
 	"tgfile/server/handler/file"
@@ -54,7 +57,9 @@ func (s *Server) initAPI(router *gin.Engine) {
 		fileRouter.POST("/upload", authMiddleware, proxyutil.WrapBizFunc(file.FileUpload, &model.UploadFileRequest{}))
 		fileRouter.GET("/download/:key", file.FileDownload)
 		fileRouter.GET("/meta/:key", file.GetMetaInfo)
+		fileRouter.StaticFS("/static", http.FS(filemgr.AsFileSystem(context.Background())))
 	}
+
 	backupRouter := router.Group("/backup", authMiddleware)
 	{
 		backupRouter.GET("/export", backup.Export)
