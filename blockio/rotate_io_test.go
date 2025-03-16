@@ -3,7 +3,6 @@ package blockio
 import (
 	"bytes"
 	"context"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -42,26 +41,28 @@ func (f *fakeIO) Download(ctx context.Context, filekey string, pos int64) (io.Re
 }
 
 func TestRotateIO(t *testing.T) {
-	const maxBytes = 1000
+	const maxBytes = 10000
 	fakeio := &fakeIO{}
-	stream := NewRotateIO(fakeio, 123)
-	ctx := context.Background()
-	data := bytes.NewBuffer(nil)
-	for i := 0; i < maxBytes; i++ {
-		_ = data.WriteByte(byte(i))
-	}
-	raw := data.Bytes()
-	key, err := stream.Upload(ctx, bytes.NewReader(raw))
-	assert.NoError(t, err)
-	assert.NotEqual(t, raw, fakeio.data)
-	for i := 0; i < 10; i++ {
-		randpos := int64(rand.Int() % maxBytes)
-		rc, err := stream.Download(ctx, key, randpos)
+	for rotateVal := 1; rotateVal < 255; rotateVal++ {
+		stream := NewRotateIO(fakeio, rotateVal)
+		ctx := context.Background()
+		data := bytes.NewBuffer(nil)
+		rnd := rand.Int()
+		for i := rnd; i < rnd+maxBytes; i++ {
+			_ = data.WriteByte(byte(i))
+		}
+		raw := data.Bytes()
+		key, err := stream.Upload(ctx, bytes.NewReader(raw))
 		assert.NoError(t, err)
-		down, err := io.ReadAll(rc)
-		assert.NoError(t, err)
-		_ = rc.Close()
-		t.Logf("read data:%s", hex.EncodeToString(down))
-		assert.Equal(t, raw[randpos:], down)
+		assert.NotEqual(t, raw, fakeio.data)
+		for i := 0; i < 10; i++ {
+			randpos := int64(rand.Int() % maxBytes)
+			rc, err := stream.Download(ctx, key, randpos)
+			assert.NoError(t, err)
+			down, err := io.ReadAll(rc)
+			assert.NoError(t, err)
+			_ = rc.Close()
+			assert.Equal(t, raw[randpos:], down)
+		}
 	}
 }

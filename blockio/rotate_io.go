@@ -11,6 +11,9 @@ type rotateIO struct {
 }
 
 func NewRotateIO(impl IBlockIO, rotateVal int) IBlockIO {
+	if rotateVal <= 0 {
+		return impl
+	}
 	return &rotateIO{impl: impl, rotateVal: rotateVal}
 }
 
@@ -19,9 +22,7 @@ func (r *rotateIO) MaxFileSize() int64 {
 }
 
 func (rt *rotateIO) Upload(ctx context.Context, r io.Reader) (string, error) {
-	if rt.rotateVal > 0 {
-		r = newRotateReadCloser(io.NopCloser(r), rt.rotateVal)
-	}
+	r = newRotateReadCloser(io.NopCloser(r), rt.rotateVal)
 	return rt.impl.Upload(ctx, r)
 }
 
@@ -30,9 +31,7 @@ func (rt *rotateIO) Download(ctx context.Context, filekey string, pos int64) (io
 	if err != nil {
 		return nil, err
 	}
-	if rt.rotateVal > 0 {
-		rc = newRotateReadCloser(rc, -1*rt.rotateVal)
-	}
+	rc = newRotateReadCloser(rc, -1*rt.rotateVal)
 	return rc, nil
 }
 
