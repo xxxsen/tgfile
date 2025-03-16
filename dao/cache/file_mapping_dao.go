@@ -49,6 +49,6 @@ func (f *fileMappingDao) CreateFileMapping(ctx context.Context, req *entity.Crea
 	return f.impl.CreateFileMapping(ctx, req)
 }
 
-func (f *fileMappingDao) IterFileMapping(ctx context.Context, cb dao.IterFileMappingFunc) error {
-	return f.impl.IterFileMapping(ctx, cb)
+func (f *fileMappingDao) IterFileMapping(ctx context.Context, prefix string, cb dao.IterFileMappingFunc) error {
+	return f.impl.IterFileMapping(ctx, prefix, cb)
 }

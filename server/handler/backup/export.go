@@ -28,7 +28,7 @@ func Export(c *gin.Context) {
 	defer tw.Close()
 	st := &model.StatisticInfo{}
 	start := time.Now()
-	if err := filemgr.IterLink(ctx, func(ctx context.Context, link string, fileid uint64) (bool, error) {
+	if err := filemgr.IterLink(ctx, "", func(ctx context.Context, link string, fileid uint64) (bool, error) {
 		finfo, err := filemgr.Stat(ctx, fileid)
 		if err != nil {
 			return false, err
