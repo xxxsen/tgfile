@@ -46,21 +46,26 @@ func (s *Server) initMiddleware(router *gin.Engine) {
 		middleware.PanicRecoverMiddleware(),
 		middleware.TraceMiddleware(),
 		middleware.LogRequestMiddleware(),
+		middleware.TryAuthMiddleware(s.c.userMap),
 	}
 	router.Use(mds...)
 }
 
 func (s *Server) initAPI(router *gin.Engine) {
-	authMiddleware := middleware.CommonAuth(s.c.userMap)
+	mustAuthMiddleware := middleware.MustAuthMiddleware()
 	fileRouter := router.Group("/file")
 	{
-		fileRouter.POST("/upload", authMiddleware, proxyutil.WrapBizFunc(file.FileUpload, &model.UploadFileRequest{}))
+		fileRouter.POST("/upload", mustAuthMiddleware, proxyutil.WrapBizFunc(file.FileUpload, &model.UploadFileRequest{}))
 		fileRouter.GET("/download/:key", file.FileDownload)
 		fileRouter.GET("/meta/:key", file.GetMetaInfo)
-		fileRouter.StaticFS("/static", http.FS(filemgr.AsFileSystem(context.Background())))
+
+	}
+	staticRouter := router.Group("/static", mustAuthMiddleware)
+	{
+		staticRouter.StaticFS("", http.FS(filemgr.AsFileSystem(context.Background())))
 	}
 
-	backupRouter := router.Group("/backup", authMiddleware)
+	backupRouter := router.Group("/backup", mustAuthMiddleware)
 	{
 		backupRouter.GET("/export", backup.Export)
 		backupRouter.POST("/import", proxyutil.WrapBizFunc(backup.Import, &model.ImportRequest{}))
@@ -70,7 +75,7 @@ func (s *Server) initAPI(router *gin.Engine) {
 			bucketRouter := router.Group(fmt.Sprintf("/%s", bk))
 			bucketRouter.GET("", s3.GetBucket)
 			bucketRouter.GET("/*object", s3.DownloadObject)
-			bucketRouter.PUT("/*object", s3.UploadObject)
+			bucketRouter.PUT("/*object", mustAuthMiddleware, s3.UploadObject)
 		}
 	}
 }

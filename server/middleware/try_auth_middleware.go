@@ -7,7 +7,6 @@ import (
 	"tgfile/proxyutil"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xxxsen/common/errs"
 	"github.com/xxxsen/common/logutil"
 	"go.uber.org/zap"
 )
@@ -22,11 +21,11 @@ func CreateFullAuthMethods() []auth.IAuth {
 	return authList
 }
 
-func CommonAuth(users map[string]string) gin.HandlerFunc {
-	return CommonAuthMiddleware(users, CreateFullAuthMethods()...)
+func TryAuthMiddleware(users map[string]string) gin.HandlerFunc {
+	return tryAuthMiddleware(users, CreateFullAuthMethods()...)
 }
 
-func CommonAuthMiddleware(users map[string]string, ats ...auth.IAuth) gin.HandlerFunc {
+func tryAuthMiddleware(users map[string]string, ats ...auth.IAuth) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
 		logger := logutil.GetLogger(ctx).With(zap.String("method", c.Request.Method),
@@ -51,7 +50,5 @@ func CommonAuthMiddleware(users map[string]string, ats ...auth.IAuth) gin.Handle
 			c.Request = c.Request.WithContext(ctx)
 			return
 		}
-		logger.Error("need auth")
-		c.AbortWithError(http.StatusUnauthorized, errs.New(errs.ErrParam, "need auth"))
 	}
 }
