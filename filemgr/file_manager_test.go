@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -79,4 +81,17 @@ func TestReadDir(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestOpen(t *testing.T) {
+	dirs, err := os.ReadDir("/tmp/")
+	assert.NoError(t, err)
+	for _, dir := range dirs {
+		t.Logf("name:%s, isdir:%t", dir.Name(), dir.IsDir())
+	}
+}
+
+func TestBase(t *testing.T) {
+	t.Logf("t1:%s", filepath.Base("/tmp/test/"))
+	t.Logf("t1:%s", filepath.Base("/tmp/test"))
 }
