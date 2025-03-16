@@ -1,8 +1,9 @@
 package auth
 
 import (
+	"fmt"
+
 	"github.com/gin-gonic/gin"
-	"github.com/xxxsen/common/errs"
 	"github.com/xxxsen/s3verify"
 )
 
@@ -33,7 +34,7 @@ func (c *s3AuthV4) Auth(ctx *gin.Context, users map[string]string) (string, erro
 		return "", err
 	}
 	if !ok {
-		return "", errs.New(errs.ErrParam, "signature not match")
+		return "", fmt.Errorf("signature not match")
 	}
 	return ak, nil
 }

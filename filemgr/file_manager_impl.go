@@ -41,8 +41,8 @@ func (d *defaultFileManager) ResolveLink(ctx context.Context, link string) (uint
 	return fid, nil
 }
 
-func (d *defaultFileManager) IterLink(ctx context.Context, cb IterLinkFunc) error {
-	return d.fileMappingDao.IterFileMapping(ctx, func(ctx context.Context, name string, fileid uint64) (bool, error) {
+func (d *defaultFileManager) IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error {
+	return d.fileMappingDao.IterFileMapping(ctx, prefix, func(ctx context.Context, name string, fileid uint64) (bool, error) {
 		return cb(ctx, name, fileid)
 	})
 }
@@ -109,9 +109,9 @@ func (d *defaultFileManager) Stat(ctx context.Context, fileid uint64) (fs.FileIn
 		return nil, fmt.Errorf("file not found")
 	}
 	return &defaultFileInfo{
-		FileSize:  finfo.FileSize,
-		FileMtime: time.UnixMilli(finfo.Mtime),
-		FileName:  "noname",
+		FieldSize:  finfo.FileSize,
+		FieldMtime: time.UnixMilli(finfo.Mtime),
+		FieldName:  "noname",
 	}, nil
 }
 
