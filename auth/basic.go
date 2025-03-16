@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xxxsen/common/errs"
 )
 
 const (
@@ -34,7 +33,7 @@ func (b *basicAuth) IsMatchAuthType(ctx *gin.Context) bool {
 func (b *basicAuth) Auth(ctx *gin.Context, users map[string]string) (string, error) {
 	auth := ctx.GetHeader("Authorization")
 	if len(auth) == 0 {
-		return "", errs.New(errs.ErrParam, "authorization key not found")
+		return "", fmt.Errorf("authorization key not found")
 	}
 	authData := strings.SplitN(auth, " ", 2)
 	if len(authData) != 2 {
@@ -45,7 +44,7 @@ func (b *basicAuth) Auth(ctx *gin.Context, users map[string]string) (string, err
 	}
 	bdata, err := base64.StdEncoding.DecodeString(authData[1])
 	if err != nil {
-		return "", errs.Wrap(errs.ErrParam, fmt.Sprintf("decode auth data fail, data:%s", authData[1]), err)
+		return "", fmt.Errorf("decode auth data fail, data:%s, err:%w", authData[1], err)
 	}
 	data := string(bdata)
 	userdata := strings.SplitN(data, ":", 2)
