@@ -55,18 +55,31 @@ services:
 
 **基础接口**
 
-|API|Method|备注|
-|---|---|---|
-|/file/upload|POST|文件上传|
-|/file/download/:key|GET|下载文件, key通过/file/upload获取|
-|/file/meta/:key|GET|获取文件信息, key通过/file/upload获取|
+|API|Method|鉴权|备注|
+|---|---|---|---|
+|/file/upload|POST|true|文件上传|
+|/file/download/:key|GET|false|下载文件, key通过/file/upload获取|
+|/file/meta/:key|GET|false|获取文件信息, key通过/file/upload获取|
+
+**备份接口**
+
+|API|Method|鉴权|备注|
+|---|---|---|---|
+|/backup/export|GET|true|将当前存储的所有文件打包成tar.gz并导出|
+|/backup/import|POST|true|将export导出的tar.gz文件导入到新的实例中|
+
+**文件枚举**
+
+|API|Method|鉴权|备注|
+|---|---|---|---|
+|/static|GET|true|展示目录文件列表, 类似`python3 -m http.server 8000`|
 
 **S3接口**
 
 目前S3接口只实现了基本的GetObject/PutObject接口。
 
-|API|Method|备注|
-|---|---|---|
-|/:bucket|GET|获取bucket信息, 没实际作用|
-|/:bucket/:object|PUT|文件上传|
-|/:bucket/:object|GET|文件下载|
+|API|Method|鉴权|备注|
+|---|---|---|---|
+|/:bucket|GET|false|获取bucket信息, 没实际作用|
+|/:bucket/:object|PUT|true|文件上传|
+|/:bucket/:object|GET|false|文件下载|
