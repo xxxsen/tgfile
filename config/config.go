@@ -21,14 +21,15 @@ type DebugConfig struct {
 }
 
 type Config struct {
-	Bind      string            `json:"bind"`
-	LogInfo   logger.LogConfig  `json:"log_info"`
-	DBFile    string            `json:"db_file"`
-	BotInfo   BotConfig         `json:"bot_config"`
-	UserInfo  map[string]string `json:"user_info"`
-	S3Bucket  []string          `json:"s3_bucket"`
-	TempDir   string            `json:"temp_dir"`
-	DebugMode DebugConfig       `json:"debug_mode"`
+	Bind         string            `json:"bind"`
+	LogInfo      logger.LogConfig  `json:"log_info"`
+	DBFile       string            `json:"db_file"`
+	BotInfo      BotConfig         `json:"bot_config"`
+	UserInfo     map[string]string `json:"user_info"`
+	S3Bucket     []string          `json:"s3_bucket"`
+	TempDir      string            `json:"temp_dir"`
+	DebugMode    DebugConfig       `json:"debug_mode"`
+	RotateStream int               `json:"rotate_stream"`
 }
 
 func Parse(f string) (*Config, error) {

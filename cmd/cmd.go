@@ -78,6 +78,7 @@ func initStorage(c *config.Config) error {
 	if err != nil {
 		return err
 	}
+	bkio = blockio.NewRotateIO(bkio, int(c.RotateStream))
 	fmgr := filemgr.NewFileManager(bkio)
 	filemgr.SetFileManagerImpl(fmgr)
 	return nil
