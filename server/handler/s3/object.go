@@ -21,12 +21,6 @@ func DownloadObject(c *gin.Context) {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("get mapping info fail, err:%w", err))
 		return
 	}
-	finfo, err := filemgr.Stat(ctx, minfo.FileId)
-	if err != nil {
-		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("get file info fail, err:%w", err))
-		return
-	}
-	//TODO: 将这个地方干掉, 由minfo提供基础的信息
 	file, err := filemgr.Open(ctx, minfo.FileId)
 	if err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("open file fail, err:%w", err))
@@ -34,7 +28,7 @@ func DownloadObject(c *gin.Context) {
 	}
 	defer file.Close()
 	//c.Writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", strconv.Quote()))
-	http.ServeContent(c.Writer, c.Request, finfo.Name(), finfo.ModTime(), file)
+	http.ServeContent(c.Writer, c.Request, minfo.Name(), minfo.ModTime(), file)
 }
 
 func UploadObject(c *gin.Context) {

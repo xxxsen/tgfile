@@ -77,6 +77,7 @@ func (d *dirEntry) Info() (fs.FileInfo, error) {
 			FieldSys:   nil,
 		}, nil
 	}
+	//TODO: read info from existing
 	info, err := Stat(d.ctx, d.FileId)
 	if err != nil {
 		return nil, err

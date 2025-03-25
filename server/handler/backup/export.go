@@ -30,10 +30,6 @@ func Export(c *gin.Context) {
 	st := &model.StatisticInfo{}
 	start := time.Now()
 	if err := filemgr.IterLink(ctx, "", func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
-		finfo, err := filemgr.Stat(ctx, ent.FileId)
-		if err != nil {
-			return false, err
-		}
 		stream, err := filemgr.Open(ctx, ent.FileId)
 		if err != nil {
 			return false, err
@@ -41,11 +37,11 @@ func Export(c *gin.Context) {
 		defer stream.Close()
 
 		st.FileCount++
-		st.FileSize += finfo.Size()
+		st.FileSize += ent.Size()
 		h := &tar.Header{
 			Name: link,
-			Mode: 0644,
-			Size: int64(finfo.Size()),
+			Mode: int64(ent.Mode()),
+			Size: int64(ent.Size()),
 		}
 		if err := tw.WriteHeader(h); err != nil {
 			return false, fmt.Errorf("write header failed, fileid:%d, err:%w", ent.FileId, err)

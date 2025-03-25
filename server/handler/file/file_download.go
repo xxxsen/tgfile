@@ -25,12 +25,6 @@ func FileDownload(c *gin.Context) {
 		return
 	}
 	defer file.Close()
-	//TODO: 将这个地方干掉, 由minfo提供基础的信息
-	finfo, err := filemgr.Stat(ctx, minfo.FileId)
-	if err != nil {
-		proxyutil.Fail(c, http.StatusInternalServerError, fmt.Errorf("stat file failed, err:%w", err))
-		return
-	}
 	//c.Writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", strconv.Quote(finfo.Name())))
-	http.ServeContent(c.Writer, c.Request, strconv.Quote(finfo.Name()), finfo.ModTime(), file)
+	http.ServeContent(c.Writer, c.Request, strconv.Quote(minfo.Name()), minfo.ModTime(), file)
 }
