@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"tgfile/entity"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -28,12 +30,12 @@ func (f *fakeMgr) Create(ctx context.Context, size int64, r io.Reader) (uint64, 
 	return 0, fmt.Errorf("no impl")
 }
 
-func (f *fakeMgr) CreateLink(ctx context.Context, link string, fileid uint64) error {
+func (f *fakeMgr) CreateLink(ctx context.Context, link string, fileid uint64, _ *entity.CreateLinkOption) error {
 	return fmt.Errorf("no impl")
 }
 
-func (f *fakeMgr) ResolveLink(ctx context.Context, link string) (uint64, error) {
-	return 0, fmt.Errorf("no impl")
+func (f *fakeMgr) ResolveLink(ctx context.Context, link string) (*entity.FileMappingItem, error) {
+	return nil, fmt.Errorf("no impl")
 }
 
 func (f *fakeMgr) IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error {
@@ -45,7 +47,15 @@ func (f *fakeMgr) IterLink(ctx context.Context, prefix string, cb IterLinkFunc) 
 		"/root/f4.jpg",
 	}
 	for idx, link := range links {
-		next, err := cb(ctx, link, uint64(idx)+1)
+		next, err := cb(ctx, link, &entity.FileMappingItem{
+			FileName:   link,
+			FileId:     uint64(idx) + 1,
+			FileSize:   100,
+			IsDirEntry: false,
+			Ctime:      uint64(time.Now().UnixMilli()),
+			Mtime:      uint64(time.Now().UnixMilli()),
+			FileMode:   0755,
+		})
 		if err != nil {
 			return err
 		}

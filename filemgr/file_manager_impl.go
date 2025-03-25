@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"tgfile/blockio"
+	"tgfile/constant"
 	"tgfile/dao"
 	"tgfile/dao/cache"
 	"tgfile/entity"
@@ -22,28 +23,60 @@ type defaultFileManager struct {
 	bkio           blockio.IBlockIO
 }
 
-func (d *defaultFileManager) CreateLink(ctx context.Context, link string, fileid uint64) error {
-	_, err := d.fileMappingDao.CreateFileMapping(ctx, &entity.CreateFileMappingRequest{
-		FileName: link,
-		FileId:   fileid,
-	})
-	return err
+func (d *defaultFileManager) normalizeCreateMappingOption(opt *entity.CreateLinkOption) (*entity.CreateLinkOption, error) {
+	if opt == nil {
+		//虽然是option, 但是就是得填。。
+		return nil, fmt.Errorf("nil create link option")
+	}
+	if opt.FileSize == 0 && !opt.IsDir && !opt.EnsureZeroFileSize {
+		return nil, fmt.Errorf("file size is zero")
+	}
+	now := uint64(time.Now().UnixMilli())
+	if opt.Ctime == 0 {
+		opt.Ctime = now
+	}
+	if opt.Mtime == 0 {
+		opt.Mtime = now
+	}
+	if opt.FileMode == 0 {
+		opt.FileMode = constant.DefaultFileMode
+	}
+	return opt, nil
 }
 
-func (d *defaultFileManager) ResolveLink(ctx context.Context, link string) (uint64, error) {
-	fid, ok, err := d.internalGetFileMapping(ctx, link)
+func (d *defaultFileManager) CreateLink(ctx context.Context, link string, fileid uint64, opt *entity.CreateLinkOption) error {
+	opt, err := d.normalizeCreateMappingOption(opt)
 	if err != nil {
-		return 0, fmt.Errorf("open mapping failed, err:%w", err)
+		return err
+	}
+	if _, err := d.fileMappingDao.CreateFileMapping(ctx, &entity.CreateFileMappingRequest{
+		FileName: link,
+		FileId:   fileid,
+		IsDir:    opt.IsDir,
+		FileMode: opt.FileMode,
+		Ctime:    opt.Ctime,
+		Mtime:    opt.Mtime,
+		FileSize: opt.FileSize,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (d *defaultFileManager) ResolveLink(ctx context.Context, link string) (*entity.FileMappingItem, error) {
+	info, ok, err := d.internalGetFileMapping(ctx, link)
+	if err != nil {
+		return nil, fmt.Errorf("open mapping failed, err:%w", err)
 	}
 	if !ok {
-		return 0, fmt.Errorf("link not found")
+		return nil, fmt.Errorf("link not found")
 	}
-	return fid, nil
+	return info, nil
 }
 
 func (d *defaultFileManager) IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error {
-	return d.fileMappingDao.IterFileMapping(ctx, prefix, func(ctx context.Context, name string, fileid uint64) (bool, error) {
-		return cb(ctx, name, fileid)
+	return d.fileMappingDao.IterFileMapping(ctx, prefix, func(ctx context.Context, name string, ent *entity.FileMappingItem) (bool, error) {
+		return cb(ctx, name, ent)
 	})
 }
 
@@ -173,17 +206,17 @@ func (d *defaultFileManager) internalGetFilePartInfo(ctx context.Context, fileid
 	return rs.List[0], true, nil
 }
 
-func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filename string) (uint64, bool, error) {
+func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filename string) (*entity.FileMappingItem, bool, error) {
 	rsp, ok, err := d.fileMappingDao.GetFileMapping(ctx, &entity.GetFileMappingRequest{
 		FileName: filename,
 	})
 	if err != nil {
-		return 0, false, err
+		return nil, false, err
 	}
 	if !ok {
-		return 0, false, nil
+		return nil, false, nil
 	}
-	return rsp.Item.FileId, true, nil
+	return rsp.Item, true, nil
 }
 
 func NewFileManager(bkio blockio.IBlockIO) IFileManager {

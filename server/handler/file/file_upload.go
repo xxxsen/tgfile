@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"tgfile/constant"
+	"tgfile/entity"
 	"tgfile/filemgr"
 	"tgfile/proxyutil"
 	"tgfile/server/model"
 	"tgfile/utils"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -32,8 +35,15 @@ func FileUpload(c *gin.Context, ctx context.Context, request interface{}) {
 	}
 	key := utils.EncodeFileId(fileid)
 
+	now := uint64(time.Now().UnixMilli())
 	path := defaultUploadPrefix + key
-	if err := filemgr.CreateLink(ctx, path, fileid); err != nil {
+	if err := filemgr.CreateLink(ctx, path, fileid, &entity.CreateLinkOption{
+		FileMode: constant.DefaultFileMode,
+		IsDir:    false,
+		Ctime:    now,
+		Mtime:    now,
+		FileSize: header.Size,
+	}); err != nil {
 		proxyutil.Fail(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
 		return
 	}

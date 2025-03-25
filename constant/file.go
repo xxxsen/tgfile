@@ -5,3 +5,7 @@ const (
 	FileStateReady   = 2
 	FileStateDeleted = 3
 )
+
+const (
+	DefaultFileMode = 0755
+)

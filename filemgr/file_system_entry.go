@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"tgfile/entity"
 	"time"
 )
 
@@ -17,36 +18,25 @@ type fileSystemFileEntry struct {
 	initErr        error
 	streamInitOnce sync.Once
 	ctx            context.Context
-	fileid         uint64
 	fullName       string
+	ent            *entity.FileMappingItem
 }
 
-func newFileSystemFileEntry(ctx context.Context, fullName string, fileid uint64) *fileSystemFileEntry {
+func newFileSystemFileEntry(ctx context.Context, fullName string, ent *entity.FileMappingItem) *fileSystemFileEntry {
 	return &fileSystemFileEntry{
 		ctx:      ctx,
-		fileid:   fileid,
 		fullName: fullName,
+		ent:      ent,
 	}
 }
 
 func (f *fileSystemFileEntry) Stat() (fs.FileInfo, error) {
-	st, err := Stat(f.ctx, f.fileid)
-	if err != nil {
-		return nil, err
-	}
-	return &defaultFileInfo{
-		FieldSize:  st.Size(),
-		FieldMtime: time.Time{},
-		FieldName:  f.fullName,
-		FieldMode:  06744,
-		FieldIsDir: false,
-		FieldSys:   nil,
-	}, nil
+	return f.ent, nil
 }
 
 func (f *fileSystemFileEntry) tryInitStream() {
 	f.streamInitOnce.Do(func() {
-		f.stream, f.initErr = Open(f.ctx, f.fileid)
+		f.stream, f.initErr = Open(f.ctx, f.ent.FileId)
 	})
 }
 
@@ -160,7 +150,7 @@ func internalReadDir(ctx context.Context, root string) ([]os.DirEntry, error) {
 	dirEntries := make([]os.DirEntry, 0, 16)
 	dirExists := make(map[string]struct{})
 
-	err := defaultFileMgr.IterLink(ctx, root, func(ctx context.Context, link string, fileid uint64) (bool, error) {
+	err := defaultFileMgr.IterLink(ctx, root, func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
 		if link == root { //目录本身
 			return true, nil
 		}
@@ -170,7 +160,8 @@ func internalReadDir(ctx context.Context, root string) ([]os.DirEntry, error) {
 		relPath := link[len(root):]
 		idx := strings.Index(relPath, "/")
 		if idx < 0 { //没有额外的'/', 那么当前的这个item是文件, 否则是目录
-			fileEntries = append(fileEntries, newFileSystemFileEntry(ctx, link, fileid))
+			//TODO: 再判断一遍ent中的IsDir字段
+			fileEntries = append(fileEntries, newFileSystemFileEntry(ctx, link, ent))
 			return true, nil
 		}
 		dirname := relPath[:idx]

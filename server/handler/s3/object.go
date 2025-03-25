@@ -3,8 +3,12 @@ package s3
 import (
 	"fmt"
 	"net/http"
+	"strings"
+	"tgfile/constant"
+	"tgfile/entity"
 	"tgfile/filemgr"
 	"tgfile/server/handler/s3/s3base"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -12,17 +16,18 @@ import (
 func DownloadObject(c *gin.Context) {
 	ctx := c.Request.Context()
 	filename := c.Request.URL.Path
-	fid, err := filemgr.ResolveLink(ctx, filename)
+	minfo, err := filemgr.ResolveLink(ctx, filename)
 	if err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("get mapping info fail, err:%w", err))
 		return
 	}
-	finfo, err := filemgr.Stat(ctx, fid)
+	finfo, err := filemgr.Stat(ctx, minfo.FileId)
 	if err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("get file info fail, err:%w", err))
 		return
 	}
-	file, err := filemgr.Open(ctx, fid)
+	//TODO: 将这个地方干掉, 由minfo提供基础的信息
+	file, err := filemgr.Open(ctx, minfo.FileId)
 	if err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("open file fail, err:%w", err))
 		return
@@ -40,7 +45,14 @@ func UploadObject(c *gin.Context) {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("do file upload fail, err:%w", err))
 		return
 	}
-	if err := filemgr.CreateLink(ctx, filename, fileid); err != nil {
+	now := uint64(time.Now().UnixMilli())
+	if err := filemgr.CreateLink(ctx, filename, fileid, &entity.CreateLinkOption{
+		FileMode: constant.DefaultFileMode,
+		IsDir:    strings.HasSuffix(filename, "/"),
+		Ctime:    now,
+		Mtime:    now,
+		FileSize: c.Request.ContentLength,
+	}); err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("create mapping fail, err:%w", err))
 		return
 	}

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"tgfile/entity"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -88,16 +89,21 @@ func (f *fakeFsMgr) Create(ctx context.Context, size int64, r io.Reader) (uint64
 	return 0, fmt.Errorf("no impl")
 }
 
-func (f *fakeFsMgr) CreateLink(ctx context.Context, link string, fileid uint64) error {
+func (f *fakeFsMgr) CreateLink(ctx context.Context, link string, fileid uint64, opt *entity.CreateLinkOption) error {
 	return fmt.Errorf("no impl")
 }
 
-func (f *fakeFsMgr) ResolveLink(ctx context.Context, link string) (uint64, error) {
+func (f *fakeFsMgr) ResolveLink(ctx context.Context, link string) (*entity.FileMappingItem, error) {
 	finfo, err := f.searchFile(link)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return finfo.fileid, nil
+	return &entity.FileMappingItem{
+		FileName:   finfo.filename,
+		FileId:     finfo.fileid,
+		FileSize:   finfo.size,
+		IsDirEntry: false,
+	}, nil
 }
 
 func (f *fakeFsMgr) IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error {
@@ -106,7 +112,15 @@ func (f *fakeFsMgr) IterLink(ctx context.Context, prefix string, cb IterLinkFunc
 		return err
 	}
 	for _, item := range items {
-		next, err := cb(ctx, item.filename, item.fileid)
+		next, err := cb(ctx, item.filename, &entity.FileMappingItem{
+			FileName:   item.filename,
+			FileId:     item.fileid,
+			FileSize:   int64(len(item.data)),
+			IsDirEntry: false,
+			Ctime:      uint64(time.Now().UnixMilli()),
+			Mtime:      uint64(time.Now().UnixMilli()),
+			FileMode:   0755,
+		})
 		if err != nil {
 			return err
 		}

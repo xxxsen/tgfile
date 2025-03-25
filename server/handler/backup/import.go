@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"tgfile/constant"
+	"tgfile/entity"
 	"tgfile/filemgr"
 	"tgfile/proxyutil"
 	"tgfile/server/model"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/logutil"
@@ -76,7 +79,14 @@ func importOneFile(ctx context.Context, h *tar.Header, r *tar.Reader) error {
 	if err != nil {
 		return fmt.Errorf("create file failed, err:%w", err)
 	}
-	if err := filemgr.CreateLink(ctx, h.Name, fileid); err != nil {
+	now := uint64(time.Now().UnixMilli())
+	if err := filemgr.CreateLink(ctx, h.Name, fileid, &entity.CreateLinkOption{
+		FileMode: constant.DefaultFileMode,
+		IsDir:    false,
+		Ctime:    now,
+		Mtime:    now,
+		FileSize: h.Size,
+	}); err != nil {
 		return fmt.Errorf("create link failed, err:%w", err)
 	}
 	return nil

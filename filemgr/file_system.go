@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+	"tgfile/entity"
 )
 
 type fileSystemWrap struct {
@@ -18,12 +19,13 @@ func AsFileSystem(ctx context.Context) fs.FS {
 func (f *fileSystemWrap) checkIsDir(name string) (bool, error) {
 	isFile := false
 	isExist := false
-	if err := IterLink(f.ctx, name, func(ctx context.Context, link string, fileid uint64) (bool, error) {
+	if err := IterLink(f.ctx, name, func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
 		if name == link { //完全匹配, 那必定为文件
 			isFile = true
 			isExist = true
 			return false, nil
 		}
+		//TODO: 基于ent.IsDir再进行判断
 		if !strings.HasSuffix(name, "/") {
 			name += "/"
 		}
