@@ -3,7 +3,6 @@ package filemgr
 import (
 	"context"
 	"io"
-	"io/fs"
 	"tgfile/entity"
 )
 
@@ -12,7 +11,6 @@ type IterLinkFunc func(ctx context.Context, link string, ent *entity.FileMapping
 var defaultFileMgr IFileManager
 
 type IFileManager interface {
-	Stat(ctx context.Context, fileid uint64) (fs.FileInfo, error)
 	Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error)
 	Create(ctx context.Context, size int64, r io.Reader) (uint64, error)
 	CreateLink(ctx context.Context, link string, fileid uint64, opt *entity.CreateLinkOption) error
@@ -22,10 +20,6 @@ type IFileManager interface {
 
 func SetFileManagerImpl(mgr IFileManager) {
 	defaultFileMgr = mgr
-}
-
-func Stat(ctx context.Context, fileid uint64) (fs.FileInfo, error) {
-	return defaultFileMgr.Stat(ctx, fileid)
 }
 
 func Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {

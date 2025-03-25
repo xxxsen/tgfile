@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"tgfile/entity"
-	"time"
 )
 
 type fileSystemFileEntry struct {
@@ -84,12 +83,14 @@ func (f *fileSystemFileEntry) Info() (fs.FileInfo, error) {
 type fileSystemDirEntry struct {
 	ctx      context.Context
 	fullName string
+	ent      *entity.FileMappingItem
 }
 
-func newFileSystemDirEntry(ctx context.Context, fullName string) *fileSystemDirEntry {
+func newFileSystemDirEntry(ctx context.Context, fullName string, ent *entity.FileMappingItem) *fileSystemDirEntry {
 	return &fileSystemDirEntry{
 		ctx:      ctx,
 		fullName: fullName,
+		ent:      ent,
 	}
 }
 
@@ -113,14 +114,7 @@ func (f *fileSystemDirEntry) Close() error {
 }
 
 func (f *fileSystemDirEntry) Stat() (fs.FileInfo, error) {
-	return &defaultFileInfo{
-		FieldSize:  0,
-		FieldMtime: time.Time{},
-		FieldName:  filepath.Base(f.fullName),
-		FieldMode:  0755,
-		FieldIsDir: true,
-		FieldSys:   nil,
-	}, nil
+	return f.ent, nil
 }
 
 func (f *fileSystemDirEntry) Name() string {
@@ -139,6 +133,29 @@ func (f *fileSystemDirEntry) Info() (fs.FileInfo, error) {
 	return f.Stat()
 }
 
+func cbfn(root string, entries *[]os.DirEntry) IterLinkFunc {
+	return func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
+		if link == root { //目录本身, 直接跳过
+			return true, nil
+		}
+		if !strings.HasPrefix(link, root) { //已经遍历到结尾了
+			return false, nil
+		}
+		//在移除了父目录后, 如果还能找到'/', 那么必定是个目录, 或者该文件非当前目录的直接子级
+		idx := strings.Index(link[len(root):], "/")
+		//TODO: 处理下一级目录
+		if idx > 0 && len(root)+idx+1 != len(link) {
+			return true, nil
+		}
+		if ent.IsDir() {
+			*entries = append(*entries, newFileSystemDirEntry(ctx, link, ent))
+			return true, nil
+		}
+		*entries = append(*entries, newFileSystemFileEntry(ctx, link, ent))
+		return true, nil
+	}
+}
+
 func internalReadDir(ctx context.Context, root string) ([]os.DirEntry, error) {
 	if !strings.HasPrefix(root, "/") {
 		root = "/" + root
@@ -146,37 +163,10 @@ func internalReadDir(ctx context.Context, root string) ([]os.DirEntry, error) {
 	if !strings.HasSuffix(root, "/") {
 		root += "/"
 	}
-	fileEntries := make([]os.DirEntry, 0, 16)
-	dirEntries := make([]os.DirEntry, 0, 16)
-	dirExists := make(map[string]struct{})
-
-	err := defaultFileMgr.IterLink(ctx, root, func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
-		if link == root { //目录本身
-			return true, nil
-		}
-		if !strings.HasPrefix(link, root) {
-			return false, nil
-		}
-		relPath := link[len(root):]
-		idx := strings.Index(relPath, "/")
-		if idx < 0 { //没有额外的'/', 那么当前的这个item是文件, 否则是目录
-			//TODO: 再判断一遍ent中的IsDir字段
-			fileEntries = append(fileEntries, newFileSystemFileEntry(ctx, link, ent))
-			return true, nil
-		}
-		dirname := relPath[:idx]
-		if _, ok := dirExists[dirname]; ok { //目录已经处理过了
-			return true, nil
-		}
-		dirExists[dirname] = struct{}{}
-		dirEntries = append(dirEntries, newFileSystemDirEntry(ctx, link[:len(root)+idx]))
-		return true, nil
-	})
+	entries := make([]os.DirEntry, 0, 16)
+	err := defaultFileMgr.IterLink(ctx, root, cbfn(root, &entries))
 	if err != nil {
 		return nil, err
 	}
-	rs := make([]os.DirEntry, 0, len(fileEntries)+len(dirEntries))
-	rs = append(rs, dirEntries...)
-	rs = append(rs, fileEntries...)
-	return rs, nil
+	return entries, nil
 }
