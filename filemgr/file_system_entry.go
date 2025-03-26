@@ -151,7 +151,7 @@ func internalReadDir(ctx context.Context, root string) ([]os.DirEntry, error) {
 	ents := make([]os.DirEntry, 0, 16)
 
 	err := defaultFileMgr.IterLink(ctx, root, func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
-		if ent.IsDir {
+		if !ent.IsDir {
 			ents = append(ents, newFileSystemFileEntry(ctx, link, ent))
 			return true, nil
 		}

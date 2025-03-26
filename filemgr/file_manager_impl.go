@@ -7,7 +7,6 @@ import (
 	"io/fs"
 	"tgfile/blockio"
 	"tgfile/dao"
-	"tgfile/dao/cache"
 	"tgfile/entity"
 	"time"
 
@@ -190,9 +189,15 @@ func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filenam
 
 func NewFileManager(bkio blockio.IBlockIO) IFileManager {
 	return &defaultFileManager{
-		fileDao:        cache.NewFileDao(dao.NewFileDao()),
-		filePartDao:    cache.NewFilePartDao(dao.NewFilePartDao()),
-		fileMappingDao: cache.NewFileMappingDao(dao.NewFileMappingDao()),
+		fileDao:        dao.NewFileDao(),
+		filePartDao:    dao.NewFilePartDao(),
+		fileMappingDao: dao.NewFileMappingDao(),
 		bkio:           bkio,
 	}
+	// return &defaultFileManager{
+	// 	fileDao:        cache.NewFileDao(dao.NewFileDao()),
+	// 	filePartDao:    cache.NewFilePartDao(dao.NewFilePartDao()),
+	// 	fileMappingDao: cache.NewFileMappingDao(dao.NewFileMappingDao()),
+	// 	bkio:           bkio,
+	// }
 }

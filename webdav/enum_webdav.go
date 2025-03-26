@@ -194,10 +194,6 @@ func (e *enumWebdav) onSelectDir(ctx context.Context, dir string, cb onSelectDir
 	}
 	var parentid uint64
 	if err := e.db.OnTransation(ctx, func(ctx context.Context, qe database.IQueryExecer) error {
-		if len(items) == 1 && items[0] == "/" {
-			return cb(ctx, parentid, qe)
-		}
-
 		for idx, item := range items {
 			ent, ok, err := e.searchEntry(ctx, qe, parentid, item)
 			if err != nil {
@@ -308,6 +304,17 @@ func (e *enumWebdav) List(ctx context.Context, dir string) ([]*WebEntry, error) 
 
 func (e *enumWebdav) Stat(ctx context.Context, filename string) (*WebEntry, error) {
 	dir, name := e.splitFilename(filename)
+	if name == "/" {
+		return &WebEntry{
+			RefData: "",
+			Name:    name,
+			Ctime:   0,
+			Mtime:   0,
+			Mode:    defaultWebdavFileMode,
+			Size:    0,
+			IsDir:   true,
+		}, nil
+	}
 	var rs *WebEntry
 	if err := e.onSelectDir(ctx, dir, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
 		t, ok, err := e.searchEntry(ctx, tx, parentid, name)
