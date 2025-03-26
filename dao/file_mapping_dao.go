@@ -36,16 +36,13 @@ func (f *fileMappingDao) table() string {
 	return "tg_file_mapping_tab"
 }
 
-func (f *fileMappingDao) buildKey(name string) string {
-	return defaultFileMappingPrefix + name
-}
-
 func (f *fileMappingDao) GetFileMapping(ctx context.Context, req *entity.GetFileMappingRequest) (*entity.GetFileMappingResponse, bool, error) {
 	ent, err := f.dav.Stat(ctx, req.FileName)
 	if err != nil {
 		return nil, false, err
 	}
-	fileid, err := strconv.ParseUint(ent.RefData, 0, 64)
+	var fileid uint64
+	fileid, err = f.retrieveFileId(ent)
 	if err != nil {
 		return nil, false, err
 	}
@@ -55,6 +52,7 @@ func (f *fileMappingDao) GetFileMapping(ctx context.Context, req *entity.GetFile
 		Ctime:    ent.Ctime,
 		Mtime:    ent.Mtime,
 		FileSize: ent.Size,
+		IsDir:    ent.IsDir,
 	}
 	return &entity.GetFileMappingResponse{Item: item}, true, nil
 }
@@ -66,13 +64,20 @@ func (f *fileMappingDao) CreateFileMapping(ctx context.Context, req *entity.Crea
 	return &entity.CreateFileMappingResponse{}, nil
 }
 
+func (f *fileMappingDao) retrieveFileId(ent *webdav.WebEntry) (uint64, error) {
+	if ent.IsDir {
+		return 0, nil
+	}
+	return strconv.ParseUint(ent.RefData, 10, 64)
+}
+
 func (f *fileMappingDao) IterFileMapping(ctx context.Context, prefix string, cb IterFileMappingFunc) error {
 	ents, err := f.dav.List(ctx, prefix)
 	if err != nil {
 		return err
 	}
 	for _, item := range ents {
-		fid, err := strconv.ParseUint(item.RefData, 10, 64)
+		fid, err := f.retrieveFileId(item)
 		if err != nil {
 			return err
 		}

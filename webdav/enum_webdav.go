@@ -139,7 +139,7 @@ func (e *enumWebdav) createDir(ctx context.Context, exec database.IExecer, pid u
 	now := time.Now().UnixMilli()
 	ent := &webdavEntryTab{
 		ParentEntryId: pid,
-		RefData:       "{}",
+		RefData:       "",
 		FileKind:      defaultFileKindDir,
 		Ctime:         now,
 		Mtime:         now,
@@ -194,6 +194,10 @@ func (e *enumWebdav) onSelectDir(ctx context.Context, dir string, cb onSelectDir
 	}
 	var parentid uint64
 	if err := e.db.OnTransation(ctx, func(ctx context.Context, qe database.IQueryExecer) error {
+		if len(items) == 1 && items[0] == "/" {
+			return cb(ctx, parentid, qe)
+		}
+
 		for idx, item := range items {
 			ent, ok, err := e.searchEntry(ctx, qe, parentid, item)
 			if err != nil {
