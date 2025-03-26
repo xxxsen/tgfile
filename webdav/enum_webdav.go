@@ -13,33 +13,27 @@ import (
 	"github.com/xxxsen/common/idgen"
 )
 
-/*
-id int64
-fname string
-fsize int64
-parent_id int64
-ctime int64
-mtime int64
-mode int64
-
-*/
+const (
+	defaultWebDavSql = `
+CREATE TABLE IF NOT EXISTS %s (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id      INTEGER NOT NULL,
+    parent_entry_id INTEGER NOT NULL,
+    ref_data      TEXT,
+    file_kind     INTEGER,
+    ctime         INTEGER,
+    mtime         INTEGER,
+    file_size     INTEGER,
+    file_mode     INTEGER,
+    file_name     TEXT NOT NULL,
+    UNIQUE (parent_entry_id, file_name)
+);
+	`
+)
 
 const (
 	defaultMaxDepthLimit = 16
 )
-
-type WebdavEntryTab struct {
-	Id            uint64 `json:"id"`
-	EntryId       uint64 `json:"entry_id"`
-	ParentEntryId uint64 `json:"parent_entry_id"`
-	RefData       string `json:"ref_data"`
-	FileKind      int32  `json:"file_kind"`
-	Ctime         int64  `json:"ctime"`
-	Mtime         int64  `json:"mtime"`
-	FileSize      int64  `json:"file_size"`
-	FileMode      uint32 `json:"file_mode"`
-	FileName      string `json:"file_name"`
-}
 
 type onSelectDirFunc func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error
 
@@ -69,14 +63,25 @@ func (e *enumWebdav) table() string {
 	return e.tab
 }
 
-func (e *enumWebdav) searchEntry(ctx context.Context, q database.IQueryer, pid uint64, name string) (*WebdavEntryTab, bool, error) {
+func (e *enumWebdav) splitFilename(filename string) (string, string) {
+	filename = filepath.Clean(filename)
+	if filename == "/" {
+		return "", "/"
+	}
+	filename = strings.TrimSuffix(filename, "/")
+	dir := filepath.Dir(filename)
+	name := filepath.Base(filename)
+	return dir, name
+}
+
+func (e *enumWebdav) searchEntry(ctx context.Context, q database.IQueryer, pid uint64, name string) (*webdavEntryTab, bool, error) {
 	where := map[string]interface{}{
 		"parent_entry_id": pid,
-		"name":            name,
+		"file_name":       name,
 		"_limit":          []uint{0, 1},
 	}
-	rs := make([]*WebdavEntryTab, 0, 1)
-	if err := dbkit.SimpleQuery(ctx, q, e.tab, where, &rs, dbkit.ScanWithTagName("json")); err != nil {
+	rs := make([]*webdavEntryTab, 0, 1)
+	if err := dbkit.SimpleQuery(ctx, q, e.table(), where, &rs, dbkit.ScanWithTagName("json")); err != nil {
 		return nil, false, err
 	}
 	if len(rs) == 0 {
@@ -97,7 +102,7 @@ func (e *enumWebdav) newEntryId() uint64 {
 	return e.gen.NextId()
 }
 
-func (e *enumWebdav) createEntry(ctx context.Context, exec database.IExecer, pid uint64, ent *WebdavEntryTab) (uint64, error) {
+func (e *enumWebdav) createEntry(ctx context.Context, exec database.IExecer, pid uint64, ent *webdavEntryTab) (uint64, error) {
 	eid := e.newEntryId()
 	data := []map[string]interface{}{
 		{
@@ -112,7 +117,7 @@ func (e *enumWebdav) createEntry(ctx context.Context, exec database.IExecer, pid
 			"file_name":       ent.FileName,
 		},
 	}
-	sql, args, err := builder.BuildInsert(e.tab, data)
+	sql, args, err := builder.BuildInsert(e.table(), data)
 	if err != nil {
 		return 0, err
 	}
@@ -132,39 +137,39 @@ func (e *enumWebdav) createEntry(ctx context.Context, exec database.IExecer, pid
 
 func (e *enumWebdav) createDir(ctx context.Context, exec database.IExecer, pid uint64, name string) (uint64, error) {
 	now := time.Now().UnixMilli()
-	ent := &WebdavEntryTab{
+	ent := &webdavEntryTab{
 		ParentEntryId: pid,
 		RefData:       "{}",
 		FileKind:      defaultFileKindDir,
 		Ctime:         now,
 		Mtime:         now,
 		FileSize:      0,
-		FileMode:      defaultDirMode,
+		FileMode:      defaultWebdavFileMode,
 		FileName:      name,
 	}
 	return e.createEntry(ctx, exec, pid, ent)
 }
 
-func (e *enumWebdav) createFile(ctx context.Context, exec database.IExecer, pid uint64, ent *WebdavEntryTab) (uint64, error) {
+func (e *enumWebdav) createFile(ctx context.Context, exec database.IExecer, pid uint64, ent *webdavEntryTab) (uint64, error) {
 	return e.createEntry(ctx, exec, pid, ent)
 }
 
-func (e *enumWebdav) listDir(ctx context.Context, q database.IQueryer, parentid uint64, offset, limit int64) ([]*WebdavEntryTab, error) {
+func (e *enumWebdav) listDir(ctx context.Context, q database.IQueryer, parentid uint64, offset, limit int64) ([]*webdavEntryTab, error) {
 	where := map[string]interface{}{
 		"parent_entry_id": parentid,
 		"_limit":          []uint{uint(offset), uint(limit)},
 	}
-	rs := make([]*WebdavEntryTab, 0, limit)
-	if err := dbkit.SimpleQuery(ctx, q, e.tab, where, &rs, dbkit.ScanWithTagName("json")); err != nil {
+	rs := make([]*webdavEntryTab, 0, limit)
+	if err := dbkit.SimpleQuery(ctx, q, e.table(), where, &rs, dbkit.ScanWithTagName("json")); err != nil {
 		return nil, err
 	}
 	return rs, nil
 }
 
-func (e *enumWebdav) listAllDir(ctx context.Context, q database.IQueryExecer, parentid uint64) ([]*WebdavEntryTab, error) {
+func (e *enumWebdav) listAllDir(ctx context.Context, q database.IQueryExecer, parentid uint64) ([]*webdavEntryTab, error) {
 	var offset int64
 	const limit int64 = 128
-	rs := make([]*WebdavEntryTab, 0, limit)
+	rs := make([]*webdavEntryTab, 0, limit)
 	for offset = 0; ; offset += limit {
 		ents, err := e.listDir(ctx, q, parentid, offset, limit)
 		if err != nil {
@@ -205,7 +210,7 @@ func (e *enumWebdav) onSelectDir(ctx context.Context, dir string, cb onSelectDir
 			if ent.FileKind != defaultFileKindDir {
 				return fmt.Errorf("found non-dir in sub path, sub:%s", strings.Join(items[:idx+1], "/"))
 			}
-			parentid = ent.ParentEntryId
+			parentid = ent.EntryId
 		}
 		return cb(ctx, parentid, qe)
 	}); err != nil {
@@ -214,7 +219,7 @@ func (e *enumWebdav) onSelectDir(ctx context.Context, dir string, cb onSelectDir
 	return nil
 }
 
-func (e *enumWebdav) Mkdir(ctx context.Context, dir string, mode uint32) error {
+func (e *enumWebdav) Mkdir(ctx context.Context, dir string) error {
 	pdir := filepath.Dir(dir)
 	name := filepath.Base(dir)
 	if err := e.onSelectDir(ctx, pdir, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
@@ -236,20 +241,23 @@ func (e *enumWebdav) Mkdir(ctx context.Context, dir string, mode uint32) error {
 }
 
 func (e *enumWebdav) Copy(ctx context.Context, src string, dst string, overwrite bool) error {
-	panic("TODO: Implement")
+	return fmt.Errorf("not impl yet")
 }
 
 func (e *enumWebdav) Move(ctx context.Context, src string, dst string, overwrite bool) error {
-	panic("TODO: Implement")
+	return fmt.Errorf("not impl yet")
 }
 
-func (e *enumWebdav) Create(ctx context.Context, link string, ent *WebEntry) error {
-	if strings.HasSuffix(link, "/") {
+func (e *enumWebdav) Remove(ctx context.Context, filename string) error {
+	//TODO: 删除其子节点, 再删除父节点
+	return fmt.Errorf("not impl yet")
+}
+
+func (e *enumWebdav) Create(ctx context.Context, filename string, size int64, refdata string) error {
+	if strings.HasSuffix(filename, "/") {
 		return fmt.Errorf("filename should not endswith '/'")
 	}
-	dir := filepath.Dir(link)
-	name := filepath.Base(link)
-	ent.Name = name
+	dir, name := e.splitFilename(filename)
 	if err := e.onSelectDir(ctx, dir, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
 		exist, err := e.isEntryExist(ctx, tx, parentid, name)
 		if err != nil {
@@ -258,13 +266,14 @@ func (e *enumWebdav) Create(ctx context.Context, link string, ent *WebEntry) err
 		if exist {
 			return fmt.Errorf("file exist, skip create")
 		}
-		if _, err := e.createFile(ctx, tx, parentid, &WebdavEntryTab{
-			RefData:  ent.RefData,
+		now := time.Now().UnixMilli()
+		if _, err := e.createFile(ctx, tx, parentid, &webdavEntryTab{
+			RefData:  refdata,
 			FileKind: 2,
-			Ctime:    ent.Ctime,
-			Mtime:    ent.Mtime,
-			FileSize: ent.Size,
-			FileMode: uint32(ent.Mode),
+			Ctime:    now,
+			Mtime:    now,
+			FileSize: size,
+			FileMode: defaultWebdavFileMode,
 			FileName: name,
 		}); err != nil {
 			return err
@@ -294,8 +303,7 @@ func (e *enumWebdav) List(ctx context.Context, dir string) ([]*WebEntry, error) 
 }
 
 func (e *enumWebdav) Stat(ctx context.Context, filename string) (*WebEntry, error) {
-	dir := filepath.Dir(filename)
-	name := filepath.Base(filename)
+	dir, name := e.splitFilename(filename)
 	var rs *WebEntry
 	if err := e.onSelectDir(ctx, dir, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
 		t, ok, err := e.searchEntry(ctx, tx, parentid, name)
@@ -313,7 +321,7 @@ func (e *enumWebdav) Stat(ctx context.Context, filename string) (*WebEntry, erro
 	return rs, nil
 }
 
-func (e *enumWebdav) convTabDataToEntryData(item *WebdavEntryTab) *WebEntry {
+func (e *enumWebdav) convTabDataToEntryData(item *webdavEntryTab) *WebEntry {
 	return &WebEntry{
 		RefData: item.RefData,
 		Name:    item.FileName,
@@ -327,6 +335,10 @@ func (e *enumWebdav) convTabDataToEntryData(item *WebdavEntryTab) *WebEntry {
 
 func NewEnumWebdav(db database.IDatabase, tab string) (IWebdav, error) {
 	gen := idgen.Default()
+	if _, err := db.ExecContext(context.Background(), fmt.Sprintf(defaultWebDavSql, tab)); err != nil {
+		return nil, fmt.Errorf("init table structure failed, err:%w", err)
+	}
+
 	return &enumWebdav{
 		db:  db,
 		tab: tab,

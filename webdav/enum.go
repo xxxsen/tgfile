@@ -6,5 +6,5 @@ const (
 )
 
 const (
-	defaultDirMode = 0755
+	defaultWebdavFileMode = 0755
 )
