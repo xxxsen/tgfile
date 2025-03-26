@@ -26,11 +26,7 @@ func (f *fileSystemWrap) Open(name string) (fs.File, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	if item.IsDir {
-		return newFileSystemDirEntry(f.ctx, name, item), nil
-	}
-	return newFileSystemFileEntry(f.ctx, name, item), nil
+	return newFileSystemEntry(f.ctx, name, item), nil
 }
 
 func (f *fileSystemWrap) ReadDir(name string) ([]fs.DirEntry, error) {

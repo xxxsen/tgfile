@@ -22,7 +22,7 @@ type fileSystemFileEntry struct {
 	fullName       string
 }
 
-func newFileSystemFileEntry(ctx context.Context, fullName string, ent *entity.FileMappingItem) *fileSystemFileEntry {
+func newFileSystemEntry(ctx context.Context, fullName string, ent *entity.FileMappingItem) *fileSystemFileEntry {
 	return &fileSystemFileEntry{
 		ctx:      ctx,
 		fullName: fullName,
@@ -41,6 +41,9 @@ func (f *fileSystemFileEntry) tryInitStream() {
 }
 
 func (f *fileSystemFileEntry) Seek(offset int64, whence int) (int64, error) {
+	if f.ent.IsDir {
+		return 0, fmt.Errorf("unable to seek on dir")
+	}
 	f.tryInitStream()
 	if f.initErr != nil {
 		return 0, f.initErr
@@ -49,6 +52,9 @@ func (f *fileSystemFileEntry) Seek(offset int64, whence int) (int64, error) {
 }
 
 func (f *fileSystemFileEntry) Read(p0 []byte) (int, error) {
+	if f.ent.IsDir {
+		return 0, fmt.Errorf("unable to read on dir")
+	}
 	f.tryInitStream()
 	if f.initErr != nil {
 		return 0, f.initErr
@@ -68,34 +74,21 @@ func (f *fileSystemFileEntry) Name() string {
 }
 
 func (f *fileSystemFileEntry) IsDir() bool {
-	return false
+	return f.ent.IsDir
 }
 
 func (f *fileSystemFileEntry) Type() fs.FileMode {
-	return 0644
+	return fs.FileMode(f.ent.Mode)
 }
 
 func (f *fileSystemFileEntry) Info() (fs.FileInfo, error) {
 	return f.Stat()
 }
 
-//====
-
-type fileSystemDirEntry struct {
-	ctx      context.Context
-	fullName string
-	ent      *entity.FileMappingItem
-}
-
-func newFileSystemDirEntry(ctx context.Context, fullName string, ent *entity.FileMappingItem) *fileSystemDirEntry {
-	return &fileSystemDirEntry{
-		ctx:      ctx,
-		fullName: fullName,
-		ent:      ent,
+func (f *fileSystemFileEntry) ReadDir(n int) ([]fs.DirEntry, error) {
+	if !f.ent.IsDir {
+		return nil, fmt.Errorf("unable to read dir on file")
 	}
-}
-
-func (f *fileSystemDirEntry) ReadDir(n int) ([]fs.DirEntry, error) {
 	ents, err := internalReadDir(f.ctx, f.fullName)
 	if err != nil {
 		return nil, err
@@ -104,34 +97,6 @@ func (f *fileSystemDirEntry) ReadDir(n int) ([]fs.DirEntry, error) {
 		return ents, nil
 	}
 	return ents[:n], nil
-}
-
-func (f *fileSystemDirEntry) Read(p0 []byte) (int, error) {
-	return 0, fmt.Errorf("cant read on dir")
-}
-
-func (f *fileSystemDirEntry) Close() error {
-	return nil
-}
-
-func (f *fileSystemDirEntry) Stat() (fs.FileInfo, error) {
-	return &wrapFileMappingItem{ent: f.ent}, nil
-}
-
-func (f *fileSystemDirEntry) Name() string {
-	return filepath.Base(f.fullName)
-}
-
-func (f *fileSystemDirEntry) IsDir() bool {
-	return true
-}
-
-func (f *fileSystemDirEntry) Type() fs.FileMode {
-	return 0755
-}
-
-func (f *fileSystemDirEntry) Info() (fs.FileInfo, error) {
-	return f.Stat()
 }
 
 func internalReadDir(ctx context.Context, root string) ([]os.DirEntry, error) {
@@ -144,13 +109,7 @@ func internalReadDir(ctx context.Context, root string) ([]os.DirEntry, error) {
 	ents := make([]os.DirEntry, 0, 16)
 
 	err := defaultFileMgr.IterLink(ctx, root, func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
-		if !ent.IsDir {
-			ents = append(ents, newFileSystemFileEntry(ctx, link, ent))
-			return true, nil
-		}
-
-		ents = append(ents, newFileSystemDirEntry(ctx, link, ent))
-
+		ents = append(ents, newFileSystemEntry(ctx, link, ent))
 		return true, nil
 	})
 	if err != nil {
