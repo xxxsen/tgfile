@@ -3,11 +3,10 @@ package backup
 import (
 	"archive/tar"
 	"compress/gzip"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"tgfile/entity"
+	"io/fs"
 	"tgfile/filemgr"
 	"tgfile/server/model"
 	"time"
@@ -29,28 +28,38 @@ func Export(c *gin.Context) {
 	defer tw.Close()
 	st := &model.StatisticInfo{}
 	start := time.Now()
-	if err := filemgr.IterLink(ctx, "", func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
+	if err := fs.WalkDir(filemgr.AsFileSystem(ctx), "/", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+		ent, err := filemgr.ResolveLink(ctx, path)
+		if err != nil {
+			return err
+		}
 		stream, err := filemgr.Open(ctx, ent.FileId)
 		if err != nil {
-			return false, err
+			return err
 		}
 		defer stream.Close()
 
 		st.FileCount++
 		st.FileSize += ent.FileSize
 		h := &tar.Header{
-			Name: link,
-			Mode: 0644,
+			Name: path,
+			Mode: int64(ent.Mode),
 			Size: int64(ent.FileSize),
 		}
 		if err := tw.WriteHeader(h); err != nil {
-			return false, fmt.Errorf("write header failed, fileid:%d, err:%w", ent.FileId, err)
+			return fmt.Errorf("write header failed, fileid:%d, err:%w", ent.FileId, err)
 		}
 		if _, err := io.Copy(tw, stream); err != nil {
-			return false, fmt.Errorf("write body failed, fileid:%d, err:%w", ent.FileId, err)
+			return fmt.Errorf("write body failed, fileid:%d, err:%w", ent.FileId, err)
 		}
-		logutil.GetLogger(ctx).Debug("iter one link succ", zap.String("link", link), zap.Uint64("file_id", ent.FileId))
-		return true, nil
+		logutil.GetLogger(ctx).Debug("iter one link succ", zap.String("link", path), zap.Uint64("file_id", ent.FileId))
+		return nil
 	}); err != nil {
 		logutil.GetLogger(ctx).Error("iter link failed", zap.Error(err))
 		return
