@@ -6,7 +6,6 @@ import (
 	"tgfile/filemgr"
 	"tgfile/proxyutil"
 	"tgfile/server/model"
-	"tgfile/utils"
 
 	"github.com/gin-gonic/gin"
 )
@@ -14,12 +13,9 @@ import (
 func GetMetaInfo(c *gin.Context) {
 	ctx := c.Request.Context()
 	key := c.Param("key")
-	fileid, err := utils.DecodeFileId(key)
-	if err != nil {
-		proxyutil.Fail(c, http.StatusBadRequest, fmt.Errorf("decode down key fail, err:%w", err))
-		return
-	}
-	info, err := filemgr.Stat(ctx, fileid)
+	link := defaultUploadPrefix + key
+
+	info, err := filemgr.ResolveLink(ctx, link)
 	if err != nil {
 		proxyutil.Fail(c, http.StatusInternalServerError, fmt.Errorf("read file info fail, err:%w", err))
 		return
@@ -28,9 +24,9 @@ func GetMetaInfo(c *gin.Context) {
 		Item: &model.FileInfoItem{
 			Key:      key,
 			Exist:    true,
-			FileSize: info.Size(),
-			Ctime:    info.ModTime().UnixMilli(),
-			Mtime:    info.ModTime().UnixMilli(),
+			FileSize: info.FileSize,
+			Ctime:    info.Ctime,
+			Mtime:    info.Mtime,
 		},
 	})
 }

@@ -115,14 +115,7 @@ func (f *fileSystemDirEntry) Close() error {
 }
 
 func (f *fileSystemDirEntry) Stat() (fs.FileInfo, error) {
-	return &defaultFileInfo{
-		FieldSize:  0,
-		FieldMtime: time.Time{},
-		FieldName:  filepath.Base(f.fullName),
-		FieldMode:  0755,
-		FieldIsDir: true,
-		FieldSys:   nil,
-	}, nil
+	return &wrapFileMappingItem{ent: f.ent}, nil
 }
 
 func (f *fileSystemDirEntry) Name() string {

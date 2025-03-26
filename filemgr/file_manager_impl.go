@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/fs"
 	"tgfile/blockio"
 	"tgfile/dao"
 	"tgfile/entity"
-	"time"
 
 	"github.com/xxxsen/common/logutil"
 	"go.uber.org/zap"
@@ -99,21 +97,6 @@ func (d *defaultFileManager) Create(ctx context.Context, size int64, reader io.R
 		return 0, fmt.Errorf("finish create file failed, err:%w", err)
 	}
 	return fileid, nil
-}
-
-func (d *defaultFileManager) Stat(ctx context.Context, fileid uint64) (fs.FileInfo, error) {
-	finfo, ok, err := d.internalGetFileInfo(ctx, fileid)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, fmt.Errorf("file not found")
-	}
-	return &defaultFileInfo{
-		FieldSize:  finfo.FileSize,
-		FieldMtime: time.UnixMilli(finfo.Mtime),
-		FieldName:  "noname",
-	}, nil
 }
 
 func (d *defaultFileManager) internalCreateFileDraft(ctx context.Context, filesize int64, filepartcount int32) (uint64, error) {
