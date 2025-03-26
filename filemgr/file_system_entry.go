@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"tgfile/entity"
 	"time"
 )
 
@@ -17,36 +18,25 @@ type fileSystemFileEntry struct {
 	initErr        error
 	streamInitOnce sync.Once
 	ctx            context.Context
-	fileid         uint64
+	ent            *entity.FileMappingItem
 	fullName       string
 }
 
-func newFileSystemFileEntry(ctx context.Context, fullName string, fileid uint64) *fileSystemFileEntry {
+func newFileSystemFileEntry(ctx context.Context, fullName string, ent *entity.FileMappingItem) *fileSystemFileEntry {
 	return &fileSystemFileEntry{
 		ctx:      ctx,
-		fileid:   fileid,
 		fullName: fullName,
+		ent:      ent,
 	}
 }
 
 func (f *fileSystemFileEntry) Stat() (fs.FileInfo, error) {
-	st, err := Stat(f.ctx, f.fileid)
-	if err != nil {
-		return nil, err
-	}
-	return &defaultFileInfo{
-		FieldSize:  st.Size(),
-		FieldMtime: time.Time{},
-		FieldName:  f.fullName,
-		FieldMode:  06744,
-		FieldIsDir: false,
-		FieldSys:   nil,
-	}, nil
+	return &wrapFileMappingItem{ent: f.ent}, nil
 }
 
 func (f *fileSystemFileEntry) tryInitStream() {
 	f.streamInitOnce.Do(func() {
-		f.stream, f.initErr = Open(f.ctx, f.fileid)
+		f.stream, f.initErr = Open(f.ctx, f.ent.FileId)
 	})
 }
 
@@ -94,12 +84,14 @@ func (f *fileSystemFileEntry) Info() (fs.FileInfo, error) {
 type fileSystemDirEntry struct {
 	ctx      context.Context
 	fullName string
+	ent      *entity.FileMappingItem
 }
 
-func newFileSystemDirEntry(ctx context.Context, fullName string) *fileSystemDirEntry {
+func newFileSystemDirEntry(ctx context.Context, fullName string, ent *entity.FileMappingItem) *fileSystemDirEntry {
 	return &fileSystemDirEntry{
 		ctx:      ctx,
 		fullName: fullName,
+		ent:      ent,
 	}
 }
 
@@ -156,36 +148,48 @@ func internalReadDir(ctx context.Context, root string) ([]os.DirEntry, error) {
 	if !strings.HasSuffix(root, "/") {
 		root += "/"
 	}
-	fileEntries := make([]os.DirEntry, 0, 16)
-	dirEntries := make([]os.DirEntry, 0, 16)
-	dirExists := make(map[string]struct{})
+	ents := make([]os.DirEntry, 0, 16)
 
-	err := defaultFileMgr.IterLink(ctx, root, func(ctx context.Context, link string, fileid uint64) (bool, error) {
-		if link == root { //目录本身
+	err := defaultFileMgr.IterLink(ctx, root, func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
+		if ent.IsDir {
+			ents = append(ents, newFileSystemFileEntry(ctx, link, ent))
 			return true, nil
 		}
-		if !strings.HasPrefix(link, root) {
-			return false, nil
-		}
-		relPath := link[len(root):]
-		idx := strings.Index(relPath, "/")
-		if idx < 0 { //没有额外的'/', 那么当前的这个item是文件, 否则是目录
-			fileEntries = append(fileEntries, newFileSystemFileEntry(ctx, link, fileid))
-			return true, nil
-		}
-		dirname := relPath[:idx]
-		if _, ok := dirExists[dirname]; ok { //目录已经处理过了
-			return true, nil
-		}
-		dirExists[dirname] = struct{}{}
-		dirEntries = append(dirEntries, newFileSystemDirEntry(ctx, link[:len(root)+idx]))
+
+		ents = append(ents, newFileSystemDirEntry(ctx, link, ent))
+
 		return true, nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	rs := make([]os.DirEntry, 0, len(fileEntries)+len(dirEntries))
-	rs = append(rs, dirEntries...)
-	rs = append(rs, fileEntries...)
-	return rs, nil
+	return ents, nil
+}
+
+type wrapFileMappingItem struct {
+	ent *entity.FileMappingItem
+}
+
+func (w *wrapFileMappingItem) Name() string {
+	return w.ent.FileName
+}
+
+func (w *wrapFileMappingItem) Size() int64 {
+	return w.ent.FileSize
+}
+
+func (w *wrapFileMappingItem) Mode() fs.FileMode {
+	return fs.FileMode(w.ent.Mode)
+}
+
+func (w *wrapFileMappingItem) ModTime() time.Time {
+	return time.UnixMilli(w.ent.Mtime)
+}
+
+func (w *wrapFileMappingItem) IsDir() bool {
+	return w.ent.IsDir
+}
+
+func (w *wrapFileMappingItem) Sys() any {
+	return w.ent
 }

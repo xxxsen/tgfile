@@ -43,7 +43,7 @@ func (f *filePartDaoImpl) CreateFilePart(ctx context.Context, req *entity.Create
 		return nil, err
 	}
 	_, insertErr := db.GetClient().ExecContext(ctx, sql, args...)
-	if err == nil {
+	if insertErr == nil {
 		return nil, insertErr
 	}
 	where := map[string]interface{}{

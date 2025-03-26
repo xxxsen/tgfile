@@ -27,24 +27,25 @@ func (d *defaultFileManager) CreateLink(ctx context.Context, link string, fileid
 		FileName: link,
 		FileId:   fileid,
 		FileSize: size,
+		IsDir:    false,
 	})
 	return err
 }
 
-func (d *defaultFileManager) ResolveLink(ctx context.Context, link string) (uint64, error) {
+func (d *defaultFileManager) ResolveLink(ctx context.Context, link string) (*entity.FileMappingItem, error) {
 	fid, ok, err := d.internalGetFileMapping(ctx, link)
 	if err != nil {
-		return 0, fmt.Errorf("open mapping failed, err:%w", err)
+		return nil, fmt.Errorf("open mapping failed, err:%w", err)
 	}
 	if !ok {
-		return 0, fmt.Errorf("link not found")
+		return nil, fmt.Errorf("link not found")
 	}
 	return fid, nil
 }
 
 func (d *defaultFileManager) IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error {
-	return d.fileMappingDao.IterFileMapping(ctx, prefix, func(ctx context.Context, name string, fileid uint64) (bool, error) {
-		return cb(ctx, name, fileid)
+	return d.fileMappingDao.IterFileMapping(ctx, prefix, func(ctx context.Context, name string, ent *entity.FileMappingItem) (bool, error) {
+		return cb(ctx, name, ent)
 	})
 }
 
@@ -174,17 +175,17 @@ func (d *defaultFileManager) internalGetFilePartInfo(ctx context.Context, fileid
 	return rs.List[0], true, nil
 }
 
-func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filename string) (uint64, bool, error) {
+func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filename string) (*entity.FileMappingItem, bool, error) {
 	rsp, ok, err := d.fileMappingDao.GetFileMapping(ctx, &entity.GetFileMappingRequest{
 		FileName: filename,
 	})
 	if err != nil {
-		return 0, false, err
+		return nil, false, err
 	}
 	if !ok {
-		return 0, false, nil
+		return nil, false, nil
 	}
-	return rsp.Item.FileId, true, nil
+	return rsp.Item, true, nil
 }
 
 func NewFileManager(bkio blockio.IBlockIO) IFileManager {

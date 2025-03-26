@@ -10,11 +10,7 @@ import (
 	"tgfile/webdav"
 )
 
-const (
-	defaultFileMappingPrefix = "tgfile:mapping:"
-)
-
-type IterFileMappingFunc func(ctx context.Context, name string, fileid uint64) (bool, error)
+type IterFileMappingFunc func(ctx context.Context, name string, ent *entity.FileMappingItem) (bool, error)
 
 type IFileMappingDao interface {
 	GetFileMapping(ctx context.Context, req *entity.GetFileMappingRequest) (*entity.GetFileMappingResponse, bool, error)
@@ -80,7 +76,14 @@ func (f *fileMappingDao) IterFileMapping(ctx context.Context, prefix string, cb 
 		if err != nil {
 			return err
 		}
-		next, err := cb(ctx, filepath.Join(prefix, item.Name), fid)
+		next, err := cb(ctx, filepath.Join(prefix, item.Name), &entity.FileMappingItem{
+			FileName: item.Name,
+			FileId:   fid,
+			FileSize: item.Size,
+			Ctime:    item.Ctime,
+			Mtime:    item.Mtime,
+			IsDir:    item.IsDir,
+		})
 		if err != nil {
 			return err
 		}

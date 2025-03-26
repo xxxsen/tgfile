@@ -4,9 +4,10 @@ import (
 	"context"
 	"io"
 	"io/fs"
+	"tgfile/entity"
 )
 
-type IterLinkFunc func(ctx context.Context, link string, fileid uint64) (bool, error)
+type IterLinkFunc func(ctx context.Context, link string, item *entity.FileMappingItem) (bool, error)
 
 var defaultFileMgr IFileManager
 
@@ -15,7 +16,7 @@ type IFileManager interface {
 	Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error)
 	Create(ctx context.Context, size int64, r io.Reader) (uint64, error)
 	CreateLink(ctx context.Context, link string, fileid uint64, size int64) error
-	ResolveLink(ctx context.Context, link string) (uint64, error)
+	ResolveLink(ctx context.Context, link string) (*entity.FileMappingItem, error)
 	IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error
 }
 
@@ -39,7 +40,7 @@ func CreateLink(ctx context.Context, link string, fileid uint64, size int64) err
 	return defaultFileMgr.CreateLink(ctx, link, fileid, size)
 }
 
-func ResolveLink(ctx context.Context, link string) (uint64, error) {
+func ResolveLink(ctx context.Context, link string) (*entity.FileMappingItem, error) {
 	return defaultFileMgr.ResolveLink(ctx, link)
 }
 
