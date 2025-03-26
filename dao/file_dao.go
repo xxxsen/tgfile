@@ -55,7 +55,7 @@ func (f *fileDaoImpl) CreateFileDraft(ctx context.Context, req *entity.CreateFil
 }
 
 func (f *fileDaoImpl) MarkFileReady(ctx context.Context, req *entity.MarkFileReadyRequest) (*entity.MarkFileReadyResponse, error) {
-	if err := kv.OnGetJsonKeyForUpdate(ctx, db.GetClient(), f.table(), f.buildKey(req.FileID), func(ctx context.Context, key string, val *entity.FileInfoItem) (*entity.FileInfoItem, bool, error) {
+	if err := kv.OnGetJsonKeyForUpdate(ctx, db.GetClient(), f.table(), f.buildKey(req.FileID), 0, func(ctx context.Context, key string, val *entity.FileInfoItem) (*entity.FileInfoItem, bool, error) {
 		if val.FileState != constant.FileStateInit {
 			return nil, false, fmt.Errorf("file not in init state, current state:%d", val.FileState)
 		}
