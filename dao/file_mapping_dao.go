@@ -2,11 +2,12 @@ package dao
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
+	"strconv"
 	"tgfile/db"
 	"tgfile/entity"
-	"time"
-
-	"github.com/xxxsen/common/database/kv"
+	"tgfile/webdav"
 )
 
 const (
@@ -22,10 +23,17 @@ type IFileMappingDao interface {
 }
 
 type fileMappingDao struct {
+	dav webdav.IWebdav
 }
 
 func NewFileMappingDao() IFileMappingDao {
-	return &fileMappingDao{}
+	d := &fileMappingDao{}
+	inst, err := webdav.NewEnumWebdav(db.GetClient(), d.table())
+	if err != nil {
+		panic(err)
+	}
+	d.dav = inst
+	return d
 }
 
 func (f *fileMappingDao) table() string {
@@ -37,32 +45,48 @@ func (f *fileMappingDao) buildKey(name string) string {
 }
 
 func (f *fileMappingDao) GetFileMapping(ctx context.Context, req *entity.GetFileMappingRequest) (*entity.GetFileMappingResponse, bool, error) {
-	item, ok, err := kv.GetJsonObject[entity.FileMappingItem](ctx, db.GetClient(), f.table(), f.buildKey(req.FileName))
+	ent, err := f.dav.Stat(ctx, req.FileName)
 	if err != nil {
 		return nil, false, err
 	}
-	if !ok {
-		return nil, false, nil
+	fileid, err := strconv.ParseUint(ent.RefData, 0, 64)
+	if err != nil {
+		return nil, false, err
+	}
+	item := &entity.FileMappingItem{
+		FileName: req.FileName,
+		FileId:   fileid,
+		Ctime:    ent.Ctime,
+		Mtime:    ent.Mtime,
+		FileSize: ent.Size,
 	}
 	return &entity.GetFileMappingResponse{Item: item}, true, nil
 }
 
 func (f *fileMappingDao) CreateFileMapping(ctx context.Context, req *entity.CreateFileMappingRequest) (*entity.CreateFileMappingResponse, error) {
-	now := time.Now().UnixMilli()
-	item := &entity.FileMappingItem{
-		FileName: req.FileName,
-		FileId:   req.FileId,
-		Ctime:    uint64(now),
-		Mtime:    uint64(now),
-	}
-	if err := kv.SetJsonObject(ctx, db.GetClient(), f.table(), f.buildKey(req.FileName), item); err != nil {
+	if err := f.dav.Create(ctx, req.FileName, req.FileSize, fmt.Sprintf("%d", req.FileId)); err != nil {
 		return nil, err
 	}
 	return &entity.CreateFileMappingResponse{}, nil
 }
 
 func (f *fileMappingDao) IterFileMapping(ctx context.Context, prefix string, cb IterFileMappingFunc) error {
-	return kv.IterJsonObject(ctx, db.GetClient(), f.table(), defaultFileMappingPrefix+prefix, func(ctx context.Context, key string, val *entity.FileMappingItem) (bool, error) {
-		return cb(ctx, val.FileName, val.FileId)
-	})
+	ents, err := f.dav.List(ctx, prefix)
+	if err != nil {
+		return err
+	}
+	for _, item := range ents {
+		fid, err := strconv.ParseUint(item.RefData, 10, 64)
+		if err != nil {
+			return err
+		}
+		next, err := cb(ctx, filepath.Join(prefix, item.Name), fid)
+		if err != nil {
+			return err
+		}
+		if !next {
+			break
+		}
+	}
+	return nil
 }

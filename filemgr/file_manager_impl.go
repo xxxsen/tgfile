@@ -22,10 +22,11 @@ type defaultFileManager struct {
 	bkio           blockio.IBlockIO
 }
 
-func (d *defaultFileManager) CreateLink(ctx context.Context, link string, fileid uint64) error {
+func (d *defaultFileManager) CreateLink(ctx context.Context, link string, fileid uint64, size int64) error {
 	_, err := d.fileMappingDao.CreateFileMapping(ctx, &entity.CreateFileMappingRequest{
 		FileName: link,
 		FileId:   fileid,
+		FileSize: size,
 	})
 	return err
 }

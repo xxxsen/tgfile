@@ -14,7 +14,7 @@ type IFileManager interface {
 	Stat(ctx context.Context, fileid uint64) (fs.FileInfo, error)
 	Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error)
 	Create(ctx context.Context, size int64, r io.Reader) (uint64, error)
-	CreateLink(ctx context.Context, link string, fileid uint64) error
+	CreateLink(ctx context.Context, link string, fileid uint64, size int64) error
 	ResolveLink(ctx context.Context, link string) (uint64, error)
 	IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error
 }
@@ -35,8 +35,8 @@ func Create(ctx context.Context, size int64, r io.Reader) (uint64, error) {
 	return defaultFileMgr.Create(ctx, size, r)
 }
 
-func CreateLink(ctx context.Context, link string, fileid uint64) error {
-	return defaultFileMgr.CreateLink(ctx, link, fileid)
+func CreateLink(ctx context.Context, link string, fileid uint64, size int64) error {
+	return defaultFileMgr.CreateLink(ctx, link, fileid, size)
 }
 
 func ResolveLink(ctx context.Context, link string) (uint64, error) {
