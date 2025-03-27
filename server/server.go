@@ -9,6 +9,7 @@ import (
 	"tgfile/server/handler/backup"
 	"tgfile/server/handler/file"
 	"tgfile/server/handler/s3"
+	"tgfile/server/handler/webdav"
 	"tgfile/server/middleware"
 	"tgfile/server/model"
 
@@ -77,6 +78,17 @@ func (s *Server) initAPI(router *gin.Engine) {
 			bucketRouter.GET("/*object", s3.DownloadObject)
 			bucketRouter.PUT("/*object", mustAuthMiddleware, s3.UploadObject)
 		}
+	}
+	webdavRouter := router.Group("/webdav")
+	{
+		webdavRouter.GET("/*file", webdav.Get)
+		webdavRouter.PUT("/*file", webdav.Put)
+		webdavRouter.HEAD("*file", webdav.Head)
+		webdavRouter.Handle("MKCOL", "/*file", webdav.Mkcol)
+		webdavRouter.Handle("PROPFIND", "/*file", webdav.Propfind)
+		webdavRouter.Handle("COPY", "/*file", webdav.Copy)
+		webdavRouter.Handle("MOVE", "/*file", webdav.Move)
+		webdavRouter.Handle("PROPATCH", "/*file", webdav.Propatch)
 	}
 }
 func (s *Server) Run() error {

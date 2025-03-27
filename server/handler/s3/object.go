@@ -36,7 +36,7 @@ func UploadObject(c *gin.Context) {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("do file upload fail, err:%w", err))
 		return
 	}
-	if err := filemgr.CreateLink(ctx, filename, fileid, c.Request.ContentLength); err != nil {
+	if err := filemgr.CreateLink(ctx, filename, fileid, c.Request.ContentLength, false); err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("create mapping fail, err:%w", err))
 		return
 	}

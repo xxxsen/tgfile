@@ -33,7 +33,7 @@ func FileUpload(c *gin.Context, ctx context.Context, request interface{}) {
 	key := utils.EncodeFileId(fileid)
 
 	path := defaultUploadPrefix + key
-	if err := filemgr.CreateLink(ctx, path, fileid, header.Size); err != nil {
+	if err := filemgr.CreateLink(ctx, path, fileid, header.Size, false); err != nil {
 		proxyutil.Fail(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
 		return
 	}
