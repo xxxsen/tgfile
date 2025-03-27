@@ -6,8 +6,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"tgfile/db"
+	"tgfile/directory"
 	"tgfile/entity"
-	"tgfile/webdav"
+
+	"github.com/xxxsen/common/idgen"
 )
 
 type IterFileMappingFunc func(ctx context.Context, name string, ent *entity.FileMappingItem) (bool, error)
@@ -19,16 +21,16 @@ type IFileMappingDao interface {
 }
 
 type fileMappingDao struct {
-	dav webdav.IWebdav
+	dir directory.IDirectory
 }
 
 func NewFileMappingDao() IFileMappingDao {
 	d := &fileMappingDao{}
-	inst, err := webdav.NewEnumWebdav(db.GetClient(), d.table())
+	dir, err := directory.NewDBDirectory(db.GetClient(), d.table(), idgen.Default().NextId)
 	if err != nil {
 		panic(err)
 	}
-	d.dav = inst
+	d.dir = dir
 	return d
 }
 
@@ -37,7 +39,7 @@ func (f *fileMappingDao) table() string {
 }
 
 func (f *fileMappingDao) GetFileMapping(ctx context.Context, req *entity.GetFileMappingRequest) (*entity.GetFileMappingResponse, bool, error) {
-	ent, err := f.dav.Stat(ctx, req.FileName)
+	ent, err := f.dir.Stat(ctx, req.FileName)
 	if err != nil {
 		return nil, false, err
 	}
@@ -58,13 +60,13 @@ func (f *fileMappingDao) GetFileMapping(ctx context.Context, req *entity.GetFile
 }
 
 func (f *fileMappingDao) CreateFileMapping(ctx context.Context, req *entity.CreateFileMappingRequest) (*entity.CreateFileMappingResponse, error) {
-	if err := f.dav.Create(ctx, req.FileName, req.FileSize, fmt.Sprintf("%d", req.FileId)); err != nil {
+	if err := f.dir.Create(ctx, req.FileName, req.FileSize, fmt.Sprintf("%d", req.FileId)); err != nil {
 		return nil, err
 	}
 	return &entity.CreateFileMappingResponse{}, nil
 }
 
-func (f *fileMappingDao) retrieveFileId(ent *webdav.WebEntry) (uint64, error) {
+func (f *fileMappingDao) retrieveFileId(ent *directory.DirectoryEntry) (uint64, error) {
 	if ent.IsDir {
 		return 0, nil
 	}
@@ -72,7 +74,7 @@ func (f *fileMappingDao) retrieveFileId(ent *webdav.WebEntry) (uint64, error) {
 }
 
 func (f *fileMappingDao) IterFileMapping(ctx context.Context, prefix string, cb IterFileMappingFunc) error {
-	ents, err := f.dav.List(ctx, prefix)
+	ents, err := f.dir.List(ctx, prefix)
 	if err != nil {
 		return err
 	}

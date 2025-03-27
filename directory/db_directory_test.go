@@ -1,4 +1,4 @@
-package webdav
+package directory
 
 import (
 	"context"
@@ -9,12 +9,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/xxxsen/common/database"
 	"github.com/xxxsen/common/database/sqlite"
+	"github.com/xxxsen/common/idgen"
 )
 
 var (
 	dbfile = "/tmp/sqlite_webdav_test.db"
 	db     database.IDatabase
-	dav    IWebdav
+	dav    IDirectory
 )
 
 func setup() {
@@ -24,7 +25,7 @@ func setup() {
 	if err != nil {
 		panic(err)
 	}
-	dav, err = NewEnumWebdav(db, "t_test_tab")
+	dav, err = NewDBDirectory(db, "t_test_tab", idgen.Default().NextId)
 	if err != nil {
 		panic(err)
 	}

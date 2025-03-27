@@ -1,4 +1,4 @@
-package webdav
+package directory
 
 const (
 	defaultFileKindDir  = 1
@@ -6,5 +6,5 @@ const (
 )
 
 const (
-	defaultWebdavFileMode = 0755
+	defaultEntryFileMode = 0755
 )

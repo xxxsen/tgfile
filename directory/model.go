@@ -1,6 +1,6 @@
-package webdav
+package directory
 
-type webdavEntryTab struct {
+type directoryEntryTab struct {
 	Id            uint64 `json:"id"`
 	EntryId       uint64 `json:"entry_id"`
 	ParentEntryId uint64 `json:"parent_entry_id"`
