@@ -51,13 +51,16 @@ func propFindEntries(ctx context.Context, filename string, depth int) ([]*entity
 		return []*entity.FileMappingItem{info}, filepath.Dir(filename), nil
 	}
 	rs := make([]*entity.FileMappingItem, 0, 32)
+	//TODO: 优化这里
+	rs = append(rs, info) //必须包含自身
 	if err := filemgr.IterLink(ctx, filename, func(ctx context.Context, link string, item *entity.FileMappingItem) (bool, error) {
 		rs = append(rs, item)
 		return true, nil
 	}); err != nil {
 		return nil, "", err
 	}
-	sort.Slice(rs, func(i, j int) bool {
+	//TODO: 优化这里
+	sort.Slice(rs[1:], func(i, j int) bool {
 		left := 0
 		right := 0
 		if rs[i].IsDir {
@@ -77,10 +80,17 @@ func generatePropfindResponse(prefix string, ents []*entity.FileMappingItem) *mo
 
 func convertToMultistatus(files []*entity.FileMappingItem, basePath string) *model.Multistatus {
 	responses := []model.Response{}
-
-	for _, file := range files {
+	//TODO: 优化这块代码, webdav如果为目录且depth为1的场景下, 那么需要将目录自身也加到返回的列表中
+	for idx, file := range files {
+		filename := file.FileName
+		if idx > 0 {
+			filename = filepath.Join(basePath, file.FileName)
+		}
+		if file.IsDir && !strings.HasSuffix(filename, "/") {
+			filename += "/"
+		}
 		resp := model.Response{
-			Href: filepath.Join(basePath, file.FileName),
+			Href: filename,
 			Propstat: model.Propstat{
 				Prop: model.Prop{
 					DisplayName:  file.FileName,
@@ -93,9 +103,6 @@ func convertToMultistatus(files []*entity.FileMappingItem, basePath string) *mod
 
 		if file.IsDir {
 			resp.Propstat.Prop.ResourceType.Collection = " "
-			if !strings.HasSuffix(resp.Href, "/") {
-				resp.Href += "/"
-			}
 		} else {
 			resp.Propstat.Prop.ContentLength = file.FileSize
 			contentType := "application/octet-stream" // 默认文件类型
