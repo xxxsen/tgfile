@@ -82,8 +82,8 @@ func (s *Server) initAPI(router *gin.Engine) {
 	webdavRouter := router.Group("/webdav")
 	{
 		for _, method := range webdav.AllowMethods {
-			webdavRouter.Handle(method, "", webdav.Handler)
-			webdavRouter.Handle(method, "/*file", webdav.Handler)
+			webdavRouter.Handle(method, "/*all", webdav.Handler)
+			//webdavRouter.Handle(method, "/*file", webdav.Handler)
 		}
 	}
 }

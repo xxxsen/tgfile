@@ -2,9 +2,10 @@ package webdav
 
 import (
 	"context"
-	"encoding/xml"
 	"net/http"
 	"path/filepath"
+	"sort"
+	"strings"
 	"tgfile/entity"
 	"tgfile/filemgr"
 	"tgfile/server/model"
@@ -27,25 +28,9 @@ func handlePropfind(c *gin.Context) {
 		return
 	}
 	res := generatePropfindResponse(prefix, entries)
-	if err := writeAsXml(c, res); err != nil {
+	if err := writeDavResponse(c, res); err != nil {
 		logutil.GetLogger(ctx).Error("write as xml failed", zap.Error(err))
 	}
-}
-
-func writeAsXml(c *gin.Context, res *model.Multistatus) error {
-	res.XMLNS = "DAV:"
-	c.Status(http.StatusMultiStatus)
-	if _, err := c.Writer.Write([]byte(xml.Header)); err != nil {
-		return err
-	}
-	raw, err := xml.Marshal(res)
-	if err != nil {
-		return err
-	}
-	if _, err := c.Writer.Write(raw); err != nil {
-		return err
-	}
-	return nil
 }
 
 func propFindEntries(ctx context.Context, filename string) ([]*entity.FileMappingItem, string, error) {
@@ -64,6 +49,17 @@ func propFindEntries(ctx context.Context, filename string) ([]*entity.FileMappin
 	}); err != nil {
 		return nil, "", err
 	}
+	sort.Slice(rs, func(i, j int) bool {
+		left := 0
+		right := 0
+		if rs[i].IsDir {
+			left = 1
+		}
+		if rs[j].IsDir {
+			right = 1
+		}
+		return left < right
+	})
 	return rs, filename, nil
 }
 
@@ -89,6 +85,9 @@ func convertToMultistatus(files []*entity.FileMappingItem, basePath string) *mod
 
 		if file.IsDir {
 			resp.Propstat.Prop.ResourceType.Collection = " "
+			if !strings.HasSuffix(resp.Href, "/") {
+				resp.Href += "/"
+			}
 		} else {
 			resp.Propstat.Prop.ContentLength = file.FileSize
 			contentType := "application/octet-stream" // 默认文件类型
@@ -98,5 +97,5 @@ func convertToMultistatus(files []*entity.FileMappingItem, basePath string) *mod
 		responses = append(responses, resp)
 	}
 
-	return &model.Multistatus{Responses: responses}
+	return &model.Multistatus{Responses: responses, XMLNS: "DAV:"}
 }

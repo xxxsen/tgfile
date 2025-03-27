@@ -1,7 +1,9 @@
 package webdav
 
 import (
+	"encoding/xml"
 	"net/http"
+	"tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/logutil"
@@ -32,4 +34,16 @@ func Handler(c *gin.Context) {
 		c.AbortWithStatus(http.StatusForbidden)
 		logutil.GetLogger(c.Request.Context()).Error("unsupported method", zap.String("method", c.Request.Method))
 	}
+}
+
+func writeDavResponse(c *gin.Context, res *model.Multistatus) error {
+	c.Status(http.StatusMultiStatus)
+	if _, err := c.Writer.Write([]byte(xml.Header)); err != nil {
+		return err
+	}
+	raw, _ := xml.Marshal(res)
+	if _, err := c.Writer.Write(raw); err != nil {
+		return err
+	}
+	return nil
 }

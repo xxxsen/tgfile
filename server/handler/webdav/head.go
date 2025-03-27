@@ -20,12 +20,17 @@ func handleHead(c *gin.Context) {
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
-	if item.IsDir {
-		logutil.GetLogger(ctx).Error("cant open stream on dir", zap.Error(err))
-		c.AbortWithStatus(http.StatusMethodNotAllowed)
-		return
+	// if item.IsDir {
+	// 	logutil.GetLogger(ctx).Error("cant open stream on dir", zap.Error(err))
+	// 	c.AbortWithStatus(http.StatusMethodNotAllowed)
+	// 	return
+	// }
+	if !item.IsDir {
+		c.Writer.Header().Set("Content-Length", strconv.FormatInt(item.FileSize, 10))
 	}
-	c.Writer.Header().Set("Content-Length", strconv.FormatInt(item.FileSize, 10))
+	if item.IsDir {
+		c.Writer.Header().Set("Content-Type", "text/plain")
+	}
 	//TODO: try set etag...
 	c.Writer.Header().Set("Last-Modified", time.UnixMilli(item.Mtime).UTC().Format(http.TimeFormat))
 }
