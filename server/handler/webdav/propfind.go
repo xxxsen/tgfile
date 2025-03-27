@@ -2,6 +2,7 @@ package webdav
 
 import (
 	"context"
+	"encoding/xml"
 	"net/http"
 	"path/filepath"
 	"tgfile/entity"
@@ -26,7 +27,25 @@ func handlePropfind(c *gin.Context) {
 		return
 	}
 	res := generatePropfindResponse(prefix, entries)
-	c.XML(http.StatusMultiStatus, res)
+	if err := writeAsXml(c, res); err != nil {
+		logutil.GetLogger(ctx).Error("write as xml failed", zap.Error(err))
+	}
+}
+
+func writeAsXml(c *gin.Context, res *model.Multistatus) error {
+	res.XMLNS = "DAV:"
+	c.Status(http.StatusMultiStatus)
+	if _, err := c.Writer.Write([]byte(xml.Header)); err != nil {
+		return err
+	}
+	raw, err := xml.Marshal(res)
+	if err != nil {
+		return err
+	}
+	if _, err := c.Writer.Write(raw); err != nil {
+		return err
+	}
+	return nil
 }
 
 func propFindEntries(ctx context.Context, filename string) ([]*entity.FileMappingItem, string, error) {
@@ -69,7 +88,7 @@ func convertToMultistatus(files []*entity.FileMappingItem, basePath string) *mod
 		}
 
 		if file.IsDir {
-			resp.Propstat.Prop.ResourceType.Collection = ""
+			resp.Propstat.Prop.ResourceType.Collection = " "
 		} else {
 			resp.Propstat.Prop.ContentLength = file.FileSize
 			contentType := "application/octet-stream" // 默认文件类型

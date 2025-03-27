@@ -5,6 +5,7 @@ import "encoding/xml"
 // Multistatus 是 WebDAV 返回的根结构
 type Multistatus struct {
 	XMLName   xml.Name   `xml:"D:multistatus"`
+	XMLNS     string     `xml:"xmlns:D,attr"`
 	Responses []Response `xml:"D:response"`
 }
 
