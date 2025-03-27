@@ -166,7 +166,7 @@ func (e *dbDirectory) listAllDir(ctx context.Context, q database.IQueryExecer, p
 	return rs, nil
 }
 
-func (e *dbDirectory) onSelectDir(ctx context.Context, dir string, cb onSelectDirFunc) error {
+func (e *dbDirectory) onSelectDir(ctx context.Context, dir string, allowCreate bool, cb onSelectDirFunc) error {
 	//逐级查找并创建目录, 返回最后的目录的id
 	items, err := e.rebuildDirItems(dir)
 	if err != nil {
@@ -183,6 +183,9 @@ func (e *dbDirectory) onSelectDir(ctx context.Context, dir string, cb onSelectDi
 				return err
 			}
 			if !ok {
+				if !allowCreate {
+					return fmt.Errorf("dir not found")
+				}
 				pid, err := e.createDir(ctx, qe, parentid, item)
 				if err != nil {
 					return err
@@ -203,9 +206,8 @@ func (e *dbDirectory) onSelectDir(ctx context.Context, dir string, cb onSelectDi
 }
 
 func (e *dbDirectory) Mkdir(ctx context.Context, dir string) error {
-	pdir := filepath.Dir(dir)
-	name := filepath.Base(dir)
-	if err := e.onSelectDir(ctx, pdir, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
+	pdir, name := e.splitFilename(dir)
+	if err := e.onSelectDir(ctx, pdir, true, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
 		exist, err := e.isEntryExist(ctx, tx, parentid, name)
 		if err != nil {
 			return err
@@ -239,7 +241,7 @@ func (e *dbDirectory) Remove(ctx context.Context, filename string) error {
 func (e *dbDirectory) Create(ctx context.Context, filename string, size int64, refdata string) error {
 	filename = strings.TrimSuffix(filename, "/")
 	dir, name := e.splitFilename(filename)
-	if err := e.onSelectDir(ctx, dir, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
+	if err := e.onSelectDir(ctx, dir, true, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
 		exist, err := e.isEntryExist(ctx, tx, parentid, name)
 		if err != nil {
 			return err
@@ -268,7 +270,7 @@ func (e *dbDirectory) Create(ctx context.Context, filename string, size int64, r
 
 func (e *dbDirectory) List(ctx context.Context, dir string) ([]*DirectoryEntry, error) {
 	var rs []*DirectoryEntry
-	if err := e.onSelectDir(ctx, dir, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
+	if err := e.onSelectDir(ctx, dir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
 		items, err := e.listAllDir(ctx, tx, parentid)
 		if err != nil {
 			return err
@@ -297,7 +299,7 @@ func (e *dbDirectory) Stat(ctx context.Context, filename string) (*DirectoryEntr
 		}, nil
 	}
 	var rs *DirectoryEntry
-	if err := e.onSelectDir(ctx, dir, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
+	if err := e.onSelectDir(ctx, dir, true, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
 		t, ok, err := e.searchEntry(ctx, tx, parentid, name)
 		if err != nil {
 			return err

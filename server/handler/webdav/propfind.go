@@ -21,7 +21,12 @@ import (
 func handlePropfind(c *gin.Context) {
 	ctx := c.Request.Context()
 	file := c.Request.URL.Path
-	entries, prefix, err := propFindEntries(ctx, file)
+	var depth int = 0
+	if c.GetHeader("Depth") == "1" {
+		depth = 1
+	}
+	logutil.GetLogger(ctx).Debug("get propfind request", zap.String("file", file), zap.Int("depth", depth))
+	entries, prefix, err := propFindEntries(ctx, file, depth)
 	if err != nil {
 		logutil.GetLogger(ctx).Error("propfind link failed", zap.String("link", file), zap.Error(err))
 		c.AbortWithStatus(http.StatusInternalServerError)
@@ -30,16 +35,19 @@ func handlePropfind(c *gin.Context) {
 	res := generatePropfindResponse(prefix, entries)
 	if err := writeDavResponse(c, res); err != nil {
 		logutil.GetLogger(ctx).Error("write as xml failed", zap.Error(err))
+		return
 	}
+	logutil.GetLogger(ctx).Debug("return resource count", zap.Int("count", len(entries)))
+
 }
 
-func propFindEntries(ctx context.Context, filename string) ([]*entity.FileMappingItem, string, error) {
+func propFindEntries(ctx context.Context, filename string, depth int) ([]*entity.FileMappingItem, string, error) {
 	info, err := filemgr.ResolveLink(ctx, filename)
 	if err != nil {
 		return nil, "", err
 	}
 
-	if !info.IsDir {
+	if !info.IsDir || depth == 0 {
 		return []*entity.FileMappingItem{info}, filepath.Dir(filename), nil
 	}
 	rs := make([]*entity.FileMappingItem, 0, 32)
