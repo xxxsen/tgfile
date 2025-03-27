@@ -237,9 +237,7 @@ func (e *dbDirectory) Remove(ctx context.Context, filename string) error {
 }
 
 func (e *dbDirectory) Create(ctx context.Context, filename string, size int64, refdata string) error {
-	if strings.HasSuffix(filename, "/") {
-		return fmt.Errorf("filename should not endswith '/'")
-	}
+	filename = strings.TrimSuffix(filename, "/")
 	dir, name := e.splitFilename(filename)
 	if err := e.onSelectDir(ctx, dir, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
 		exist, err := e.isEntryExist(ctx, tx, parentid, name)

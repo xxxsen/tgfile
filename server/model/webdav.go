@@ -2,32 +2,34 @@ package model
 
 import "encoding/xml"
 
-// Multistatus represents the root element in a WebDAV PROPFIND response
+// Multistatus 是 WebDAV 返回的根结构
 type Multistatus struct {
 	XMLName   xml.Name   `xml:"D:multistatus"`
 	Responses []Response `xml:"D:response"`
 }
 
-// Response represents an individual resource in the WebDAV response
+// Response 代表每个文件或目录的信息
 type Response struct {
-	Href      string     `xml:"D:href"`
-	Propstats []Propstat `xml:"D:propstat"`
+	Href     string   `xml:"D:href"`
+	Propstat Propstat `xml:"D:propstat"`
 }
 
-// Propstat represents the property and status of a resource
+// Propstat 包含资源的属性和状态
 type Propstat struct {
 	Prop   Prop   `xml:"D:prop"`
 	Status string `xml:"D:status"`
 }
 
-// Prop represents the properties of a resource
+// Prop 存储 WebDAV 资源的各种属性
 type Prop struct {
-	DisplayName   string       `xml:"D:displayname,omitempty"`
-	ContentLength string       `xml:"D:getcontentlength,omitempty"`
-	ResourceType  ResourceType `xml:"D:resourcetype,omitempty"`
+	DisplayName   string       `xml:"D:displayname"`
+	LastModified  string       `xml:"D:getlastmodified"`
+	ContentLength int64        `xml:"D:getcontentlength,omitempty"`
+	ContentType   string       `xml:"D:getcontenttype,omitempty"`
+	ResourceType  ResourceType `xml:"D:resourcetype"`
 }
 
-// ResourceType represents whether the resource is a collection or not
+// ResourceType 用于区分文件和目录
 type ResourceType struct {
 	Collection string `xml:"D:collection,omitempty"`
 }

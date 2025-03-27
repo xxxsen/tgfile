@@ -60,6 +60,12 @@ func (f *fileMappingDao) GetFileMapping(ctx context.Context, req *entity.GetFile
 }
 
 func (f *fileMappingDao) CreateFileMapping(ctx context.Context, req *entity.CreateFileMappingRequest) (*entity.CreateFileMappingResponse, error) {
+	if req.IsDir {
+		if err := f.dir.Mkdir(ctx, req.FileName); err != nil {
+			return nil, err
+		}
+		return &entity.CreateFileMappingResponse{}, nil
+	}
 	if err := f.dir.Create(ctx, req.FileName, req.FileSize, fmt.Sprintf("%d", req.FileId)); err != nil {
 		return nil, err
 	}

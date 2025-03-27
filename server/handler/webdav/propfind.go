@@ -4,10 +4,10 @@ import (
 	"context"
 	"net/http"
 	"path/filepath"
-	"strconv"
 	"tgfile/entity"
 	"tgfile/filemgr"
 	"tgfile/server/model"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/logutil"
@@ -49,31 +49,35 @@ func propFindEntries(ctx context.Context, filename string) ([]*entity.FileMappin
 }
 
 func generatePropfindResponse(prefix string, ents []*entity.FileMappingItem) *model.Multistatus {
-	rs := &model.Multistatus{}
-	for _, item := range ents {
-		rs.Responses = append(rs.Responses, convertFileMappingItemToXmlResponse(prefix, item))
-	}
-	return rs
+	return convertToMultistatus(ents, prefix)
 }
 
-func convertFileMappingItemToXmlResponse(prefix string, f *entity.FileMappingItem) model.Response {
-	prop := model.Prop{
-		DisplayName: filepath.Join(prefix, f.FileName),
-	}
+func convertToMultistatus(files []*entity.FileMappingItem, basePath string) *model.Multistatus {
+	responses := []model.Response{}
 
-	if f.IsDir {
-		prop.ResourceType = model.ResourceType{Collection: ""}
-	} else {
-		prop.ContentLength = strconv.FormatInt(f.FileSize, 10)
-	}
-
-	return model.Response{
-		Href: f.FileName,
-		Propstats: []model.Propstat{
-			{
-				Prop:   prop,
+	for _, file := range files {
+		resp := model.Response{
+			Href: filepath.Join(basePath, file.FileName),
+			Propstat: model.Propstat{
+				Prop: model.Prop{
+					DisplayName:  file.FileName,
+					LastModified: time.UnixMilli(file.Mtime).Format(http.TimeFormat),
+					ResourceType: model.ResourceType{},
+				},
 				Status: "HTTP/1.1 200 OK",
 			},
-		},
+		}
+
+		if file.IsDir {
+			resp.Propstat.Prop.ResourceType.Collection = ""
+		} else {
+			resp.Propstat.Prop.ContentLength = file.FileSize
+			contentType := "application/octet-stream" // 默认文件类型
+			resp.Propstat.Prop.ContentType = contentType
+		}
+
+		responses = append(responses, resp)
 	}
+
+	return &model.Multistatus{Responses: responses}
 }
