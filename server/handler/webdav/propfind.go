@@ -16,7 +16,7 @@ import (
 
 // 部分代码参考: https://github.com/emersion/go-webdav
 
-func Propfind(c *gin.Context) {
+func handlePropfind(c *gin.Context) {
 	ctx := c.Request.Context()
 	file := c.Request.URL.Path
 	entries, prefix, err := propFindEntries(ctx, file)

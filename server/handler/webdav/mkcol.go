@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func Mkcol(c *gin.Context) {
+func handleMkcol(c *gin.Context) {
 	ctx := c.Request.Context()
 	if len(c.GetHeader("Content-Type")) != 0 || c.Request.ContentLength != 0 {
 		logutil.GetLogger(ctx).Error("could not mkcol on file")

@@ -6,6 +6,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func Move(c *gin.Context) {
+func handleMove(c *gin.Context) {
 	c.AbortWithStatus(http.StatusForbidden)
 }

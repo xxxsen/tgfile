@@ -6,6 +6,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func Copy(c *gin.Context) {
+func handleCopy(c *gin.Context) {
 	c.AbortWithStatus(http.StatusForbidden)
 }

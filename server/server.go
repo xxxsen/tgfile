@@ -81,14 +81,10 @@ func (s *Server) initAPI(router *gin.Engine) {
 	}
 	webdavRouter := router.Group("/webdav")
 	{
-		webdavRouter.GET("/*file", webdav.Get)
-		webdavRouter.PUT("/*file", webdav.Put)
-		webdavRouter.HEAD("*file", webdav.Head)
-		webdavRouter.Handle("MKCOL", "/*file", webdav.Mkcol)
-		webdavRouter.Handle("PROPFIND", "/*file", webdav.Propfind)
-		webdavRouter.Handle("COPY", "/*file", webdav.Copy)
-		webdavRouter.Handle("MOVE", "/*file", webdav.Move)
-		webdavRouter.Handle("PROPATCH", "/*file", webdav.Propatch)
+		for _, method := range webdav.AllowMethods {
+			webdavRouter.Handle(method, "", webdav.Handler)
+			webdavRouter.Handle(method, "/*file", webdav.Handler)
+		}
 	}
 }
 func (s *Server) Run() error {

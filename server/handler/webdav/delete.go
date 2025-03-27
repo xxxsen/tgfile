@@ -6,6 +6,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func Delete(c *gin.Context) {
+func handleDelete(c *gin.Context) {
 	c.AbortWithStatus(http.StatusForbidden)
 }

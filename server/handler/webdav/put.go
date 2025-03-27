@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func Put(c *gin.Context) {
+func handlePut(c *gin.Context) {
 	ctx := c.Request.Context()
 	file := c.Request.URL.Path
 	fileid, err := filemgr.Create(ctx, c.Request.ContentLength, c.Request.Body)

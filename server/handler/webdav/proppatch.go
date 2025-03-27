@@ -6,6 +6,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func Propatch(c *gin.Context) {
+func handlePropPatch(c *gin.Context) {
 	c.AbortWithStatus(http.StatusForbidden)
 }

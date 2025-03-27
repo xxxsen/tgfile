@@ -11,7 +11,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func Head(c *gin.Context) {
+func handleHead(c *gin.Context) {
 	ctx := c.Request.Context()
 	file := c.Request.URL.Path
 	item, err := filemgr.ResolveLink(ctx, file)
