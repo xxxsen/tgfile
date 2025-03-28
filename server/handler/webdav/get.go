@@ -1,14 +1,14 @@
 package webdav
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"tgfile/filemgr"
+	"tgfile/proxyutil"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xxxsen/common/logutil"
-	"go.uber.org/zap"
 )
 
 func handleGet(c *gin.Context) {
@@ -16,19 +16,16 @@ func handleGet(c *gin.Context) {
 	file := c.Request.URL.Path
 	item, err := filemgr.ResolveLink(ctx, file)
 	if err != nil {
-		logutil.GetLogger(ctx).Error("read link info failed", zap.Error(err))
-		c.AbortWithStatus(http.StatusInternalServerError)
+		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("read link info failed, err:%w", err))
 		return
 	}
 	if item.IsDir {
-		logutil.GetLogger(ctx).Error("cant open stream on dir", zap.Error(err))
-		c.AbortWithStatus(http.StatusMethodNotAllowed)
+		proxyutil.FailStatus(c, http.StatusMethodNotAllowed, fmt.Errorf("cant open stream on dir"))
 		return
 	}
 	stream, err := filemgr.Open(ctx, item.FileId)
 	if err != nil {
-		logutil.GetLogger(ctx).Error("open stream failed", zap.Error(err))
-		c.AbortWithStatus(http.StatusInternalServerError)
+		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("open stream failed, err:%w", err))
 		return
 	}
 	defer stream.Close()

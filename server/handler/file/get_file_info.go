@@ -17,10 +17,10 @@ func GetMetaInfo(c *gin.Context) {
 
 	info, err := filemgr.ResolveLink(ctx, link)
 	if err != nil {
-		proxyutil.Fail(c, http.StatusInternalServerError, fmt.Errorf("read file info fail, err:%w", err))
+		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("read file info fail, err:%w", err))
 		return
 	}
-	proxyutil.Success(c, &model.GetFileInfoResponse{
+	proxyutil.SuccessJson(c, &model.GetFileInfoResponse{
 		Item: &model.FileInfoItem{
 			Key:      key,
 			Exist:    true,

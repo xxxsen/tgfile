@@ -1,12 +1,12 @@
 package webdav
 
 import (
+	"fmt"
 	"net/http"
 	"tgfile/filemgr"
+	"tgfile/proxyutil"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xxxsen/common/logutil"
-	"go.uber.org/zap"
 )
 
 func handlePut(c *gin.Context) {
@@ -14,13 +14,11 @@ func handlePut(c *gin.Context) {
 	file := c.Request.URL.Path
 	fileid, err := filemgr.Create(ctx, c.Request.ContentLength, c.Request.Body)
 	if err != nil {
-		logutil.GetLogger(ctx).Error("create file failed", zap.Error(err))
-		c.AbortWithStatus(http.StatusInternalServerError)
+		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("create file failed, err:%w", err))
 		return
 	}
 	if err := filemgr.CreateLink(ctx, file, fileid, c.Request.ContentLength, false); err != nil {
-		logutil.GetLogger(ctx).Error("create file link failed", zap.Error(err))
-		c.AbortWithStatus(http.StatusInternalServerError)
+		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
 		return
 	}
 	c.Status(http.StatusCreated)

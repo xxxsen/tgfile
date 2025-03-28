@@ -2,6 +2,7 @@ package webdav
 
 import (
 	"context"
+	"fmt"
 	"mime"
 	"net/http"
 	"path"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"tgfile/entity"
 	"tgfile/filemgr"
+	"tgfile/proxyutil"
 	"tgfile/server/model"
 	"time"
 
@@ -28,8 +30,7 @@ func handlePropfind(c *gin.Context) {
 	}
 	base, entries, err := propFindEntries(ctx, location, depth)
 	if err != nil {
-		logutil.GetLogger(ctx).Error("propfind link failed", zap.String("location", location), zap.Error(err))
-		c.AbortWithStatus(http.StatusInternalServerError)
+		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("find entries failed, location:%s, depth:%d, err:%w", location, depth, err))
 		return
 	}
 	res := generatePropfindResponse(location, base, entries)

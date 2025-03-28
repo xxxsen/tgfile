@@ -17,12 +17,12 @@ func FileDownload(c *gin.Context) {
 	path := defaultUploadPrefix + key
 	finfo, err := filemgr.ResolveLink(ctx, path)
 	if err != nil {
-		proxyutil.Fail(c, http.StatusBadRequest, fmt.Errorf("invalid down key, key:%s, err:%w", key, err))
+		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("invalid down key, key:%s, err:%w", key, err))
 		return
 	}
 	file, err := filemgr.Open(ctx, finfo.FileId)
 	if err != nil {
-		proxyutil.Fail(c, http.StatusInternalServerError, fmt.Errorf("open file failed, err:%w", err))
+		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("open file failed, err:%w", err))
 		return
 	}
 	defer file.Close()

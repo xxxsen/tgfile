@@ -1,15 +1,15 @@
 package webdav
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 	"path"
 	"strings"
 	"tgfile/filemgr"
+	"tgfile/proxyutil"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xxxsen/common/logutil"
-	"go.uber.org/zap"
 )
 
 func handleMove(c *gin.Context) {
@@ -19,28 +19,24 @@ func handleMove(c *gin.Context) {
 	isOverWrite := c.GetHeader("Overwrite") != "F"
 	dsturi, err := url.Parse(dstlink)
 	if err != nil {
-		logutil.GetLogger(ctx).Error("parse dst link failed", zap.Error(err), zap.String("dstlink", dstlink))
-		c.AbortWithStatus(http.StatusBadRequest)
+		proxyutil.FailStatus(c, http.StatusBadRequest, fmt.Errorf("parse dst failed, dst:%s, err:%w", dstlink, err))
 		return
 	}
 	dst := path.Clean(dsturi.Path)
 	if src == dst {
-		c.AbortWithStatus(http.StatusForbidden)
+		proxyutil.FailStatus(c, http.StatusForbidden, fmt.Errorf("src equal to dst"))
 		return
 	}
 	if strings.HasPrefix(dst, src) {
-		logutil.GetLogger(ctx).Error("src path should not be the prefix of dst")
-		c.AbortWithStatus(http.StatusForbidden)
+		proxyutil.FailStatus(c, http.StatusForbidden, fmt.Errorf("src path should not be the prefix of dst"))
 		return
 	}
 	if !checkSameWebdavRoot(src, dst) {
-		logutil.GetLogger(ctx).Error("dst not in webdav root")
-		c.AbortWithStatus(http.StatusBadRequest)
+		proxyutil.FailStatus(c, http.StatusBadRequest, fmt.Errorf("dst not in webdav root"))
 		return
 	}
 	if err := filemgr.RenameLink(ctx, src, dst, isOverWrite); err != nil {
-		logutil.GetLogger(ctx).Error("rename link failed", zap.Error(err), zap.String("src", src), zap.String("dst", dst))
-		c.AbortWithStatus(http.StatusForbidden)
+		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("rename link failed, src:%s, dst:%s, err:%w", src, dst, err))
 		return
 	}
 	c.Status(http.StatusCreated)

@@ -3,14 +3,14 @@ package webdav
 import (
 	"context"
 	"encoding/xml"
+	"fmt"
 	"net/http"
 	"sync"
 	"tgfile/filemgr"
+	"tgfile/proxyutil"
 	"tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xxxsen/common/logutil"
-	"go.uber.org/zap"
 )
 
 var (
@@ -47,8 +47,7 @@ func Handler(c *gin.Context) {
 	case "MKCOL":
 		handleMkcol(c)
 	default:
-		c.AbortWithStatus(http.StatusForbidden)
-		logutil.GetLogger(c.Request.Context()).Error("unsupported method", zap.String("method", c.Request.Method))
+		proxyutil.FailStatus(c, http.StatusForbidden, fmt.Errorf("unsupported method:%s", c.Request.Method))
 	}
 }
 

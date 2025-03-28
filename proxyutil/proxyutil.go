@@ -32,11 +32,11 @@ func makePacket(code uint32, msg string, obj interface{}) *CommonResponse {
 	}
 }
 
-func Success(c *gin.Context, obj interface{}) {
+func SuccessJson(c *gin.Context, obj interface{}) {
 	c.JSON(http.StatusOK, makePacket(0, "", obj))
 }
 
-func Fail(c *gin.Context, code int, err error) {
+func FailJson(c *gin.Context, code int, err error) {
 	bizCode := defaultBizErrCode
 	errmsg := err.Error()
 	if ie, ok := err.(iCodeErr); ok {
@@ -44,6 +44,11 @@ func Fail(c *gin.Context, code int, err error) {
 	}
 	markReplyErr(c, err)
 	c.AbortWithStatusJSON(code, makePacket(bizCode, errmsg, nil))
+}
+
+func FailStatus(c *gin.Context, code int, err error) {
+	markReplyErr(c, err)
+	c.AbortWithStatus(code)
 }
 
 func markReplyErr(c *gin.Context, err error) {

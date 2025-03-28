@@ -21,12 +21,12 @@ func Import(c *gin.Context, ctx context.Context, request interface{}) {
 	header := req.File
 	file, err := header.Open()
 	if err != nil {
-		proxyutil.Fail(c, http.StatusBadRequest, fmt.Errorf("open file for import fail, err:%w", err))
+		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("open file for import fail, err:%w", err))
 		return
 	}
 	gzReader, err := gzip.NewReader(file)
 	if err != nil {
-		proxyutil.Fail(c, http.StatusBadRequest, fmt.Errorf("treat file as gz stream fail, err:%w", err))
+		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("treat file as gz stream fail, err:%w", err))
 		return
 	}
 	defer gzReader.Close()
@@ -60,14 +60,14 @@ func Import(c *gin.Context, ctx context.Context, request interface{}) {
 		logutil.GetLogger(ctx).Info("import one file succ", zap.String("name", h.Name), zap.Int64("size", h.Size))
 	}
 	if retErr != nil {
-		proxyutil.Fail(c, http.StatusBadRequest, fmt.Errorf("import file failed, err:%w", err))
+		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("import file failed, err:%w", err))
 		return
 	}
 	if !containStatisticFile {
-		proxyutil.Fail(c, http.StatusBadRequest, fmt.Errorf("no found %s in import file, may be export function not finish", defaultStatisticFileName))
+		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("no found %s in import file, may be export function not finish", defaultStatisticFileName))
 		return
 	}
-	proxyutil.Success(c, map[string]interface{}{})
+	proxyutil.SuccessJson(c, map[string]interface{}{})
 }
 
 func importOneFile(ctx context.Context, h *tar.Header, r *tar.Reader) error {

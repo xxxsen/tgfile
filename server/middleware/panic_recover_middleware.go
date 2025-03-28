@@ -16,7 +16,7 @@ func PanicRecoverMiddleware() gin.HandlerFunc {
 		defer func() {
 			if err := recover(); err != nil {
 				logutil.GetLogger(ctx).Error("service panic", zap.Any("panic", err), zap.String("path", ctx.Request.URL.Path), zap.String("stack", string(debug.Stack())))
-				proxyutil.Fail(ctx, http.StatusInternalServerError, fmt.Errorf("service panic"))
+				proxyutil.FailJson(ctx, http.StatusInternalServerError, fmt.Errorf("service panic"))
 			}
 		}()
 		ctx.Next()

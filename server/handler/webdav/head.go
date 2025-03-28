@@ -1,14 +1,14 @@
 package webdav
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"tgfile/filemgr"
+	"tgfile/proxyutil"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/xxxsen/common/logutil"
-	"go.uber.org/zap"
 )
 
 func handleHead(c *gin.Context) {
@@ -16,8 +16,7 @@ func handleHead(c *gin.Context) {
 	file := c.Request.URL.Path
 	item, err := filemgr.ResolveLink(ctx, file)
 	if err != nil {
-		logutil.GetLogger(ctx).Error("read link info failed", zap.Error(err))
-		c.AbortWithStatus(http.StatusInternalServerError)
+		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("decode link info failed, link:%s, err:%w", file, err))
 		return
 	}
 	// if item.IsDir {
