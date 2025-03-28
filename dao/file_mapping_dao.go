@@ -51,7 +51,7 @@ func (f *fileMappingDao) GetFileMapping(ctx context.Context, req *entity.GetFile
 		return nil, false, err
 	}
 	item := &entity.FileMappingItem{
-		FileName: req.FileName,
+		FileName: ent.Name,
 		FileId:   fileid,
 		Ctime:    ent.Ctime,
 		Mtime:    ent.Mtime,

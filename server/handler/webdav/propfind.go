@@ -94,7 +94,7 @@ func generatePropfindDirResponse(ms *model.Multistatus, location string, base *e
 	//处理子节点
 	root := location
 	for _, item := range ents {
-		convertFileMappingItemToResponse(root, item)
+		ms.Responses = append(ms.Responses, convertFileMappingItemToResponse(root, item))
 	}
 }
 

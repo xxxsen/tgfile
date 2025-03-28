@@ -3,6 +3,7 @@ package directory
 import (
 	"context"
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -394,28 +395,31 @@ func (e *dbDirectory) Move(ctx context.Context, src string, dst string, overwrit
 
 }
 
-func (e *dbDirectory) doRemoveFile(ctx context.Context, tx database.IQueryExecer, parentid uint64, name string) error {
-	return e.txRemove(ctx, tx, parentid, name)
-}
-
 func (e *dbDirectory) doRemoveDir(ctx context.Context, tx database.IQueryExecer, parentid uint64, name string) error {
-	items, err := e.txListAllDir(ctx, tx, parentid)
+	ent, ok, err := e.txSearchEntry(ctx, tx, parentid, name)
+	if err != nil {
+		return fmt.Errorf("read entry failed, pid:%d, name:%s", parentid, name)
+	}
+	if !ok {
+		return fmt.Errorf("entry not found, pid:%d, name:%s", parentid, name)
+	}
+	items, err := e.txListAllDir(ctx, tx, ent.EntryId)
 	if err != nil {
 		return fmt.Errorf("scan entry from pid:%d failed, err:%w", parentid, err)
 	}
 	for _, item := range items {
 		if item.FileKind == defaultFileKindDir {
-			if err := e.doRemoveDir(ctx, tx, item.EntryId, item.FileName); err != nil {
+			if err := e.doRemoveDir(ctx, tx, item.ParentEntryId, item.FileName); err != nil {
 				return fmt.Errorf("remove dir entry failed, entryid:%d, entryname:%s, err:%d", item.EntryId, item.FileName, err)
 			}
 			continue
 		}
-		if err := e.doRemoveFile(ctx, tx, parentid, item.FileName); err != nil {
+		if err := e.txRemove(ctx, tx, item.ParentEntryId, item.FileName); err != nil {
 			return fmt.Errorf("remove file entry failed, parentid:%d, entryname:%s, err:%w", parentid, item.FileName, err)
 		}
 	}
 	//删除目录自身
-	if err := e.doRemoveFile(ctx, tx, parentid, name); err != nil {
+	if err := e.txRemove(ctx, tx, parentid, name); err != nil {
 		return fmt.Errorf("remove dir self failed, parentid:%d, name:%s, err:%w", parentid, name, err)
 	}
 	return nil
@@ -435,7 +439,7 @@ func (e *dbDirectory) Remove(ctx context.Context, filename string) error {
 		if ent.FileKind == defaultFileKindDir {
 			return e.doRemoveDir(ctx, tx, parentid, name)
 		}
-		return e.doRemoveFile(ctx, tx, parentid, name)
+		return e.txRemove(ctx, tx, parentid, name)
 	}); err != nil {
 		return err
 	}
@@ -520,7 +524,7 @@ func (e *dbDirectory) Stat(ctx context.Context, filename string) (*DirectoryEntr
 }
 
 func (e *dbDirectory) convTabDataToEntryData(item *directoryEntryTab) *DirectoryEntry {
-	return &DirectoryEntry{
+	rs := &DirectoryEntry{
 		RefData: item.RefData,
 		Name:    item.FileName,
 		Ctime:   item.Ctime,
@@ -529,6 +533,10 @@ func (e *dbDirectory) convTabDataToEntryData(item *directoryEntryTab) *Directory
 		Size:    item.FileSize,
 		IsDir:   item.FileKind == defaultFileKindDir,
 	}
+	if rs.IsDir {
+		rs.Name = path.Base(strings.TrimSuffix(rs.Name, "/"))
+	}
+	return rs
 }
 
 func NewDBDirectory(db database.IDatabase, tab string, idfn IDGenFunc) (IDirectory, error) {
