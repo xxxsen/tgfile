@@ -48,6 +48,7 @@ func main() {
 	svr, err := server.New(c.Bind,
 		server.WithS3Buckets(c.S3Bucket),
 		server.WithUser(c.UserInfo),
+		server.WithEnableWebdav(c.Webdav.Enable),
 	)
 	if err != nil {
 		logger.Fatal("init server fail", zap.Error(err))

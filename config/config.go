@@ -20,6 +20,10 @@ type DebugConfig struct {
 	BlockSize int64  `json:"block_size"`
 }
 
+type WebdavConfig struct {
+	Enable bool `json:"enable"`
+}
+
 type Config struct {
 	Bind         string            `json:"bind"`
 	LogInfo      logger.LogConfig  `json:"log_info"`
@@ -30,6 +34,7 @@ type Config struct {
 	TempDir      string            `json:"temp_dir"`
 	DebugMode    DebugConfig       `json:"debug_mode"`
 	RotateStream int               `json:"rotate_stream"`
+	Webdav       WebdavConfig      `json:"webdav"`
 }
 
 func Parse(f string) (*Config, error) {
@@ -39,6 +44,9 @@ func Parse(f string) (*Config, error) {
 	}
 	c := &Config{
 		TempDir: filepath.Join(os.TempDir(), "tgfile-temp"),
+		Webdav: WebdavConfig{
+			Enable: true,
+		},
 	}
 	if err := json.Unmarshal(raw, c); err != nil {
 		return nil, fmt.Errorf("decode json:%w", err)

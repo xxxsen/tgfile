@@ -3,6 +3,7 @@ package server
 type config struct {
 	s3Buckets []string
 	userMap   map[string]string
+	webdav    bool
 }
 
 type Option func(c *config)
@@ -25,4 +26,10 @@ func applyOpts(opts ...Option) *config {
 		opt(c)
 	}
 	return c
+}
+
+func WithEnableWebdav(v bool) Option {
+	return func(c *config) {
+		c.webdav = v
+	}
 }

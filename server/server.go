@@ -79,11 +79,13 @@ func (s *Server) initAPI(router *gin.Engine) {
 			bucketRouter.PUT("/*object", mustAuthMiddleware, s3.UploadObject)
 		}
 	}
-	webdavRouter := router.Group("/webdav")
-	{
-		for _, method := range webdav.AllowMethods {
-			webdavRouter.Handle(method, "/*all", webdav.Handler)
-			//webdavRouter.Handle(method, "/*file", webdav.Handler)
+	if s.c.webdav {
+		webdavRouter := router.Group("/webdav", mustAuthMiddleware)
+		{
+			for _, method := range webdav.AllowMethods {
+				webdavRouter.Handle(method, "/*all", webdav.Handler)
+				//webdavRouter.Handle(method, "/*file", webdav.Handler)
+			}
 		}
 	}
 }
