@@ -301,13 +301,13 @@ func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, sd
 		}
 		//目标地址不存在, 直接修改指向即可
 		if !dexist {
-			if !overwrite {
-				return fmt.Errorf("overwrite = false and file exist")
-			}
 			return e.txChangeParent(ctx, tx, sinfo.EntryId, parentid, &dname)
 		}
 		//存在, 但是为文件, 需要先删除
 		if dinfo.FileKind != defaultFileKindDir {
+			if !overwrite {
+				return fmt.Errorf("overwrite = false and file exist")
+			}
 			if err := e.txRemove(ctx, tx, parentid, dname); err != nil {
 				return fmt.Errorf("overwrite but remove origin failed, err:%w", err)
 			}
@@ -318,6 +318,9 @@ func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, sd
 			return err
 		}
 		if exist { //不存在, 则直接更改父节点
+			if !overwrite {
+				return fmt.Errorf("overwrite = false and file exist")
+			}
 			if err := e.txRemove(ctx, tx, dinfo.EntryId, sname); err != nil {
 				return err
 			}
