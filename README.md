@@ -26,7 +26,10 @@ tgfile
 	},
 	"s3_bucket": [ //启用s3协议支持, 这里配置的是要开启的s3 bucket名
 		"hackmd"
-	]
+	],
+	"webdav": { //启用webdav支持, 实验性, 不一定ok
+		"enable": true 
+	}
 }
 ```
 
