@@ -27,6 +27,30 @@ type dbDirectory struct {
 	idfn IDGenFunc
 }
 
+func (e *dbDirectory) isArrayEqual(origin []string, ck []string) bool {
+	if len(origin) != len(ck) {
+		return false
+	}
+	for i, item := range origin {
+		if item != ck[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (e *dbDirectory) isArrayHasSuffix(origin []string, prefix []string) bool {
+	if len(origin) < len(prefix) {
+		return false
+	}
+	for i, item := range prefix {
+		if origin[i] != item {
+			return false
+		}
+	}
+	return true
+}
+
 func (e *dbDirectory) rebuildDirItems(dir string) ([]string, error) {
 	items := strings.Split(dir, "/")
 	rs := make([]string, 0, len(items)+1)
@@ -277,7 +301,31 @@ func (e *dbDirectory) Copy(ctx context.Context, src string, dst string, overwrit
 	return fmt.Errorf("not impl yet")
 }
 
-func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, sdir, sname, ddir, dname string, overwrite bool) error {
+func (e *dbDirectory) precheckMove(src string, dst string) error {
+	s, err := e.rebuildDirItems(src)
+	if err != nil {
+		return err
+	}
+	d, err := e.rebuildDirItems(dst)
+	if err != nil {
+		return err
+	}
+	if e.isArrayEqual(s, d) {
+		return fmt.Errorf("same path")
+	}
+	if e.isArrayHasSuffix(d, s) {
+		return fmt.Errorf("dst is sub dir of src")
+	}
+	return nil
+}
+
+func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, src, dst string, overwrite bool) error {
+	if err := e.precheckMove(src, dst); err != nil {
+		return fmt.Errorf("pre check move failed, err:%w", err)
+	}
+	sdir, sname := e.splitFilename(src)
+	ddir, dname := e.splitFilename(dst)
+
 	var sinfo *directoryEntryTab
 	//提取原始信息
 	if err := e.txOnSelectDir(ctx, tx, sdir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
@@ -333,11 +381,8 @@ func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, sd
 }
 
 func (e *dbDirectory) Move(ctx context.Context, src string, dst string, overwrite bool) error {
-	sdir, sname := e.splitFilename(src)
-	ddir, dname := e.splitFilename(dst)
-	//TODO: 这里检查下sdir/ddir是否一致
 	if err := e.db.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
-		return e.doTxMove(ctx, tx, sdir, sname, ddir, dname, overwrite)
+		return e.doTxMove(ctx, tx, src, dst, overwrite)
 	}); err != nil {
 		return fmt.Errorf("do move failed, err:%w", err)
 	}
