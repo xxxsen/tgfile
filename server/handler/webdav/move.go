@@ -55,8 +55,5 @@ func checkSameWebdavRoot(src string, dst string) bool {
 	}
 	root := src[:idx]
 	dst = strings.TrimPrefix(dst, "/")
-	if !strings.HasPrefix(dst, root) {
-		return false
-	}
-	return true
+	return strings.HasPrefix(dst, root)
 }
