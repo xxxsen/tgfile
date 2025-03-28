@@ -1,8 +1,11 @@
 package webdav
 
 import (
+	"context"
 	"encoding/xml"
 	"net/http"
+	"sync"
+	"tgfile/filemgr"
 	"tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
@@ -10,7 +13,20 @@ import (
 	"go.uber.org/zap"
 )
 
+var (
+	initOnce sync.Once
+)
+
+func initWebdav() {
+	initOnce.Do(func() {
+		if err := filemgr.CreateLink(context.Background(), "/webdav", 0, 0, true); err != nil {
+			panic(err)
+		}
+	})
+}
+
 func Handler(c *gin.Context) {
+	initWebdav()
 	switch c.Request.Method {
 	case http.MethodGet:
 		handleGet(c)
