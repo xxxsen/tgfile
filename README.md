@@ -86,3 +86,12 @@ services:
 |/:bucket|GET|false|获取bucket信息, 没实际作用|
 |/:bucket/:object|PUT|true|文件上传|
 |/:bucket/:object|GET|false|文件下载|
+
+**Webdav接口**
+
+默认根路径为**/webdav**, 且不能修改。
+
+可以通过下面命令验证:
+```shell
+curl -X PROPFIND -v https://your_username_here:your_pwd_here@your_host_here.com/webdav/ -L
+```
