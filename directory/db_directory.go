@@ -320,6 +320,7 @@ func (e *dbDirectory) precheckMove(src string, dst string) error {
 }
 
 func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, src, dst string, overwrite bool) error {
+	//将/a/b/1.txt 移动到目录/c下, 那么src = /a/b/1.txt, dst = /c/1.txt
 	if err := e.precheckMove(src, dst); err != nil {
 		return fmt.Errorf("pre check move failed, err:%w", err)
 	}
@@ -351,29 +352,17 @@ func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, sr
 		if !dexist {
 			return e.txChangeParent(ctx, tx, sinfo.EntryId, parentid, &dname)
 		}
-		//存在, 但是为文件, 需要先删除
-		if dinfo.FileKind != defaultFileKindDir {
-			if !overwrite {
-				return fmt.Errorf("overwrite = false and file exist")
-			}
-			if err := e.txRemove(ctx, tx, parentid, dname); err != nil {
-				return fmt.Errorf("overwrite but remove origin failed, err:%w", err)
-			}
-			return e.txChangeParent(ctx, tx, sinfo.EntryId, parentid, &dname)
+		//存在, 但是为目录, 那么直接返回错误, 不允许直接删除目录
+		if dinfo.FileKind == defaultFileKindDir {
+			return fmt.Errorf("not allow to overwrite dir")
 		}
-		_, exist, err := e.txSearchEntry(ctx, tx, dinfo.EntryId, sname)
-		if err != nil {
-			return err
+		if !overwrite {
+			return fmt.Errorf("overwrite = false and file exist")
 		}
-		if exist { //不存在, 则直接更改父节点
-			if !overwrite {
-				return fmt.Errorf("overwrite = false and file exist")
-			}
-			if err := e.txRemove(ctx, tx, dinfo.EntryId, sname); err != nil {
-				return err
-			}
+		if err := e.txRemove(ctx, tx, parentid, dname); err != nil {
+			return fmt.Errorf("overwrite but remove origin failed, err:%w", err)
 		}
-		return e.txChangeParent(ctx, tx, sinfo.EntryId, dinfo.EntryId, nil)
+		return e.txChangeParent(ctx, tx, sinfo.EntryId, parentid, &dname)
 	}); err != nil {
 		return fmt.Errorf("read dst and move failed, err:%w", err)
 	}

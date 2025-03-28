@@ -5,35 +5,35 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"tgfile/db"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/xxxsen/common/database"
-	"github.com/xxxsen/common/database/sqlite"
 	"github.com/xxxsen/common/idgen"
 )
 
 var (
 	dbfile = "/tmp/sqlite_webdav_test.db"
-	db     database.IDatabase
+	dbc    database.IDatabase
 	dav    IDirectory
 )
 
 func setup() {
 	tearDown()
 	var err error
-	db, err = sqlite.New(dbfile)
-	if err != nil {
+	if err := db.InitDB(dbfile); err != nil {
 		panic(err)
 	}
-	dav, err = NewDBDirectory(db, "t_test_tab", idgen.Default().NextId)
+	dbc = db.GetClient()
+	dav, err = NewDBDirectory(dbc, "tg_file_mapping_tab", idgen.Default().NextId)
 	if err != nil {
 		panic(err)
 	}
 }
 
 func tearDown() {
-	if db != nil {
-		_ = db.Close()
+	if dbc != nil {
+		_ = dbc.Close()
 	}
 	os.RemoveAll(dbfile)
 }
@@ -87,4 +87,292 @@ func TestListDir(t *testing.T) {
 	files, err := dav.List(ctx, "/list/")
 	assert.NoError(t, err)
 	assert.Equal(t, 1000, len(files))
+}
+
+func TestRemove(t *testing.T) {
+	ctx := context.Background()
+	testPath := "/delete_test"
+	err := dav.Mkdir(ctx, testPath)
+	assert.NoError(t, err)
+	for i := 0; i < 10; i++ {
+		for j := 0; j < 10; j++ {
+			for k := 0; k < 10; k++ {
+				p := fmt.Sprintf("%s/%d/%d", testPath, i, j)
+				err = dav.Mkdir(ctx, p)
+				assert.NoError(t, err)
+				err = dav.Create(ctx, fmt.Sprintf("%s/%d.txt", p, k), 0, "")
+				assert.NoError(t, err)
+			}
+			items, err := dav.List(ctx, fmt.Sprintf("%s/%d/%d", testPath, i, j))
+			assert.NoError(t, err)
+			assert.Equal(t, 10, len(items))
+		}
+		items, err := dav.List(ctx, fmt.Sprintf("%s/%d", testPath, i))
+		assert.NoError(t, err)
+		assert.Equal(t, 10, len(items))
+	}
+	items, err := dav.List(ctx, testPath)
+	assert.NoError(t, err)
+	assert.Equal(t, 10, len(items))
+
+	//remove then
+	err = dav.Remove(ctx, testPath)
+	assert.NoError(t, err)
+	_, err = dav.List(ctx, testPath)
+	assert.Error(t, err)
+}
+
+type prepareCreateItem struct {
+	link  string
+	isDir bool
+}
+
+type moveItem struct {
+	src       string
+	dst       string
+	overwrite bool
+	hasErr    bool
+}
+
+type testItem struct {
+	link  string
+	exist bool
+	isDir bool
+}
+
+type testMovePair struct {
+	name        string
+	prepareList []prepareCreateItem
+	move        moveItem
+	testList    []testItem
+}
+
+func TestMove(t *testing.T) {
+	ctx := context.Background()
+	testPath := "/move_test"
+	err := dav.Mkdir(ctx, testPath)
+	assert.NoError(t, err)
+	testList := []testMovePair{
+		{
+			name: "check_same_path",
+			prepareList: []prepareCreateItem{
+				{
+					link:  "/a/b/c/d",
+					isDir: true,
+				},
+			},
+			move: moveItem{
+				src:    "/a/b/c/d",
+				dst:    "/a/b/c/d",
+				hasErr: true,
+			},
+		},
+		{
+			name: "check_succ_move",
+			prepareList: []prepareCreateItem{
+				{
+					link:  "/a/b/c/d",
+					isDir: true,
+				},
+				{
+					link:  "/b/c",
+					isDir: true,
+				},
+			},
+			move: moveItem{
+				src: "/a/b/c/d",
+				dst: "/b/c/d",
+			},
+			testList: []testItem{
+				{
+					link:  "/a/b/c/d",
+					exist: false,
+				},
+				{
+					link:  "/a/b/c",
+					exist: true,
+					isDir: true,
+				},
+				{
+					link:  "/b/c",
+					exist: true,
+					isDir: true,
+				},
+				{
+					link:  "/b/c/d",
+					exist: true,
+					isDir: true,
+				},
+			},
+		},
+		{
+			name: "check_file_move",
+			prepareList: []prepareCreateItem{
+				{
+					link:  "/a/1.txt",
+					isDir: false,
+				},
+				{
+					link:  "/b",
+					isDir: true,
+				},
+			},
+			move: moveItem{
+				src:       "/a/1.txt",
+				dst:       "/b/2.txt",
+				overwrite: false,
+				hasErr:    false,
+			},
+			testList: []testItem{
+				{
+					link:  "/a",
+					exist: true,
+					isDir: true,
+				},
+				{
+					link:  "/a/1.txt",
+					exist: false,
+				},
+				{
+					link:  "/b/2.txt",
+					exist: true,
+				},
+			},
+		},
+		{
+			name: "check_file_overwrite",
+			prepareList: []prepareCreateItem{
+				{
+					link:  "/a/1.txt",
+					isDir: false,
+				},
+				{
+					link:  "/b",
+					isDir: true,
+				},
+			},
+			move: moveItem{
+				src:       "/a/1.txt",
+				dst:       "/b/1.txt",
+				overwrite: false,
+				hasErr:    false,
+			},
+			testList: []testItem{
+				{
+					link:  "/a",
+					exist: true,
+					isDir: true,
+				},
+				{
+					link:  "/a/1.txt",
+					exist: false,
+				},
+				{
+					link:  "/b/1.txt",
+					exist: true,
+				},
+			},
+		},
+		{
+			name: "check_sub_path_move",
+			prepareList: []prepareCreateItem{
+				{
+					link:  "/a/b/c",
+					isDir: true,
+				},
+				{
+					link:  "/a/b/c/d/e",
+					isDir: true,
+				},
+			},
+			move: moveItem{
+				src:       "/a/b/c",
+				dst:       "/a/b/c/d/e/c",
+				overwrite: false,
+				hasErr:    true,
+			},
+		},
+		{
+			name: "check_dir_overwrite_file", //目标为文件, 那么可以overwrite
+			prepareList: []prepareCreateItem{
+				{
+					link:  "/a/b/c",
+					isDir: true,
+				},
+				{
+					link:  "/x/y/z/c",
+					isDir: false,
+				},
+			},
+			move: moveItem{
+				src:       "/a/b/c",
+				dst:       "/x/y/z/c",
+				overwrite: true,
+				hasErr:    false,
+			},
+			testList: []testItem{
+				{
+					link:  "/a/b/c",
+					exist: false,
+					isDir: false,
+				},
+				{
+					link:  "/x/y/z/c",
+					exist: true,
+					isDir: true,
+				},
+			},
+		},
+		{
+			name: "check_dir_overwrite_dir", //目标为dir, 无法进行overwrite
+			prepareList: []prepareCreateItem{
+				{
+					link:  "/a/b/c",
+					isDir: true,
+				},
+				{
+					link:  "1/2/c",
+					isDir: true,
+				},
+			},
+			move: moveItem{
+				src:       "/a/b/c",
+				dst:       "/1/2/c",
+				overwrite: true,
+				hasErr:    true,
+			},
+		},
+	}
+	for _, item := range testList {
+		t.Logf("start test item, name:%s", item.name)
+		_ = dav.Remove(ctx, testPath)
+		for _, item := range item.prepareList {
+			link := fmt.Sprintf("%s%s", testPath, item.link)
+			if item.isDir {
+				err = dav.Mkdir(ctx, link)
+				assert.NoError(t, err)
+				continue
+			}
+			err = dav.Create(ctx, link, 0, "")
+			assert.NoError(t, err)
+			ent, err := dav.Stat(ctx, link)
+			assert.NoError(t, err)
+			assert.Equal(t, item.isDir, ent.IsDir)
+		}
+		err := dav.Move(ctx, fmt.Sprintf("%s%s", testPath, item.move.src), fmt.Sprintf("%s%s", testPath, item.move.dst), item.move.overwrite)
+		assert.Equal(t, item.move.hasErr, err != nil)
+		if err != nil {
+			continue
+		}
+		for _, tt := range item.testList {
+			link := fmt.Sprintf("%s%s", testPath, tt.link)
+			ent, err := dav.Stat(ctx, link)
+			assert.Equal(t, tt.exist, err == nil)
+			if !tt.exist {
+				continue
+			}
+			assert.Equal(t, tt.isDir, ent.IsDir)
+		}
+	}
+
 }
