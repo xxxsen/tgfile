@@ -46,6 +46,10 @@ func (d *defaultFileManager) IterLink(ctx context.Context, prefix string, cb Ite
 	})
 }
 
+func (d *defaultFileManager) RemoveLink(ctx context.Context, link string) error {
+	return d.fileMappingDao.RemoveFileMapping(ctx, link)
+}
+
 func (d *defaultFileManager) Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {
 	finfo, ok, err := d.internalGetFileInfo(ctx, fileid)
 	if err != nil {

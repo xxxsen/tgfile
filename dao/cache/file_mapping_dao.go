@@ -52,3 +52,8 @@ func (f *fileMappingDao) CreateFileMapping(ctx context.Context, req *entity.Crea
 func (f *fileMappingDao) IterFileMapping(ctx context.Context, prefix string, cb dao.IterFileMappingFunc) error {
 	return f.impl.IterFileMapping(ctx, prefix, cb)
 }
+
+func (f *fileMappingDao) RemoveFileMapping(ctx context.Context, link string) error {
+	defer cache.Del(ctx, f.buildCacheKey(link))
+	return f.impl.RemoveFileMapping(ctx, link)
+}
