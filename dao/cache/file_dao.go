@@ -28,6 +28,7 @@ func (f *fileDao) CreateFileDraft(ctx context.Context, req *entity.CreateFileDra
 }
 
 func (f *fileDao) MarkFileReady(ctx context.Context, req *entity.MarkFileReadyRequest) (*entity.MarkFileReadyResponse, error) {
+	defer cache.Del(ctx, f.buildCacheKey(req.FileID))
 	return f.impl.MarkFileReady(ctx, req)
 }
 
@@ -43,7 +44,7 @@ func (f *fileDao) GetFileInfo(ctx context.Context, req *entity.GetFileInfoReques
 		keys = append(keys, key)
 		mapping[key] = fid
 	}
-	caacheRs, err := cache.LoadMany(ctx, keys, func(ctx context.Context, c cache.ICache, ks []string) (map[string]interface{}, error) {
+	cacheRs, err := cache.LoadMany(ctx, keys, func(ctx context.Context, c cache.ICache, ks []string) (map[string]interface{}, error) {
 		fids := make([]uint64, 0, len(ks))
 		for _, k := range ks {
 			fids = append(fids, mapping[k])
@@ -67,7 +68,7 @@ func (f *fileDao) GetFileInfo(ctx context.Context, req *entity.GetFileInfoReques
 	}
 	rsp := &entity.GetFileInfoResponse{}
 	for _, fid := range req.FileIds {
-		v, ok := caacheRs[f.buildCacheKey(fid)]
+		v, ok := cacheRs[f.buildCacheKey(fid)]
 		if !ok {
 			continue
 		}

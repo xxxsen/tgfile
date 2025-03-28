@@ -13,7 +13,6 @@ import (
 )
 
 func handleMove(c *gin.Context) {
-	//TODO: 检查下目标路径是否还在webdav这个路径下
 	ctx := c.Request.Context()
 	src := path.Clean(c.Request.URL.Path)
 	dstlink := c.GetHeader("Destination")

@@ -6,6 +6,7 @@ import (
 	"io"
 	"tgfile/blockio"
 	"tgfile/dao"
+	"tgfile/dao/cache"
 	"tgfile/entity"
 
 	"github.com/xxxsen/common/logutil"
@@ -179,16 +180,16 @@ func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filenam
 }
 
 func NewFileManager(bkio blockio.IBlockIO) IFileManager {
+	// return &defaultFileManager{
+	// 	fileDao:        dao.NewFileDao(),
+	// 	filePartDao:    dao.NewFilePartDao(),
+	// 	fileMappingDao: dao.NewFileMappingDao(),
+	// 	bkio:           bkio,
+	// }
 	return &defaultFileManager{
-		fileDao:        dao.NewFileDao(),
-		filePartDao:    dao.NewFilePartDao(),
+		fileDao:        cache.NewFileDao(dao.NewFileDao()),
+		filePartDao:    cache.NewFilePartDao(dao.NewFilePartDao()),
 		fileMappingDao: dao.NewFileMappingDao(),
 		bkio:           bkio,
 	}
-	// return &defaultFileManager{
-	// 	fileDao:        cache.NewFileDao(dao.NewFileDao()),
-	// 	filePartDao:    cache.NewFilePartDao(dao.NewFilePartDao()),
-	// 	fileMappingDao: cache.NewFileMappingDao(dao.NewFileMappingDao()),
-	// 	bkio:           bkio,
-	// }
 }
