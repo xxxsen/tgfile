@@ -74,6 +74,34 @@ func (e *dbDirectory) txSearchEntry(ctx context.Context, q database.IQueryer, pi
 	return rs[0], true, nil
 }
 
+func (e *dbDirectory) txChangeParent(ctx context.Context, exec database.IExecer, entryid uint64, parentid uint64, newname *string) error {
+	where := map[string]interface{}{
+		"entry_id": entryid,
+	}
+	update := map[string]interface{}{
+		"parent_entry_id": parentid,
+	}
+	if newname != nil {
+		update["file_name"] = *newname
+	}
+	sql, args, err := builder.BuildUpdate(e.table(), where, update)
+	if err != nil {
+		return err
+	}
+	rs, err := exec.ExecContext(ctx, sql, args...)
+	if err != nil {
+		return err
+	}
+	cnt, err := rs.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if cnt == 0 {
+		return fmt.Errorf("no row affected")
+	}
+	return nil
+}
+
 func (e *dbDirectory) txIsEntryExist(ctx context.Context, q database.IQueryer, pid uint64, name string) (bool, error) {
 	_, ok, err := e.txSearchEntry(ctx, q, pid, name)
 	if err != nil {
@@ -233,7 +261,7 @@ func (e *dbDirectory) Mkdir(ctx context.Context, dir string) error {
 			return err
 		}
 		if exist {
-			return fmt.Errorf("dir exist, skip create")
+			return nil
 		}
 		if _, err := e.txCreateDir(ctx, tx, parentid, name); err != nil {
 			return err
@@ -249,93 +277,54 @@ func (e *dbDirectory) Copy(ctx context.Context, src string, dst string, overwrit
 	return fmt.Errorf("not impl yet")
 }
 
-func (d *dbDirectory) doMoveOnExist(ctx context.Context, tx database.IQueryExecer,
-	sinfo *directoryEntryTab, dparentid uint64, dname string, dinfo *directoryEntryTab, overwrite bool) error {
-	if !overwrite {
-		return fmt.Errorf("cant move to exist entry")
-	}
-	if dinfo.FileKind == defaultFileKindFile && sinfo.FileKind == defaultFileKindDir {
-		return fmt.Errorf("cant move dir entry to file entry")
-	}
-	now := time.Now().UnixMilli()
-	//目标文件为file, 则原地覆盖
-	if dinfo.FileKind == defaultFileKindFile {
-		if err := d.txRemove(ctx, tx, dinfo.ParentEntryId, dinfo.FileName); err != nil {
-			return fmt.Errorf("remove dst file before move fialed, err:%w", err)
+func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, sdir, sname, ddir, dname string, overwrite bool) error {
+	var sinfo *directoryEntryTab
+	//提取原始信息
+	if err := e.txOnSelectDir(ctx, tx, sdir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
+		info, ok, err := e.txSearchEntry(ctx, tx, parentid, sname)
+		if err != nil {
+			return err
 		}
-		if _, err := d.txCreateEntry(ctx, tx, dinfo.ParentEntryId, &directoryEntryTab{
-			ParentEntryId: dinfo.ParentEntryId,
-			RefData:       sinfo.RefData,
-			FileKind:      sinfo.FileKind,
-			Ctime:         now,
-			Mtime:         now,
-			FileSize:      sinfo.FileSize,
-			FileMode:      sinfo.FileMode,
-			FileName:      dinfo.FileName,
-		}); err != nil {
-			return fmt.Errorf("create dst file failed, err:%w", err)
+		if !ok {
+			return fmt.Errorf("src file not found, err:%w", err)
 		}
+		sinfo = info
 		return nil
+	}); err != nil {
+		return fmt.Errorf("read src info failed, err:%w", err)
 	}
-	//目标文件为dir, 需要检查dir下是否还有文件名与sname相同的, 有的话, 需要先删除
-	//如果dir下与sname同名的为目录, 则返回错误
-	// 之后再在dir下面创建文件
-	entryInDst, ok, err := d.txSearchEntry(ctx, tx, dinfo.EntryId, sinfo.FileName)
-	if err != nil {
-		return fmt.Errorf("check src name in dst dir failed, err:%w", err)
-	}
-	//不存在同名则直接创建
-	if !ok {
-		if _, err := d.txCreateEntry(ctx, tx, dinfo.EntryId, &directoryEntryTab{
-			ParentEntryId: dinfo.EntryId,
-			RefData:       sinfo.RefData,
-			FileKind:      sinfo.FileKind,
-			Ctime:         now,
-			Mtime:         now,
-			FileSize:      sinfo.FileSize,
-			FileMode:      sinfo.FileMode,
-			FileName:      sinfo.FileName,
-		}); err != nil {
-			return fmt.Errorf("create src file in dst dir failed, err:%w", err)
+	//处理move流程
+	if err := e.txOnSelectDir(ctx, tx, ddir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
+		dinfo, dexist, err := e.txSearchEntry(ctx, tx, parentid, dname)
+		if err != nil {
+			return err
 		}
-		return nil
-	}
-	//在目标目录下有跟src同名, 又又又得检查一遍这个东西是文件还是目录
-	if entryInDst.FileKind == defaultFileKindDir {
-		return fmt.Errorf("same name dir entry found in dst dir, skip move")
-	}
-	//接下来就把对应的文件删掉, 然后重新创建新的即可
-	if err := d.txRemove(ctx, tx, dinfo.EntryId, sinfo.FileName); err != nil {
-		return fmt.Errorf("remove same name file in dst dir failed, err:%w", err)
-	}
-	if _, err := d.txCreateEntry(ctx, tx, dinfo.EntryId, &directoryEntryTab{
-		ParentEntryId: dinfo.EntryId,
-		RefData:       sinfo.RefData,
-		FileKind:      sinfo.FileKind,
-		Ctime:         now,
-		Mtime:         now,
-		FileSize:      sinfo.FileSize,
-		FileMode:      sinfo.FileMode,
-		FileName:      sinfo.FileName,
+		//目标地址不存在, 直接修改指向即可
+		if !dexist {
+			if !overwrite {
+				return fmt.Errorf("overwrite = false and file exist")
+			}
+			return e.txChangeParent(ctx, tx, sinfo.EntryId, parentid, &dname)
+		}
+		//存在, 但是为文件, 需要先删除
+		if dinfo.FileKind != defaultFileKindDir {
+			if err := e.txRemove(ctx, tx, parentid, dname); err != nil {
+				return fmt.Errorf("overwrite but remove origin failed, err:%w", err)
+			}
+			return e.txChangeParent(ctx, tx, sinfo.EntryId, parentid, &dname)
+		}
+		_, exist, err := e.txSearchEntry(ctx, tx, dinfo.EntryId, sname)
+		if err != nil {
+			return err
+		}
+		if exist { //不存在, 则直接更改父节点
+			if err := e.txRemove(ctx, tx, dinfo.EntryId, sname); err != nil {
+				return err
+			}
+		}
+		return e.txChangeParent(ctx, tx, sinfo.EntryId, dinfo.EntryId, nil)
 	}); err != nil {
-		return fmt.Errorf("create entry in dst dir failed, err:%w", err)
-	}
-	return nil
-}
-
-func (d *dbDirectory) doMoveOnNonExist(ctx context.Context, tx database.IQueryExecer,
-	sinfo *directoryEntryTab, dparentid uint64, dname string, dinfo *directoryEntryTab, overwrite bool) error {
-	if _, err := d.txCreateEntry(ctx, tx, dparentid, &directoryEntryTab{
-		ParentEntryId: dparentid,
-		RefData:       sinfo.RefData,
-		FileKind:      sinfo.FileKind,
-		Ctime:         time.Now().UnixMilli(),
-		Mtime:         time.Now().UnixMilli(),
-		FileSize:      sinfo.FileSize,
-		FileMode:      sinfo.FileMode,
-		FileName:      dname,
-	}); err != nil {
-		return fmt.Errorf("create src file in non-exist dst failed, err:%w", err)
+		return fmt.Errorf("read dst and move failed, err:%w", err)
 	}
 	return nil
 }
@@ -345,49 +334,7 @@ func (e *dbDirectory) Move(ctx context.Context, src string, dst string, overwrit
 	ddir, dname := e.splitFilename(dst)
 	//TODO: 这里检查下sdir/ddir是否一致
 	if err := e.db.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
-		var sinfo *directoryEntryTab
-		//提取原始信息
-		if err := e.txOnSelectDir(ctx, tx, sdir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
-			info, ok, err := e.txSearchEntry(ctx, tx, parentid, sname)
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return fmt.Errorf("src file not found, err:%w", err)
-			}
-			sinfo = info
-			return nil
-		}); err != nil {
-			return fmt.Errorf("read src info failed, err:%w", err)
-		}
-		//处理move流程
-		if err := e.txOnSelectDir(ctx, tx, ddir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
-			dinfo, dexist, err := e.txSearchEntry(ctx, tx, parentid, dname)
-			if err != nil {
-				return err
-			}
-			//dst存在的情况下
-			// - 如果为dst目录, src会被复制到dst下面
-			// - 如果dst为文件, 那么src会直接覆盖dst，并重命名为dst
-			//不存在的情况下
-			// - 直接将src复制到dst下
-			//无论哪种情况, 最终都要删除src
-			handler := e.doMoveOnExist
-			if !dexist {
-				handler = e.doMoveOnNonExist
-			}
-			if err := handler(ctx, tx, sinfo, parentid, dname, dinfo, overwrite); err != nil {
-				return fmt.Errorf("handle move failed, dexist:%t, err:%w", dexist, err)
-			}
-			if err := e.txRemove(ctx, tx, sinfo.ParentEntryId, sinfo.FileName); err != nil {
-				return fmt.Errorf("tx remove old file failed, pid:%d, name:%s, err:%w",
-					sinfo.ParentEntryId, sinfo.FileName, err)
-			}
-			return nil
-		}); err != nil {
-			return fmt.Errorf("read dst and move failed, err:%w", err)
-		}
-		return nil
+		return e.doTxMove(ctx, tx, sdir, sname, ddir, dname, overwrite)
 	}); err != nil {
 		return fmt.Errorf("do move failed, err:%w", err)
 	}
