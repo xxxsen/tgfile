@@ -76,7 +76,7 @@ func importOneFile(ctx context.Context, h *tar.Header, r *tar.Reader) error {
 	if err != nil {
 		return fmt.Errorf("create file failed, err:%w", err)
 	}
-	if err := filemgr.CreateLink(ctx, h.Name, fileid); err != nil {
+	if err := filemgr.CreateLink(ctx, h.Name, fileid, h.Size, false); err != nil {
 		return fmt.Errorf("create link failed, err:%w", err)
 	}
 	return nil

@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -51,21 +49,6 @@ func (f *fakeFsMgr) searchPrefix(prefix string) ([]*linkInfo, error) {
 		}
 	}
 	return rs, nil
-}
-
-func (f *fakeFsMgr) Stat(ctx context.Context, fileid uint64) (fs.FileInfo, error) {
-	finfo, err := f.searchFileid(fileid)
-	if err != nil {
-		return nil, err
-	}
-	return &defaultFileInfo{
-		FieldSize:  finfo.size,
-		FieldMtime: time.Time{},
-		FieldName:  filepath.Base(finfo.filename),
-		FieldMode:  0644,
-		FieldIsDir: false,
-		FieldSys:   nil,
-	}, nil
 }
 
 type testRSC struct {

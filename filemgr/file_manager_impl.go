@@ -4,12 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"io/fs"
 	"tgfile/blockio"
 	"tgfile/dao"
-	"tgfile/dao/cache"
 	"tgfile/entity"
-	"time"
 
 	"github.com/xxxsen/common/logutil"
 	"go.uber.org/zap"
@@ -22,29 +19,39 @@ type defaultFileManager struct {
 	bkio           blockio.IBlockIO
 }
 
-func (d *defaultFileManager) CreateLink(ctx context.Context, link string, fileid uint64) error {
+func (d *defaultFileManager) CreateLink(ctx context.Context, link string, fileid uint64, size int64, isDir bool) error {
 	_, err := d.fileMappingDao.CreateFileMapping(ctx, &entity.CreateFileMappingRequest{
 		FileName: link,
 		FileId:   fileid,
+		FileSize: size,
+		IsDir:    isDir,
 	})
 	return err
 }
 
-func (d *defaultFileManager) ResolveLink(ctx context.Context, link string) (uint64, error) {
+func (d *defaultFileManager) ResolveLink(ctx context.Context, link string) (*entity.FileMappingItem, error) {
 	fid, ok, err := d.internalGetFileMapping(ctx, link)
 	if err != nil {
-		return 0, fmt.Errorf("open mapping failed, err:%w", err)
+		return nil, fmt.Errorf("open mapping failed, err:%w", err)
 	}
 	if !ok {
-		return 0, fmt.Errorf("link not found")
+		return nil, fmt.Errorf("link not found")
 	}
 	return fid, nil
 }
 
 func (d *defaultFileManager) IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error {
-	return d.fileMappingDao.IterFileMapping(ctx, prefix, func(ctx context.Context, name string, fileid uint64) (bool, error) {
-		return cb(ctx, name, fileid)
+	return d.fileMappingDao.IterFileMapping(ctx, prefix, func(ctx context.Context, name string, ent *entity.FileMappingItem) (bool, error) {
+		return cb(ctx, name, ent)
 	})
+}
+
+func (d *defaultFileManager) RemoveLink(ctx context.Context, link string) error {
+	return d.fileMappingDao.RemoveFileMapping(ctx, link)
+}
+
+func (d *defaultFileManager) RenameLink(ctx context.Context, src, dst string, isOverwrite bool) error {
+	return d.fileMappingDao.RenameFileMapping(ctx, src, dst, isOverwrite)
 }
 
 func (d *defaultFileManager) Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {
@@ -98,21 +105,6 @@ func (d *defaultFileManager) Create(ctx context.Context, size int64, reader io.R
 		return 0, fmt.Errorf("finish create file failed, err:%w", err)
 	}
 	return fileid, nil
-}
-
-func (d *defaultFileManager) Stat(ctx context.Context, fileid uint64) (fs.FileInfo, error) {
-	finfo, ok, err := d.internalGetFileInfo(ctx, fileid)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, fmt.Errorf("file not found")
-	}
-	return &defaultFileInfo{
-		FieldSize:  finfo.FileSize,
-		FieldMtime: time.UnixMilli(finfo.Mtime),
-		FieldName:  "noname",
-	}, nil
 }
 
 func (d *defaultFileManager) internalCreateFileDraft(ctx context.Context, filesize int64, filepartcount int32) (uint64, error) {
@@ -173,24 +165,30 @@ func (d *defaultFileManager) internalGetFilePartInfo(ctx context.Context, fileid
 	return rs.List[0], true, nil
 }
 
-func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filename string) (uint64, bool, error) {
+func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filename string) (*entity.FileMappingItem, bool, error) {
 	rsp, ok, err := d.fileMappingDao.GetFileMapping(ctx, &entity.GetFileMappingRequest{
 		FileName: filename,
 	})
 	if err != nil {
-		return 0, false, err
+		return nil, false, err
 	}
 	if !ok {
-		return 0, false, nil
+		return nil, false, nil
 	}
-	return rsp.Item.FileId, true, nil
+	return rsp.Item, true, nil
 }
 
 func NewFileManager(bkio blockio.IBlockIO) IFileManager {
 	return &defaultFileManager{
-		fileDao:        cache.NewFileDao(dao.NewFileDao()),
-		filePartDao:    cache.NewFilePartDao(dao.NewFilePartDao()),
-		fileMappingDao: cache.NewFileMappingDao(dao.NewFileMappingDao()),
+		fileDao:        dao.NewFileDao(),
+		filePartDao:    dao.NewFilePartDao(),
+		fileMappingDao: dao.NewFileMappingDao(),
 		bkio:           bkio,
 	}
+	// return &defaultFileManager{
+	// 	fileDao:        cache.NewFileDao(dao.NewFileDao()),
+	// 	filePartDao:    cache.NewFilePartDao(dao.NewFilePartDao()),
+	// 	fileMappingDao: cache.NewFileMappingDao(dao.NewFileMappingDao()),
+	// 	bkio:           bkio,
+	// }
 }

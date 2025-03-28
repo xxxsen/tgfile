@@ -3,10 +3,10 @@ package backup
 import (
 	"archive/tar"
 	"compress/gzip"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"tgfile/filemgr"
 	"tgfile/server/model"
 	"time"
@@ -19,8 +19,9 @@ import (
 // Export 将s3数据导出
 func Export(c *gin.Context) {
 	ctx := c.Request.Context()
-	c.Writer.Header().Set("Content-Encoding", "gzip")
-	c.Writer.Header().Set("Content-Type", "application/tar+gzip")
+	// mdzz, 加了文件头了, 火狐直接给解压了...
+	// c.Writer.Header().Set("Content-Encoding", "gzip")
+	// c.Writer.Header().Set("Content-Type", "application/tar+gzip")
 	c.Writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=export.%d.tar.gz", time.Now().UnixMilli()))
 	gz := gzip.NewWriter(c.Writer)
 	defer gz.Close()
@@ -28,32 +29,38 @@ func Export(c *gin.Context) {
 	defer tw.Close()
 	st := &model.StatisticInfo{}
 	start := time.Now()
-	if err := filemgr.IterLink(ctx, "", func(ctx context.Context, link string, fileid uint64) (bool, error) {
-		finfo, err := filemgr.Stat(ctx, fileid)
+	if err := fs.WalkDir(filemgr.AsFileSystem(ctx), "/", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return false, err
+			return err
 		}
-		stream, err := filemgr.Open(ctx, fileid)
+		if d.IsDir() {
+			return nil
+		}
+		ent, err := filemgr.ResolveLink(ctx, path)
 		if err != nil {
-			return false, err
+			return err
+		}
+		stream, err := filemgr.Open(ctx, ent.FileId)
+		if err != nil {
+			return err
 		}
 		defer stream.Close()
 
 		st.FileCount++
-		st.FileSize += finfo.Size()
+		st.FileSize += ent.FileSize
 		h := &tar.Header{
-			Name: link,
-			Mode: 0644,
-			Size: int64(finfo.Size()),
+			Name: path,
+			Mode: int64(ent.Mode),
+			Size: int64(ent.FileSize),
 		}
 		if err := tw.WriteHeader(h); err != nil {
-			return false, fmt.Errorf("write header failed, fileid:%d, err:%w", fileid, err)
+			return fmt.Errorf("write header failed, fileid:%d, err:%w", ent.FileId, err)
 		}
 		if _, err := io.Copy(tw, stream); err != nil {
-			return false, fmt.Errorf("write body failed, fileid:%d, err:%w", fileid, err)
+			return fmt.Errorf("write body failed, fileid:%d, err:%w", ent.FileId, err)
 		}
-		logutil.GetLogger(ctx).Debug("iter one link succ", zap.String("link", link), zap.Uint64("file_id", fileid))
-		return true, nil
+		logutil.GetLogger(ctx).Debug("iter one link succ", zap.String("link", path), zap.Uint64("file_id", ent.FileId))
+		return nil
 	}); err != nil {
 		logutil.GetLogger(ctx).Error("iter link failed", zap.Error(err))
 		return
