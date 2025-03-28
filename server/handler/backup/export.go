@@ -19,8 +19,9 @@ import (
 // Export 将s3数据导出
 func Export(c *gin.Context) {
 	ctx := c.Request.Context()
-	c.Writer.Header().Set("Content-Encoding", "gzip")
-	c.Writer.Header().Set("Content-Type", "application/tar+gzip")
+	// mdzz, 加了文件头了, 火狐直接给解压了...
+	// c.Writer.Header().Set("Content-Encoding", "gzip")
+	// c.Writer.Header().Set("Content-Type", "application/tar+gzip")
 	c.Writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=export.%d.tar.gz", time.Now().UnixMilli()))
 	gz := gzip.NewWriter(c.Writer)
 	defer gz.Close()
