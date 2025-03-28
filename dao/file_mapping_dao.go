@@ -19,6 +19,7 @@ type IFileMappingDao interface {
 	CreateFileMapping(ctx context.Context, req *entity.CreateFileMappingRequest) (*entity.CreateFileMappingResponse, error)
 	IterFileMapping(ctx context.Context, prefix string, cb IterFileMappingFunc) error
 	RemoveFileMapping(ctx context.Context, link string) error
+	RenameFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error
 }
 
 type fileMappingDao struct {
@@ -82,6 +83,10 @@ func (f *fileMappingDao) retrieveFileId(ent *directory.DirectoryEntry) (uint64, 
 
 func (f *fileMappingDao) RemoveFileMapping(ctx context.Context, link string) error {
 	return f.dir.Remove(ctx, link)
+}
+
+func (f *fileMappingDao) RenameFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error {
+	return f.dir.Move(ctx, src, dst, isOverwrite)
 }
 
 func (f *fileMappingDao) IterFileMapping(ctx context.Context, prefix string, cb IterFileMappingFunc) error {

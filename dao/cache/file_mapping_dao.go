@@ -57,3 +57,9 @@ func (f *fileMappingDao) RemoveFileMapping(ctx context.Context, link string) err
 	defer cache.Del(ctx, f.buildCacheKey(link))
 	return f.impl.RemoveFileMapping(ctx, link)
 }
+
+func (f *fileMappingDao) RenameFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error {
+	defer cache.Del(ctx, f.buildCacheKey(src))
+	defer cache.Del(ctx, f.buildCacheKey(dst))
+	return f.impl.RenameFileMapping(ctx, src, dst, isOverwrite)
+}
