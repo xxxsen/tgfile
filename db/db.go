@@ -63,6 +63,12 @@ CREATE TABLE IF NOT EXISTS tg_file_mapping_tab (
 );
 		`,
 	},
+	{
+		name: "create_entryid_index_on_tg_file_mapping_tab",
+		sql: `
+		CREATE INDEX IF NOT EXISTS idx_entry_id ON tg_file_mapping_tab (entry_id);
+		`,
+	},
 }
 
 func InitDB(file string) error {
