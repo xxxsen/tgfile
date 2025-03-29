@@ -12,12 +12,14 @@ import (
 func handlePut(c *gin.Context) {
 	ctx := c.Request.Context()
 	file := c.Request.URL.Path
-	fileid, err := filemgr.Create(ctx, c.Request.ContentLength, c.Request.Body)
+	length := c.Request.ContentLength
+	reader := c.Request.Body
+	fileid, err := filemgr.Create(ctx, length, reader)
 	if err != nil {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("create file failed, err:%w", err))
 		return
 	}
-	if err := filemgr.CreateLink(ctx, file, fileid, c.Request.ContentLength, false); err != nil {
+	if err := filemgr.CreateLink(ctx, file, fileid, length, false); err != nil {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
 		return
 	}
