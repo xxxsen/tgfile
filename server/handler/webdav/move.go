@@ -23,14 +23,6 @@ func handleMove(c *gin.Context) {
 		return
 	}
 	dst := path.Clean(dsturi.Path)
-	if src == dst {
-		proxyutil.FailStatus(c, http.StatusForbidden, fmt.Errorf("src equal to dst"))
-		return
-	}
-	if strings.HasPrefix(dst, src) {
-		proxyutil.FailStatus(c, http.StatusForbidden, fmt.Errorf("src path should not be the prefix of dst"))
-		return
-	}
 	if !checkSameWebdavRoot(src, dst) {
 		proxyutil.FailStatus(c, http.StatusBadRequest, fmt.Errorf("dst not in webdav root"))
 		return

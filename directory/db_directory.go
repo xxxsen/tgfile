@@ -70,15 +70,15 @@ func (e *dbDirectory) table() string {
 	return e.tab
 }
 
-func (e *dbDirectory) splitFilename(filename string) (string, string) {
+func (e *dbDirectory) splitFilename(filename string) (string, string, bool) {
 	filename = path.Clean(filename)
 	if filename == "/" {
-		return "", "/"
+		return "", "/", true
 	}
 	filename = strings.TrimSuffix(filename, "/")
 	dir := path.Dir(filename)
 	name := path.Base(filename)
-	return dir, name
+	return dir, name, false
 }
 
 func (e *dbDirectory) txSearchEntry(ctx context.Context, q database.IQueryer, pid uint64, name string) (*directoryEntryTab, bool, error) {
@@ -267,8 +267,47 @@ func (e *dbDirectory) txOnSelectDir(ctx context.Context, tx database.IQueryExece
 	return cb(ctx, parentid, tx)
 }
 
+func (e *dbDirectory) txGetRoot(ctx context.Context, tx database.IQueryExecer) (*directoryEntryTab, bool, error) {
+	return e.txSearchEntry(ctx, tx, 0, "/")
+}
+
+func (e *dbDirectory) txCreateRoot(ctx context.Context, tx database.IQueryExecer) (*directoryEntryTab, error) {
+	ent, ok, err := e.txGetRoot(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		return ent, nil
+	}
+	now := time.Now().UnixMilli()
+	_, err = e.txCreateEntry(ctx, tx, 0, &directoryEntryTab{
+		ParentEntryId: 0,
+		RefData:       "",
+		FileKind:      defaultFileKindDir,
+		Ctime:         now,
+		Mtime:         now,
+		FileSize:      0,
+		FileMode:      defaultEntryFileMode,
+		FileName:      "/",
+	})
+	if err != nil {
+		return nil, err
+	}
+	ent, ok, err = e.txGetRoot(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, fmt.Errorf("create root but still not found")
+	}
+	return ent, nil
+}
+
 func (e *dbDirectory) txGetEntryInfo(ctx context.Context, tx database.IQueryExecer, location string, exportLastParentId *uint64) (*directoryEntryTab, bool, error) {
-	dir, name := e.splitFilename(location)
+	dir, name, isRoot := e.splitFilename(location)
+	if isRoot {
+		return e.txGetRoot(ctx, tx)
+	}
 	var sinfo *directoryEntryTab
 	var exist bool
 	if err := e.txOnSelectDir(ctx, tx, dir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
@@ -304,7 +343,14 @@ func (e *dbDirectory) onSelectDir(ctx context.Context, dir string, allowCreate b
 }
 
 func (e *dbDirectory) Mkdir(ctx context.Context, dir string) error {
-	pdir, name := e.splitFilename(dir)
+	pdir, name, isRoot := e.splitFilename(dir)
+	if isRoot {
+		if _, err := e.txCreateRoot(ctx, e.db); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	if err := e.onSelectDir(ctx, pdir, true, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
 		exist, err := e.txIsEntryExist(ctx, tx, parentid, name)
 		if err != nil {
@@ -354,8 +400,12 @@ func (e *dbDirectory) doTxIterAndCopy(ctx context.Context, tx database.IQueryExe
 }
 
 func (e *dbDirectory) doTxCopy(ctx context.Context, tx database.IQueryExecer, src, dst string, overwrite bool) error {
-	if err := e.precheckMoveCopy(src, dst); err != nil {
+	next, err := e.precheckMoveCopy(src, dst)
+	if err != nil {
 		return fmt.Errorf("precheck copy failed, err:%w", err)
+	}
+	if !next {
+		return nil
 	}
 
 	sinfo, exist, err := e.txGetEntryInfo(ctx, tx, src, nil)
@@ -398,28 +448,32 @@ func (e *dbDirectory) Copy(ctx context.Context, src string, dst string, overwrit
 	return nil
 }
 
-func (e *dbDirectory) precheckMoveCopy(src string, dst string) error {
+func (e *dbDirectory) precheckMoveCopy(src string, dst string) (bool, error) {
 	s, err := e.rebuildDirItems(src)
 	if err != nil {
-		return err
+		return false, err
 	}
 	d, err := e.rebuildDirItems(dst)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if e.isArrayEqual(s, d) {
-		return fmt.Errorf("same path")
+		return false, nil
 	}
 	if e.isArrayHasSuffix(d, s) {
-		return fmt.Errorf("dst is sub dir of src")
+		return false, fmt.Errorf("dst is sub dir of src")
 	}
-	return nil
+	return true, nil
 }
 
 func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, src, dst string, overwrite bool) error {
 	//将/a/b/1.txt 移动到目录/c下, 那么src = /a/b/1.txt, dst = /c/1.txt
-	if err := e.precheckMoveCopy(src, dst); err != nil {
+	next, err := e.precheckMoveCopy(src, dst)
+	if err != nil {
 		return fmt.Errorf("pre check move failed, err:%w", err)
+	}
+	if !next {
+		return nil
 	}
 	sinfo, ok, err := e.txGetEntryInfo(ctx, tx, src, nil)
 	if err != nil {
@@ -434,7 +488,10 @@ func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, sr
 	if err != nil {
 		return err
 	}
-	_, dname := e.splitFilename(dst)
+	_, dname, isRoot := e.splitFilename(dst)
+	if isRoot {
+		return fmt.Errorf("entry should mount to root, dst name should not be root")
+	}
 	if !dexist { //目标不存在, 那么直接把src挂到dst的parent上即可
 		return e.txChangeParent(ctx, tx, sinfo.EntryId, parentid, &dname)
 	}
@@ -461,51 +518,38 @@ func (e *dbDirectory) Move(ctx context.Context, src string, dst string, overwrit
 
 }
 
-func (e *dbDirectory) doRemoveDir(ctx context.Context, tx database.IQueryExecer, parentid uint64, name string) error {
+func (e *dbDirectory) txDoRemove(ctx context.Context, tx database.IQueryExecer, parentid uint64, name string) error {
 	ent, ok, err := e.txSearchEntry(ctx, tx, parentid, name)
 	if err != nil {
 		return fmt.Errorf("read entry failed, pid:%d, name:%s", parentid, name)
 	}
-	if !ok {
-		return fmt.Errorf("entry not found, pid:%d, name:%s", parentid, name)
+	if !ok { //已经被删了
+		return nil
 	}
-	items, err := e.txListAllDir(ctx, tx, ent.EntryId)
-	if err != nil {
-		return fmt.Errorf("scan entry from pid:%d failed, err:%w", parentid, err)
-	}
-	for _, item := range items {
-		if item.FileKind == defaultFileKindDir {
-			if err := e.doRemoveDir(ctx, tx, item.ParentEntryId, item.FileName); err != nil {
-				return fmt.Errorf("remove dir entry failed, entryid:%d, entryname:%s, err:%d", item.EntryId, item.FileName, err)
+	if ent.FileKind == defaultFileKindDir {
+		items, err := e.txListAllDir(ctx, tx, ent.EntryId)
+		if err != nil {
+			return fmt.Errorf("scan entry from pid:%d failed, err:%w", parentid, err)
+		}
+		for _, item := range items {
+			if err := e.txDoRemove(ctx, tx, item.ParentEntryId, item.FileName); err != nil {
+				return err
 			}
-			continue
-		}
-		if err := e.txRemove(ctx, tx, item.ParentEntryId, item.FileName); err != nil {
-			return fmt.Errorf("remove file entry failed, parentid:%d, entryname:%s, err:%w", parentid, item.FileName, err)
 		}
 	}
-	//删除目录自身
-	if err := e.txRemove(ctx, tx, parentid, name); err != nil {
-		return fmt.Errorf("remove dir self failed, parentid:%d, name:%s, err:%w", parentid, name, err)
-	}
-	return nil
+	return e.txRemove(ctx, tx, parentid, name)
 }
 
 func (e *dbDirectory) Remove(ctx context.Context, filename string) error {
 	//递归删除其子节点, 再删除父节点
-	dir, name := e.splitFilename(filename)
-	if err := e.onSelectDir(ctx, dir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
-		ent, ok, err := e.txSearchEntry(ctx, tx, parentid, name)
-		if err != nil {
-			return err
+	dir, name, isRoot := e.splitFilename(filename)
+	if err := e.db.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
+		if isRoot {
+			return e.txDoRemove(ctx, tx, 0, "/")
 		}
-		if !ok {
-			return nil
-		}
-		if ent.FileKind == defaultFileKindDir {
-			return e.doRemoveDir(ctx, tx, parentid, name)
-		}
-		return e.txRemove(ctx, tx, parentid, name)
+		return e.txOnSelectDir(ctx, tx, dir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
+			return e.txDoRemove(ctx, tx, parentid, name)
+		})
 	}); err != nil {
 		return err
 	}
@@ -514,7 +558,10 @@ func (e *dbDirectory) Remove(ctx context.Context, filename string) error {
 
 func (e *dbDirectory) Create(ctx context.Context, filename string, size int64, refdata string) error {
 	filename = strings.TrimSuffix(filename, "/")
-	dir, name := e.splitFilename(filename)
+	dir, name, isRoot := e.splitFilename(filename)
+	if isRoot {
+		return fmt.Errorf("root node should be dir")
+	}
 	if err := e.onSelectDir(ctx, dir, true, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
 		exist, err := e.txIsEntryExist(ctx, tx, parentid, name)
 		if err != nil {
@@ -560,17 +607,16 @@ func (e *dbDirectory) List(ctx context.Context, dir string) ([]*DirectoryEntry, 
 }
 
 func (e *dbDirectory) Stat(ctx context.Context, filename string) (*DirectoryEntry, error) {
-	dir, name := e.splitFilename(filename)
-	if name == "/" {
-		return &DirectoryEntry{
-			RefData: "",
-			Name:    name,
-			Ctime:   0,
-			Mtime:   0,
-			Mode:    defaultEntryFileMode,
-			Size:    0,
-			IsDir:   true,
-		}, nil
+	dir, name, isRoot := e.splitFilename(filename)
+	if isRoot {
+		ent, ok, err := e.txGetRoot(ctx, e.db)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, fmt.Errorf("root node not found")
+		}
+		return e.convTabDataToEntryData(ent), nil
 	}
 	var rs *DirectoryEntry
 	if err := e.onSelectDir(ctx, dir, true, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
