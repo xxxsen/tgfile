@@ -89,7 +89,9 @@ services:
 
 **Webdav接口**
 
-默认根路径为 **/webdav**, 且不能修改。
+|API|Method|鉴权|备注|
+|---|---|---|---|
+|/webdav|GET/...|true|根路径仅能为'/webdav', 不支持配置|
 
 可以通过下面命令验证:
 ```shell
