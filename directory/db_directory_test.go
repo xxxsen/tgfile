@@ -122,19 +122,19 @@ func TestRemove(t *testing.T) {
 	assert.Error(t, err)
 }
 
-type prepareCreateItem struct {
+type testMovePrepareItem struct {
 	link  string
 	isDir bool
 }
 
-type moveItem struct {
+type testMoveMoveItem struct {
 	src       string
 	dst       string
 	overwrite bool
 	hasErr    bool
 }
 
-type testItem struct {
+type testMoveTestItem struct {
 	link  string
 	exist bool
 	isDir bool
@@ -142,9 +142,9 @@ type testItem struct {
 
 type testMovePair struct {
 	name        string
-	prepareList []prepareCreateItem
-	move        moveItem
-	testList    []testItem
+	prepareList []testMovePrepareItem
+	move        testMoveMoveItem
+	testList    []testMoveTestItem
 }
 
 func TestMove(t *testing.T) {
@@ -155,13 +155,13 @@ func TestMove(t *testing.T) {
 	testList := []testMovePair{
 		{
 			name: "check_same_path",
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/b/c/d",
 					isDir: true,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src:    "/a/b/c/d",
 				dst:    "/a/b/c/d",
 				hasErr: true,
@@ -169,7 +169,7 @@ func TestMove(t *testing.T) {
 		},
 		{
 			name: "check_succ_move",
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/b/c/d",
 					isDir: true,
@@ -179,11 +179,11 @@ func TestMove(t *testing.T) {
 					isDir: true,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src: "/a/b/c/d",
 				dst: "/b/c/d",
 			},
-			testList: []testItem{
+			testList: []testMoveTestItem{
 				{
 					link:  "/a/b/c/d",
 					exist: false,
@@ -207,7 +207,7 @@ func TestMove(t *testing.T) {
 		},
 		{
 			name: "check_file_move",
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/1.txt",
 					isDir: false,
@@ -217,13 +217,13 @@ func TestMove(t *testing.T) {
 					isDir: true,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src:       "/a/1.txt",
 				dst:       "/b/2.txt",
 				overwrite: false,
 				hasErr:    false,
 			},
-			testList: []testItem{
+			testList: []testMoveTestItem{
 				{
 					link:  "/a",
 					exist: true,
@@ -241,7 +241,7 @@ func TestMove(t *testing.T) {
 		},
 		{
 			name: "check_file_overwrite",
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/1.txt",
 					isDir: false,
@@ -251,13 +251,13 @@ func TestMove(t *testing.T) {
 					isDir: true,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src:       "/a/1.txt",
 				dst:       "/b/1.txt",
 				overwrite: false,
 				hasErr:    false,
 			},
-			testList: []testItem{
+			testList: []testMoveTestItem{
 				{
 					link:  "/a",
 					exist: true,
@@ -275,7 +275,7 @@ func TestMove(t *testing.T) {
 		},
 		{
 			name: "check_sub_path_move",
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/b/c",
 					isDir: true,
@@ -285,7 +285,7 @@ func TestMove(t *testing.T) {
 					isDir: true,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src:       "/a/b/c",
 				dst:       "/a/b/c/d/e/c",
 				overwrite: false,
@@ -294,7 +294,7 @@ func TestMove(t *testing.T) {
 		},
 		{
 			name: "check_dir_overwrite_file", //目标为文件, 那么可以overwrite
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/b/c",
 					isDir: true,
@@ -304,13 +304,13 @@ func TestMove(t *testing.T) {
 					isDir: false,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src:       "/a/b/c",
 				dst:       "/x/y/z/c",
 				overwrite: true,
 				hasErr:    false,
 			},
-			testList: []testItem{
+			testList: []testMoveTestItem{
 				{
 					link:  "/a/b/c",
 					exist: false,
@@ -325,7 +325,7 @@ func TestMove(t *testing.T) {
 		},
 		{
 			name: "check_dir_overwrite_dir", //目标为dir, 无法进行overwrite
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/b/c",
 					isDir: true,
@@ -335,7 +335,7 @@ func TestMove(t *testing.T) {
 					isDir: true,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src:       "/a/b/c",
 				dst:       "/1/2/c",
 				overwrite: true,

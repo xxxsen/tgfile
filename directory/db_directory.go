@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -72,13 +71,13 @@ func (e *dbDirectory) table() string {
 }
 
 func (e *dbDirectory) splitFilename(filename string) (string, string) {
-	filename = filepath.Clean(filename)
+	filename = path.Clean(filename)
 	if filename == "/" {
 		return "", "/"
 	}
 	filename = strings.TrimSuffix(filename, "/")
-	dir := filepath.Dir(filename)
-	name := filepath.Base(filename)
+	dir := path.Dir(filename)
+	name := path.Base(filename)
 	return dir, name
 }
 
@@ -268,6 +267,33 @@ func (e *dbDirectory) txOnSelectDir(ctx context.Context, tx database.IQueryExece
 	return cb(ctx, parentid, tx)
 }
 
+func (e *dbDirectory) txGetEntryInfo(ctx context.Context, tx database.IQueryExecer, location string, exportLastParentId *uint64) (*directoryEntryTab, bool, error) {
+	dir, name := e.splitFilename(location)
+	var sinfo *directoryEntryTab
+	var exist bool
+	if err := e.txOnSelectDir(ctx, tx, dir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
+		if exportLastParentId != nil {
+			*exportLastParentId = parentid
+		}
+		ent, ok, err := e.txSearchEntry(ctx, tx, parentid, name)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		sinfo = ent
+		exist = true
+		return nil
+	}); err != nil {
+		return nil, false, err
+	}
+	if !exist {
+		return nil, false, nil
+	}
+	return sinfo, true, nil
+}
+
 func (e *dbDirectory) onSelectDir(ctx context.Context, dir string, allowCreate bool, cb onSelectDirFunc) error {
 	if err := e.db.OnTransation(ctx, func(ctx context.Context, qe database.IQueryExecer) error {
 		return e.txOnSelectDir(ctx, qe, dir, allowCreate, cb)
@@ -297,11 +323,83 @@ func (e *dbDirectory) Mkdir(ctx context.Context, dir string) error {
 	return nil
 }
 
-func (e *dbDirectory) Copy(ctx context.Context, src string, dst string, overwrite bool) error {
-	return fmt.Errorf("not impl yet")
+func (e *dbDirectory) doTxIterAndCopy(ctx context.Context, tx database.IQueryExecer, srcinfo *directoryEntryTab, dstparent uint64) error {
+	//TODO: 确认下这个srcparent是否需要
+	now := time.Now().UnixMilli()
+	dstentid, err := e.txCreateEntry(ctx, tx, dstparent, &directoryEntryTab{
+		ParentEntryId: dstparent,
+		RefData:       srcinfo.RefData,
+		FileKind:      srcinfo.FileKind,
+		Ctime:         now,
+		Mtime:         now,
+		FileSize:      srcinfo.FileSize,
+		FileMode:      srcinfo.FileMode,
+		FileName:      srcinfo.FileName,
+	})
+	if err != nil {
+		return err
+	}
+	if srcinfo.FileKind == defaultFileKindFile { //如果是文件, 则直接结束
+		return nil
+	}
+	items, err := e.txListAllDir(ctx, tx, srcinfo.EntryId)
+	if err != nil {
+		return fmt.Errorf("list all dir failed, eid:%d, err:%w", srcinfo.EntryId, err)
+	}
+	for _, item := range items { //递归创建子节点
+		if err := e.doTxIterAndCopy(ctx, tx, item, dstentid); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
-func (e *dbDirectory) precheckMove(src string, dst string) error {
+func (e *dbDirectory) doTxCopy(ctx context.Context, tx database.IQueryExecer, src, dst string, overwrite bool) error {
+	if err := e.precheckMoveCopy(src, dst); err != nil {
+		return fmt.Errorf("precheck copy failed, err:%w", err)
+	}
+
+	sinfo, exist, err := e.txGetEntryInfo(ctx, tx, src, nil)
+	if err != nil {
+		return err
+	}
+	if !exist {
+		return fmt.Errorf("src not found, loc:%s", src)
+	}
+	var dstparentid uint64
+	dinfo, exist, err := e.txGetEntryInfo(ctx, tx, dst, &dstparentid)
+	if err != nil {
+		return err
+	}
+	if exist {
+		if dinfo.FileKind == defaultFileKindDir { //存在且目标为目录, 直接跳过后续流程
+			return fmt.Errorf("copy dst dir exist, skip next")
+		}
+		//如果为文件, 则需要检查是否启用overwrite
+		if !overwrite {
+			return fmt.Errorf("dst exist and overwrite = false, skip next")
+		}
+		if err := e.txRemove(ctx, tx, dinfo.ParentEntryId, dinfo.FileName); err != nil {
+			return fmt.Errorf("delete before copy failed, err:%w", err)
+		}
+	}
+	//执行递归copy流程
+	if err := e.doTxIterAndCopy(ctx, tx, sinfo, dstparentid); err != nil {
+		return fmt.Errorf("do iter copy failed, srcparentid:%d, dstparentid:%d, sname:%s, err:%w", sinfo.ParentEntryId, dstparentid, sinfo.FileName, err)
+	}
+	return nil
+}
+
+func (e *dbDirectory) Copy(ctx context.Context, src string, dst string, overwrite bool) error {
+	if err := e.db.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
+		return e.doTxCopy(ctx, tx, src, dst, overwrite)
+	}); err != nil {
+		return fmt.Errorf("do copy failed, err:%w", err)
+	}
+	return nil
+}
+
+func (e *dbDirectory) precheckMoveCopy(src string, dst string) error {
 	s, err := e.rebuildDirItems(src)
 	if err != nil {
 		return err
@@ -321,52 +419,37 @@ func (e *dbDirectory) precheckMove(src string, dst string) error {
 
 func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, src, dst string, overwrite bool) error {
 	//将/a/b/1.txt 移动到目录/c下, 那么src = /a/b/1.txt, dst = /c/1.txt
-	if err := e.precheckMove(src, dst); err != nil {
+	if err := e.precheckMoveCopy(src, dst); err != nil {
 		return fmt.Errorf("pre check move failed, err:%w", err)
 	}
-	sdir, sname := e.splitFilename(src)
-	ddir, dname := e.splitFilename(dst)
-
-	var sinfo *directoryEntryTab
-	//提取原始信息
-	if err := e.txOnSelectDir(ctx, tx, sdir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
-		info, ok, err := e.txSearchEntry(ctx, tx, parentid, sname)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("src file not found, err:%w", err)
-		}
-		sinfo = info
-		return nil
-	}); err != nil {
-		return fmt.Errorf("read src info failed, err:%w", err)
+	sinfo, ok, err := e.txGetEntryInfo(ctx, tx, src, nil)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("move src not found, location:%s", src)
 	}
 	//处理move流程
-	if err := e.txOnSelectDir(ctx, tx, ddir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
-		dinfo, dexist, err := e.txSearchEntry(ctx, tx, parentid, dname)
-		if err != nil {
-			return err
-		}
-		//目标地址不存在, 直接修改指向即可
-		if !dexist {
-			return e.txChangeParent(ctx, tx, sinfo.EntryId, parentid, &dname)
-		}
-		//存在, 但是为目录, 那么直接返回错误, 不允许直接删除目录
-		if dinfo.FileKind == defaultFileKindDir {
-			return fmt.Errorf("not allow to overwrite dir")
-		}
-		if !overwrite {
-			return fmt.Errorf("overwrite = false and file exist")
-		}
-		if err := e.txRemove(ctx, tx, parentid, dname); err != nil {
-			return fmt.Errorf("overwrite but remove origin failed, err:%w", err)
-		}
-		return e.txChangeParent(ctx, tx, sinfo.EntryId, parentid, &dname)
-	}); err != nil {
-		return fmt.Errorf("read dst and move failed, err:%w", err)
+	var parentid uint64
+	dinfo, dexist, err := e.txGetEntryInfo(ctx, tx, dst, &parentid)
+	if err != nil {
+		return err
 	}
-	return nil
+	_, dname := e.splitFilename(dst)
+	if !dexist { //目标不存在, 那么直接把src挂到dst的parent上即可
+		return e.txChangeParent(ctx, tx, sinfo.EntryId, parentid, &dname)
+	}
+	if dinfo.FileKind == defaultFileKindDir { //不允许直接覆盖dir
+		return fmt.Errorf("not allow to overwrite dir")
+	}
+	if !overwrite { //文件存在, 但是又没又overwrite选项, 直接返回
+		return fmt.Errorf("overwrite = false and file exist")
+	}
+	//删除老的, 并修改src父节点
+	if err := e.txRemove(ctx, tx, parentid, dname); err != nil {
+		return fmt.Errorf("overwrite but remove origin failed, err:%w", err)
+	}
+	return e.txChangeParent(ctx, tx, sinfo.EntryId, parentid, &dname)
 }
 
 func (e *dbDirectory) Move(ctx context.Context, src string, dst string, overwrite bool) error {
