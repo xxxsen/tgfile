@@ -324,7 +324,6 @@ func (e *dbDirectory) Mkdir(ctx context.Context, dir string) error {
 }
 
 func (e *dbDirectory) doTxIterAndCopy(ctx context.Context, tx database.IQueryExecer, srcinfo *directoryEntryTab, dstparent uint64) error {
-	//TODO: 确认下这个srcparent是否需要
 	now := time.Now().UnixMilli()
 	dstentid, err := e.txCreateEntry(ctx, tx, dstparent, &directoryEntryTab{
 		ParentEntryId: dstparent,
