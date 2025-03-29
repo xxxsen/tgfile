@@ -122,6 +122,33 @@ func TestRemove(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestRemoveRoot(t *testing.T) {
+	ctx := context.Background()
+	for i := 0; i < 10; i++ {
+		err := dav.Create(ctx, fmt.Sprintf("/file_%d.txt", i), 0, "")
+		assert.NoError(t, err)
+	}
+	for i := 0; i < 10; i++ {
+		err := dav.Mkdir(ctx, fmt.Sprintf("/dir_%d", i))
+		assert.NoError(t, err)
+	}
+	ents, err := dav.List(ctx, "/")
+	assert.NoError(t, err)
+	assert.Len(t, ents, 20)
+	//
+	err = dav.Remove(ctx, "/")
+	assert.NoError(t, err)
+	//
+	_, err = dav.List(ctx, "/")
+	assert.Error(t, err)
+	//
+	err = dav.Mkdir(ctx, "/")
+	assert.NoError(t, err)
+	ents, err = dav.List(ctx, "/")
+	assert.NoError(t, err)
+	assert.Len(t, ents, 0)
+}
+
 type testMovePrepareItem struct {
 	link  string
 	isDir bool
