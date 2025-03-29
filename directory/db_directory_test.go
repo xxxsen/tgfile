@@ -124,6 +124,8 @@ func TestRemove(t *testing.T) {
 
 func TestRemoveRoot(t *testing.T) {
 	ctx := context.Background()
+	err := dav.Remove(ctx, "/")
+	assert.NoError(t, err)
 	for i := 0; i < 10; i++ {
 		err := dav.Create(ctx, fmt.Sprintf("/file_%d.txt", i), 0, "")
 		assert.NoError(t, err)
