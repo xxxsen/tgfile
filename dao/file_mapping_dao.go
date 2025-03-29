@@ -20,6 +20,7 @@ type IFileMappingDao interface {
 	IterFileMapping(ctx context.Context, prefix string, cb IterFileMappingFunc) error
 	RemoveFileMapping(ctx context.Context, link string) error
 	RenameFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error
+	CopyFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error
 }
 
 type fileMappingDao struct {
@@ -87,6 +88,10 @@ func (f *fileMappingDao) RemoveFileMapping(ctx context.Context, link string) err
 
 func (f *fileMappingDao) RenameFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error {
 	return f.dir.Move(ctx, src, dst, isOverwrite)
+}
+
+func (f *fileMappingDao) CopyFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error {
+	return f.dir.Copy(ctx, src, dst, isOverwrite)
 }
 
 func (f *fileMappingDao) IterFileMapping(ctx context.Context, prefix string, cb IterFileMappingFunc) error {

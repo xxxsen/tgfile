@@ -486,6 +486,36 @@ func TestCopy(t *testing.T) {
 			},
 		},
 		{
+			name: "test_same_path",
+			prepareList: []testMovePrepareItem{
+				{
+					link:  "/a/b/c",
+					isDir: true,
+				},
+			},
+			copy: testMoveMoveItem{
+				src:       "/a/b/c",
+				dst:       "/a/b/c",
+				overwrite: true,
+				hasErr:    true,
+			},
+		},
+		{
+			name: "test_sub_path",
+			prepareList: []testMovePrepareItem{
+				{
+					link:  "/a/b/c",
+					isDir: true,
+				},
+			},
+			copy: testMoveMoveItem{
+				src:       "/a/b",
+				dst:       "/a/b/c/b",
+				overwrite: false,
+				hasErr:    true,
+			},
+		},
+		{
 			name: "test_do_recursion_copy",
 			prepareList: []testMovePrepareItem{
 				{

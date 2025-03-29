@@ -55,6 +55,10 @@ func (d *defaultFileManager) RenameLink(ctx context.Context, src, dst string, is
 	return d.fileMappingDao.RenameFileMapping(ctx, src, dst, isOverwrite)
 }
 
+func (d *defaultFileManager) CopyLink(ctx context.Context, src, dst string, isOverwrite bool) error {
+	return d.fileMappingDao.CopyFileMapping(ctx, src, dst, isOverwrite)
+}
+
 func (d *defaultFileManager) Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {
 	finfo, ok, err := d.internalGetFileInfo(ctx, fileid)
 	if err != nil {
