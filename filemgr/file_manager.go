@@ -18,6 +18,7 @@ type IFileManager interface {
 	IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error
 	RemoveLink(ctx context.Context, link string) error
 	RenameLink(ctx context.Context, src, dst string, isOverwrite bool) error
+	CopyLink(ctx context.Context, src, dst string, isOverwrite bool) error
 }
 
 func SetFileManagerImpl(mgr IFileManager) {
@@ -46,6 +47,10 @@ func RenameLink(ctx context.Context, src string, dst string, isOverwrite bool) e
 
 func RemoveLink(ctx context.Context, link string) error {
 	return defaultFileMgr.RemoveLink(ctx, link)
+}
+
+func CopyLink(ctx context.Context, src, dst string, isOverwrite bool) error {
+	return defaultFileMgr.CopyLink(ctx, src, dst, isOverwrite)
 }
 
 func IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error {

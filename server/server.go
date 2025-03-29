@@ -48,6 +48,7 @@ func (s *Server) initMiddleware(router *gin.Engine) {
 		middleware.TraceMiddleware(),
 		middleware.LogRequestMiddleware(),
 		middleware.TryAuthMiddleware(s.c.userMap),
+		middleware.NonLengthIOLimitMiddleware(),
 	}
 	router.Use(mds...)
 }

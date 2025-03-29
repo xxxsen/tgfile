@@ -122,19 +122,19 @@ func TestRemove(t *testing.T) {
 	assert.Error(t, err)
 }
 
-type prepareCreateItem struct {
+type testMovePrepareItem struct {
 	link  string
 	isDir bool
 }
 
-type moveItem struct {
+type testMoveMoveItem struct {
 	src       string
 	dst       string
 	overwrite bool
 	hasErr    bool
 }
 
-type testItem struct {
+type testMoveTestItem struct {
 	link  string
 	exist bool
 	isDir bool
@@ -142,9 +142,9 @@ type testItem struct {
 
 type testMovePair struct {
 	name        string
-	prepareList []prepareCreateItem
-	move        moveItem
-	testList    []testItem
+	prepareList []testMovePrepareItem
+	move        testMoveMoveItem
+	testList    []testMoveTestItem
 }
 
 func TestMove(t *testing.T) {
@@ -155,13 +155,13 @@ func TestMove(t *testing.T) {
 	testList := []testMovePair{
 		{
 			name: "check_same_path",
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/b/c/d",
 					isDir: true,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src:    "/a/b/c/d",
 				dst:    "/a/b/c/d",
 				hasErr: true,
@@ -169,7 +169,7 @@ func TestMove(t *testing.T) {
 		},
 		{
 			name: "check_succ_move",
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/b/c/d",
 					isDir: true,
@@ -179,11 +179,11 @@ func TestMove(t *testing.T) {
 					isDir: true,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src: "/a/b/c/d",
 				dst: "/b/c/d",
 			},
-			testList: []testItem{
+			testList: []testMoveTestItem{
 				{
 					link:  "/a/b/c/d",
 					exist: false,
@@ -207,7 +207,7 @@ func TestMove(t *testing.T) {
 		},
 		{
 			name: "check_file_move",
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/1.txt",
 					isDir: false,
@@ -217,13 +217,13 @@ func TestMove(t *testing.T) {
 					isDir: true,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src:       "/a/1.txt",
 				dst:       "/b/2.txt",
 				overwrite: false,
 				hasErr:    false,
 			},
-			testList: []testItem{
+			testList: []testMoveTestItem{
 				{
 					link:  "/a",
 					exist: true,
@@ -241,7 +241,7 @@ func TestMove(t *testing.T) {
 		},
 		{
 			name: "check_file_overwrite",
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/1.txt",
 					isDir: false,
@@ -251,13 +251,13 @@ func TestMove(t *testing.T) {
 					isDir: true,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src:       "/a/1.txt",
 				dst:       "/b/1.txt",
 				overwrite: false,
 				hasErr:    false,
 			},
-			testList: []testItem{
+			testList: []testMoveTestItem{
 				{
 					link:  "/a",
 					exist: true,
@@ -275,7 +275,7 @@ func TestMove(t *testing.T) {
 		},
 		{
 			name: "check_sub_path_move",
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/b/c",
 					isDir: true,
@@ -285,7 +285,7 @@ func TestMove(t *testing.T) {
 					isDir: true,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src:       "/a/b/c",
 				dst:       "/a/b/c/d/e/c",
 				overwrite: false,
@@ -294,7 +294,7 @@ func TestMove(t *testing.T) {
 		},
 		{
 			name: "check_dir_overwrite_file", //目标为文件, 那么可以overwrite
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/b/c",
 					isDir: true,
@@ -304,13 +304,13 @@ func TestMove(t *testing.T) {
 					isDir: false,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src:       "/a/b/c",
 				dst:       "/x/y/z/c",
 				overwrite: true,
 				hasErr:    false,
 			},
-			testList: []testItem{
+			testList: []testMoveTestItem{
 				{
 					link:  "/a/b/c",
 					exist: false,
@@ -325,7 +325,7 @@ func TestMove(t *testing.T) {
 		},
 		{
 			name: "check_dir_overwrite_dir", //目标为dir, 无法进行overwrite
-			prepareList: []prepareCreateItem{
+			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/b/c",
 					isDir: true,
@@ -335,7 +335,7 @@ func TestMove(t *testing.T) {
 					isDir: true,
 				},
 			},
-			move: moveItem{
+			move: testMoveMoveItem{
 				src:       "/a/b/c",
 				dst:       "/1/2/c",
 				overwrite: true,
@@ -374,5 +374,252 @@ func TestMove(t *testing.T) {
 			assert.Equal(t, tt.isDir, ent.IsDir)
 		}
 	}
+}
 
+type testCopyPair struct {
+	name        string
+	prepareList []testMovePrepareItem
+	copy        testMoveMoveItem
+	testList    []testMoveTestItem
+}
+
+func TestCopy(t *testing.T) {
+	ctx := context.Background()
+	testPath := "/copy_test"
+	err := dav.Mkdir(ctx, testPath)
+	assert.NoError(t, err)
+	testList := []testCopyPair{
+		{
+			name: "test_single_dir_copy",
+			prepareList: []testMovePrepareItem{
+				{
+					link:  "/a/b/c",
+					isDir: true,
+				},
+				{
+					link:  "/x/y/z",
+					isDir: true,
+				},
+			},
+			copy: testMoveMoveItem{
+				src:       "/a/b/c",
+				dst:       "/x/y/z/c",
+				overwrite: false,
+				hasErr:    false,
+			},
+			testList: []testMoveTestItem{
+				{
+					link:  "/a/b/c",
+					exist: true,
+					isDir: true,
+				},
+				{
+					link:  "/x/y/z/c",
+					exist: true,
+					isDir: true,
+				},
+			},
+		},
+		{
+			name: "test_dst_dir_with_overwrite",
+			prepareList: []testMovePrepareItem{
+				{
+					link:  "/a/b/c",
+					isDir: true,
+				},
+				{
+					link:  "/x/y/c",
+					isDir: true,
+				},
+			},
+			copy: testMoveMoveItem{
+				src:       "/a/b/c",
+				dst:       "/x/y/c",
+				overwrite: true,
+				hasErr:    true,
+			},
+		},
+		{
+			name: "test_single_file_copy_no_overwrite",
+			prepareList: []testMovePrepareItem{
+				{
+					link: "/a/b/c.txt",
+				},
+				{
+					link: "/1/2/c.txt",
+				},
+			},
+			copy: testMoveMoveItem{
+				src:       "/a/b/c.txt",
+				dst:       "/1/2/c.txt",
+				overwrite: false,
+				hasErr:    true,
+			},
+		},
+		{
+			name: "test_single_file_copy_overwrite",
+			prepareList: []testMovePrepareItem{
+				{
+					link: "/a/b/1.txt",
+				},
+				{
+					link: "/t/y/1.txt",
+				},
+			},
+			copy: testMoveMoveItem{
+				src:       "/a/b/1.txt",
+				dst:       "/t/y/1.txt",
+				overwrite: true,
+				hasErr:    false,
+			},
+			testList: []testMoveTestItem{
+				{
+					link:  "/a/b/1.txt",
+					exist: true,
+					isDir: false,
+				},
+				{
+					link:  "/t/y/1.txt",
+					exist: true,
+					isDir: false,
+				},
+			},
+		},
+		{
+			name: "test_same_path",
+			prepareList: []testMovePrepareItem{
+				{
+					link:  "/a/b/c",
+					isDir: true,
+				},
+			},
+			copy: testMoveMoveItem{
+				src:       "/a/b/c",
+				dst:       "/a/b/c",
+				overwrite: true,
+				hasErr:    true,
+			},
+		},
+		{
+			name: "test_sub_path",
+			prepareList: []testMovePrepareItem{
+				{
+					link:  "/a/b/c",
+					isDir: true,
+				},
+			},
+			copy: testMoveMoveItem{
+				src:       "/a/b",
+				dst:       "/a/b/c/b",
+				overwrite: false,
+				hasErr:    true,
+			},
+		},
+		{
+			name: "test_do_recursion_copy",
+			prepareList: []testMovePrepareItem{
+				{
+					link: "/a/b/c1/d1/1.txt",
+				},
+				{
+					link: "/a/b/c2/d2/2.txt",
+				},
+				{
+					link: "/a/b/c3/d3/3_1.txt",
+				},
+				{
+					link: "/a/b/c3/d3/3_2.txt",
+				},
+				{
+					link:  "/x/y/z",
+					isDir: true,
+				},
+			},
+			copy: testMoveMoveItem{
+				src:       "/a/b",
+				dst:       "/x/y/z/b",
+				overwrite: false,
+				hasErr:    false,
+			},
+			testList: []testMoveTestItem{
+				{
+					link:  "/a/b/c1/d1/1.txt",
+					exist: true,
+					isDir: false,
+				},
+				{
+					link:  "/a/b/c2/d2/2.txt",
+					exist: true,
+				},
+				{
+					link:  "/x/y/z/b/",
+					exist: true,
+					isDir: true,
+				},
+				{
+					link:  "/x/y/z/b/c1",
+					exist: true,
+					isDir: true,
+				},
+				{
+					link:  "/x/y/z/b/c2",
+					exist: true,
+					isDir: true,
+				},
+				{
+					link:  "/x/y/z/b/c3",
+					exist: true,
+					isDir: true,
+				},
+				{
+					link:  "/x/y/z/b/c1/d1/1.txt",
+					exist: true,
+				},
+				{
+					link:  "/x/y/z/b/c2/d2/2.txt",
+					exist: true,
+				},
+				{
+					link:  "/x/y/z/b/c3/d3/3_1.txt",
+					exist: true,
+				},
+				{
+					link:  "/x/y/z/b/c3/d3/3_2.txt",
+					exist: true,
+				},
+			},
+		},
+	}
+	for _, item := range testList {
+		t.Logf("start test copy item, name:%s", item.name)
+		_ = dav.Remove(ctx, testPath)
+		for _, item := range item.prepareList {
+			link := fmt.Sprintf("%s%s", testPath, item.link)
+			if item.isDir {
+				err = dav.Mkdir(ctx, link)
+				assert.NoError(t, err)
+				continue
+			}
+			err = dav.Create(ctx, link, 0, "")
+			assert.NoError(t, err)
+			ent, err := dav.Stat(ctx, link)
+			assert.NoError(t, err)
+			assert.Equal(t, item.isDir, ent.IsDir)
+		}
+		err := dav.Copy(ctx, fmt.Sprintf("%s%s", testPath, item.copy.src), fmt.Sprintf("%s%s", testPath, item.copy.dst), item.copy.overwrite)
+		assert.Equal(t, item.copy.hasErr, err != nil)
+		if err != nil {
+			t.Logf("-- get err:%v", err)
+			continue
+		}
+		for _, tt := range item.testList {
+			link := fmt.Sprintf("%s%s", testPath, tt.link)
+			ent, err := dav.Stat(ctx, link)
+			assert.Equal(t, tt.exist, err == nil)
+			if !tt.exist {
+				continue
+			}
+			assert.Equal(t, tt.isDir, ent.IsDir)
+		}
+	}
 }
