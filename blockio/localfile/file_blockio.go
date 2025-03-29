@@ -4,7 +4,7 @@ import (
 	"context"
 	"io"
 	"os"
-	"path/filepath"
+	"path"
 	"tgfile/blockio"
 
 	"github.com/google/uuid"
@@ -21,7 +21,7 @@ func (f *localFileBlockIO) MaxFileSize() int64 {
 
 func (f *localFileBlockIO) Upload(ctx context.Context, r io.Reader) (string, error) {
 	key := uuid.NewString()
-	filename := filepath.Join(f.baseDir, key)
+	filename := path.Join(f.baseDir, key)
 	raw, err := io.ReadAll(r)
 	if err != nil {
 		return "", err
@@ -33,7 +33,7 @@ func (f *localFileBlockIO) Upload(ctx context.Context, r io.Reader) (string, err
 }
 
 func (f *localFileBlockIO) Download(ctx context.Context, filekey string, pos int64) (io.ReadCloser, error) {
-	filename := filepath.Join(f.baseDir, filekey)
+	filename := path.Join(f.baseDir, filekey)
 	file, err := os.Open(filename)
 	if err != nil {
 		return nil, err

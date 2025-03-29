@@ -4,7 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"path/filepath"
+	"path"
 	_ "tgfile/auth"
 	"tgfile/blockio"
 	"tgfile/blockio/localfile"
@@ -67,7 +67,7 @@ func initStorage(c *config.Config) error {
 		getter = func() (blockio.IBlockIO, error) {
 			switch c.DebugMode.BlockType {
 			case "file":
-				return localfile.New(filepath.Join(os.TempDir(), "tgfile-temp"), c.DebugMode.BlockSize)
+				return localfile.New(path.Join(os.TempDir(), "tgfile-temp"), c.DebugMode.BlockSize)
 			case "mem":
 				return mem.New(c.DebugMode.BlockSize), nil
 			default:

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
+	"path"
 
 	"github.com/xxxsen/common/logger"
 )
@@ -43,7 +43,7 @@ func Parse(f string) (*Config, error) {
 		return nil, fmt.Errorf("read file:%w", err)
 	}
 	c := &Config{
-		TempDir: filepath.Join(os.TempDir(), "tgfile-temp"),
+		TempDir: path.Join(os.TempDir(), "tgfile-temp"),
 		Webdav: WebdavConfig{
 			Enable: true,
 		},

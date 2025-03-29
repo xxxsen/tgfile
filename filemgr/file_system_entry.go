@@ -6,7 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 	"sync"
 	"tgfile/entity"
@@ -70,7 +70,7 @@ func (f *fileSystemFileEntry) Close() error {
 }
 
 func (f *fileSystemFileEntry) Name() string {
-	return filepath.Base(f.fullName)
+	return path.Base(f.fullName)
 }
 
 func (f *fileSystemFileEntry) IsDir() bool {

@@ -3,7 +3,7 @@ package dao
 import (
 	"context"
 	"fmt"
-	"path/filepath"
+	"path"
 	"strconv"
 	"tgfile/db"
 	"tgfile/directory"
@@ -104,7 +104,7 @@ func (f *fileMappingDao) IterFileMapping(ctx context.Context, prefix string, cb 
 		if err != nil {
 			return err
 		}
-		next, err := cb(ctx, filepath.Join(prefix, item.Name), &entity.FileMappingItem{
+		next, err := cb(ctx, path.Join(prefix, item.Name), &entity.FileMappingItem{
 			FileName: item.Name,
 			FileId:   fid,
 			FileSize: item.Size,
