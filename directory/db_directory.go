@@ -400,8 +400,12 @@ func (e *dbDirectory) doTxIterAndCopy(ctx context.Context, tx database.IQueryExe
 }
 
 func (e *dbDirectory) doTxCopy(ctx context.Context, tx database.IQueryExecer, src, dst string, overwrite bool) error {
-	if err := e.precheckMoveCopy(src, dst); err != nil {
+	next, err := e.precheckMoveCopy(src, dst)
+	if err != nil {
 		return fmt.Errorf("precheck copy failed, err:%w", err)
+	}
+	if !next {
+		return nil
 	}
 
 	sinfo, exist, err := e.txGetEntryInfo(ctx, tx, src, nil)
@@ -444,28 +448,32 @@ func (e *dbDirectory) Copy(ctx context.Context, src string, dst string, overwrit
 	return nil
 }
 
-func (e *dbDirectory) precheckMoveCopy(src string, dst string) error {
+func (e *dbDirectory) precheckMoveCopy(src string, dst string) (bool, error) {
 	s, err := e.rebuildDirItems(src)
 	if err != nil {
-		return err
+		return false, err
 	}
 	d, err := e.rebuildDirItems(dst)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if e.isArrayEqual(s, d) {
-		return fmt.Errorf("same path")
+		return false, nil
 	}
 	if e.isArrayHasSuffix(d, s) {
-		return fmt.Errorf("dst is sub dir of src")
+		return false, fmt.Errorf("dst is sub dir of src")
 	}
-	return nil
+	return true, nil
 }
 
 func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, src, dst string, overwrite bool) error {
 	//将/a/b/1.txt 移动到目录/c下, 那么src = /a/b/1.txt, dst = /c/1.txt
-	if err := e.precheckMoveCopy(src, dst); err != nil {
+	next, err := e.precheckMoveCopy(src, dst)
+	if err != nil {
 		return fmt.Errorf("pre check move failed, err:%w", err)
+	}
+	if !next {
+		return nil
 	}
 	sinfo, ok, err := e.txGetEntryInfo(ctx, tx, src, nil)
 	if err != nil {
