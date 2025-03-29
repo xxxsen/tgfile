@@ -17,6 +17,10 @@ var sqllist = []struct {
 	sql  string
 }{
 	{
+		name: "change busy_timeout",
+		sql:  "PRAGMA busy_timeout = 5000;",
+	},
+	{
 		name: "init_tg_file_tab",
 		sql: `
 CREATE TABLE IF NOT EXISTS tg_file_tab (
