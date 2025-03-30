@@ -8,9 +8,7 @@ import (
 )
 
 func init() {
-	Regist(S3V4AuthName, func() IAuth {
-		return &s3AuthV4{}
-	})
+	register(&s3AuthV4{})
 }
 
 const (
@@ -24,12 +22,8 @@ func (c *s3AuthV4) Name() string {
 	return S3V4AuthName
 }
 
-func (c *s3AuthV4) IsMatchAuthType(ctx *gin.Context) bool {
-	return s3verify.IsRequestSignatureV4(ctx.Request)
-}
-
-func (c *s3AuthV4) Auth(ctx *gin.Context, users map[string]string) (string, error) {
-	ak, ok, err := s3verify.Verify(ctx.Request, users)
+func (c *s3AuthV4) Auth(ctx *gin.Context, fn UserQueryFunc) (string, error) {
+	ak, ok, err := s3verify.Verify(ctx.Request.Context(), ctx.Request, s3verify.UserQueryFunc(fn))
 	if err != nil {
 		return "", err
 	}

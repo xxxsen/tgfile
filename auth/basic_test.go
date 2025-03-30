@@ -22,7 +22,7 @@ func TestBasicAuth(t *testing.T) {
 		}
 		ckak, err := at.Auth(&gin.Context{
 			Request: r,
-		}, users)
+		}, MapUserMatch(users))
 		assert.NoError(t, err)
 		assert.Equal(t, ak, ckak)
 	}
@@ -33,7 +33,7 @@ func TestBasicAuth(t *testing.T) {
 		}
 		ckak, err := at.Auth(&gin.Context{
 			Request: r,
-		}, users)
+		}, MapUserMatch(users))
 		assert.Error(t, err)
 		assert.NotEqual(t, ak, ckak)
 	}

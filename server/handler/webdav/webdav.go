@@ -66,7 +66,7 @@ type webdavHandler struct {
 // buildSrcPath 通过url.Path来构建路径
 func (h *webdavHandler) buildSrcPath(c *gin.Context) string {
 	p := strings.TrimPrefix(c.Request.URL.Path, h.webRoot)
-	return path.Join(h.davRoot, p)
+	return path.Join(h.davRoot, path.Clean(p))
 }
 
 // buildDstPath 通过header中的Destination来构建路径
@@ -80,7 +80,7 @@ func (h *webdavHandler) tryBuildDstPath(c *gin.Context) (string, error) {
 		return "", fmt.Errorf("no webroot in dst path, dst:%s", link)
 	}
 	p := strings.TrimPrefix(uri.Path, h.webRoot)
-	return path.Join(h.davRoot, p), nil
+	return path.Join(h.davRoot, path.Clean(p)), nil
 }
 
 func newWebdavHandler(davRoot string, webRoot string) *webdavHandler {
