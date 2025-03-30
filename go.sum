@@ -97,8 +97,8 @@ github.com/twitchyliquid64/golang-asm v0.15.1 h1:SU5vSMR7hnwNxj24w34ZyCi/FmDZTkS
 github.com/twitchyliquid64/golang-asm v0.15.1/go.mod h1:a1lVb/DtPvCB8fslRZhAngC2+aY1QWCk3Cedj/Gdt08=
 github.com/ugorji/go/codec v1.2.11 h1:BMaWp1Bb6fHwEtbplGBGJ498wD+LKlNSl25MjdZY4dU=
 github.com/ugorji/go/codec v1.2.11/go.mod h1:UNopzCgEMSXjBc6AOMqYvWC1ktqTAfzJZUZgYf6w6lg=
-github.com/xxxsen/common v0.1.19 h1:ANkZ55i5xz079o9gPAZxP5Z/fBzByrPWOO3t6x0vW3M=
-github.com/xxxsen/common v0.1.19/go.mod h1:ntTB8RC/YchxYUod/dI4c2j8Sgj3tGbqTY0caC4QQrQ=
+github.com/xxxsen/common v0.1.20 h1:vC/87zPa6/nqCCf9BhyNumWAuU6YGWQFSBu061sxpvU=
+github.com/xxxsen/common v0.1.20/go.mod h1:ntTB8RC/YchxYUod/dI4c2j8Sgj3tGbqTY0caC4QQrQ=
 github.com/xxxsen/s3verify v0.0.5 h1:aR8pPRl9HlWdc5dt3X9CMaCLwtArr3GyYBsOs9CxM5o=
 github.com/xxxsen/s3verify v0.0.5/go.mod h1:Qz7tlWxAoJVi+Dw9b1X//TX4yRcuKePj+FG/Xg7W5m4=
 github.com/yitter/idgenerator-go v1.3.1 h1:GjVi2BupiDb1IXaXqrkOJE4p6qKdj3NaM3GdAjWok14=

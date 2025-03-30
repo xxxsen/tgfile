@@ -47,7 +47,7 @@ func (f *localFileBlockIO) Download(ctx context.Context, filekey string, pos int
 }
 
 func New(dir string, blksize int64) (blockio.IBlockIO, error) {
-	if err := os.MkdirAll(dir, 0644); err != nil {
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
 	return &localFileBlockIO{baseDir: dir, blksize: blksize}, nil
