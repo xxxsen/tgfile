@@ -33,7 +33,10 @@ func (h *webdavHandler) handlePropfind(c *gin.Context) {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("find entries failed, location:%s, depth:%d, err:%w", location, depth, err))
 		return
 	}
-	res := h.generatePropfindResponse(location, base, entries)
+	//构建最终返回的时候, 需要将地址转换为用户可见的路径
+	// 所以这里实际上应该返回的url的Path
+	userLocation := c.Request.URL.Path
+	res := h.generatePropfindResponse(userLocation, base, entries)
 	if err := h.writeDavResponse(c, res); err != nil {
 		logutil.GetLogger(ctx).Error("write as xml failed", zap.Error(err))
 		return
@@ -89,13 +92,30 @@ func (h *webdavHandler) generatePropfindFileResponse(ms *model.Multistatus, loca
 
 func (h *webdavHandler) generatePropfindDirResponse(ms *model.Multistatus, location string, base *entity.FileMappingItem, ents []*entity.FileMappingItem) {
 	{ //处理父目录
-		root := path.Dir(strings.TrimSuffix(location, "/"))
-		ms.Responses = append(ms.Responses, h.convertFileMappingItemToResponse(root, base))
+		ms.Responses = append(ms.Responses, h.convertLastDirFileMappingItemToResponse(location, base))
 	}
 	//处理子节点
-	root := location
 	for _, item := range ents {
-		ms.Responses = append(ms.Responses, h.convertFileMappingItemToResponse(root, item))
+		ms.Responses = append(ms.Responses, h.convertFileMappingItemToResponse(location, item))
+	}
+}
+
+func (h *webdavHandler) convertLastDirFileMappingItemToResponse(root string, file *entity.FileMappingItem) *model.Response {
+	if !strings.HasSuffix(root, "/") {
+		root += "/"
+	}
+	return &model.Response{
+		Href: root,
+		Propstat: model.Propstat{
+			Prop: model.Prop{
+				DisplayName:  file.FileName,
+				LastModified: time.UnixMilli(file.Mtime).Format(http.TimeFormat),
+				ResourceType: model.ResourceType{
+					Collection: " ",
+				},
+			},
+			Status: "HTTP/1.1 200 OK",
+		},
 	}
 }
 
