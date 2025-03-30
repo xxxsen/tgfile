@@ -28,7 +28,8 @@ tgfile
 		"hackmd"
 	],
 	"webdav": { //启用webdav支持, 实验性, 不一定ok
-		"enable": true 
+		"enable": true,
+		"root": "/"    //指定映射到底层存储的路径, 与接口上的'/webdav'不是一个东西
 	}
 }
 ```
@@ -91,7 +92,7 @@ services:
 
 |API|Method|鉴权|备注|
 |---|---|---|---|
-|/webdav|GET/...|true|根路径仅能为'/webdav', 不支持配置|
+|/webdav|GET/...|true|起始路径为'/webdav', 具体底层映射到哪个路径, 由配置的root决定|
 
 可以通过下面命令验证:
 ```shell
