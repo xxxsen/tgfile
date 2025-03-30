@@ -7,6 +7,7 @@ var AllowMethods = []string{
 	http.MethodPut,
 	http.MethodDelete,
 	http.MethodHead,
+	http.MethodOptions,
 	"PROPPATCH",
 	"PROPFIND",
 	"COPY",

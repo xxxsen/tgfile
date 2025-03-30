@@ -52,6 +52,8 @@ func Handler(davRoot string, webRoot string) gin.HandlerFunc {
 			h.handleMove(c)
 		case "MKCOL":
 			h.handleMkcol(c)
+		case "OPTIONS":
+			h.handleOption(c)
 		default:
 			proxyutil.FailStatus(c, http.StatusForbidden, fmt.Errorf("unsupported method:%s", c.Request.Method))
 		}
