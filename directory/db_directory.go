@@ -12,10 +12,6 @@ import (
 	"github.com/xxxsen/common/database/dbkit"
 )
 
-const (
-	defaultMaxDepthLimit = 16
-)
-
 type IDGenFunc func() uint64
 
 type onSelectDirFunc func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error
@@ -238,9 +234,6 @@ func (e *dbDirectory) txOnSelectDir(ctx context.Context, tx database.IQueryExece
 	items, err := e.rebuildDirItems(dir)
 	if err != nil {
 		return err
-	}
-	if len(items) > defaultMaxDepthLimit {
-		return fmt.Errorf("depth out of limit, current:%d", len(items))
 	}
 	var parentid uint64
 	for idx, item := range items {
