@@ -11,9 +11,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func handleGet(c *gin.Context) {
+func (h *webdavHandler) handleGet(c *gin.Context) {
 	ctx := c.Request.Context()
-	file := c.Request.URL.Path
+	file := h.buildSrcPath(c)
 	item, err := filemgr.ResolveLink(ctx, file)
 	if err != nil {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("read link info failed, err:%w", err))

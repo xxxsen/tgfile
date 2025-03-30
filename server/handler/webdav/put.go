@@ -9,9 +9,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func handlePut(c *gin.Context) {
+func (h *webdavHandler) handlePut(c *gin.Context) {
 	ctx := c.Request.Context()
-	file := c.Request.URL.Path
+	file := h.buildSrcPath(c)
 	length := c.Request.ContentLength
 	reader := c.Request.Body
 	fileid, err := filemgr.Create(ctx, length, reader)

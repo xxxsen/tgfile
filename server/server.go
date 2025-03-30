@@ -84,8 +84,7 @@ func (s *Server) initAPI(router *gin.Engine) {
 		webdavRouter := router.Group("/webdav", mustAuthMiddleware)
 		{
 			for _, method := range webdav.AllowMethods {
-				webdavRouter.Handle(method, "/*all", webdav.Handler)
-				//webdavRouter.Handle(method, "/*file", webdav.Handler)
+				webdavRouter.Handle(method, "/*all", webdav.Handler(s.c.webdavRoot, webdavRouter.BasePath()))
 			}
 		}
 	}
