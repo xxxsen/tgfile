@@ -47,7 +47,7 @@ func (h *webdavHandler) propFindEntries(ctx context.Context, location string, de
 	}
 
 	if !base.IsDir || depth == 0 {
-		return base, []*entity.FileMappingItem{base}, nil
+		return base, []*entity.FileMappingItem{}, nil
 	}
 	rs := make([]*entity.FileMappingItem, 0, 32)
 	if err := filemgr.IterLink(ctx, location, func(ctx context.Context, link string, item *entity.FileMappingItem) (bool, error) {
