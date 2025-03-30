@@ -21,26 +21,26 @@ import (
 
 // 部分代码参考: https://github.com/emersion/go-webdav
 
-func handlePropfind(c *gin.Context) {
+func (h *webdavHandler) handlePropfind(c *gin.Context) {
 	ctx := c.Request.Context()
-	location := c.Request.URL.Path
+	location := h.buildSrcPath(c)
 	var depth int = 0
 	if c.GetHeader("Depth") == "1" || c.GetHeader("Depth") == "infinity" { //非0的场景下， 均只获取直接子级
 		depth = 1
 	}
-	base, entries, err := propFindEntries(ctx, location, depth)
+	base, entries, err := h.propFindEntries(ctx, location, depth)
 	if err != nil {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("find entries failed, location:%s, depth:%d, err:%w", location, depth, err))
 		return
 	}
-	res := generatePropfindResponse(location, base, entries)
-	if err := writeDavResponse(c, res); err != nil {
+	res := h.generatePropfindResponse(location, base, entries)
+	if err := h.writeDavResponse(c, res); err != nil {
 		logutil.GetLogger(ctx).Error("write as xml failed", zap.Error(err))
 		return
 	}
 }
 
-func propFindEntries(ctx context.Context, location string, depth int) (*entity.FileMappingItem, []*entity.FileMappingItem, error) {
+func (h *webdavHandler) propFindEntries(ctx context.Context, location string, depth int) (*entity.FileMappingItem, []*entity.FileMappingItem, error) {
 	base, err := filemgr.ResolveLink(ctx, location)
 	if err != nil {
 		return nil, nil, err
@@ -70,36 +70,36 @@ func propFindEntries(ctx context.Context, location string, depth int) (*entity.F
 	return base, rs, nil
 }
 
-func generatePropfindResponse(location string, base *entity.FileMappingItem, ents []*entity.FileMappingItem) *model.Multistatus {
+func (h *webdavHandler) generatePropfindResponse(location string, base *entity.FileMappingItem, ents []*entity.FileMappingItem) *model.Multistatus {
 	ms := &model.Multistatus{
 		XMLNS: "DAV:",
 	}
 	if !base.IsDir { //文件的场景下
-		generatePropfindFileResponse(ms, location, base)
+		h.generatePropfindFileResponse(ms, location, base)
 		return ms
 	}
 	//构建目录枚举列表
-	generatePropfindDirResponse(ms, location, base, ents)
+	h.generatePropfindDirResponse(ms, location, base, ents)
 	return ms
 }
 
-func generatePropfindFileResponse(ms *model.Multistatus, location string, base *entity.FileMappingItem) {
-	ms.Responses = append(ms.Responses, convertFileMappingItemToResponse(path.Dir(location), base))
+func (h *webdavHandler) generatePropfindFileResponse(ms *model.Multistatus, location string, base *entity.FileMappingItem) {
+	ms.Responses = append(ms.Responses, h.convertFileMappingItemToResponse(path.Dir(location), base))
 }
 
-func generatePropfindDirResponse(ms *model.Multistatus, location string, base *entity.FileMappingItem, ents []*entity.FileMappingItem) {
+func (h *webdavHandler) generatePropfindDirResponse(ms *model.Multistatus, location string, base *entity.FileMappingItem, ents []*entity.FileMappingItem) {
 	{ //处理父目录
 		root := path.Dir(strings.TrimSuffix(location, "/"))
-		ms.Responses = append(ms.Responses, convertFileMappingItemToResponse(root, base))
+		ms.Responses = append(ms.Responses, h.convertFileMappingItemToResponse(root, base))
 	}
 	//处理子节点
 	root := location
 	for _, item := range ents {
-		ms.Responses = append(ms.Responses, convertFileMappingItemToResponse(root, item))
+		ms.Responses = append(ms.Responses, h.convertFileMappingItemToResponse(root, item))
 	}
 }
 
-func convertFileMappingItemToResponse(root string, file *entity.FileMappingItem) *model.Response {
+func (h *webdavHandler) convertFileMappingItemToResponse(root string, file *entity.FileMappingItem) *model.Response {
 	filename := path.Join(root, file.FileName)
 	if file.IsDir && !strings.HasSuffix(filename, "/") {
 		filename += "/"
@@ -123,13 +123,13 @@ func convertFileMappingItemToResponse(root string, file *entity.FileMappingItem)
 		resp.Propstat.Prop.ResourceType.Collection = " " //不能空
 	} else {
 		resp.Propstat.Prop.ContentLength = file.FileSize
-		contentType := determineMimeType(filename) // 基于扩展名提取文件类型
+		contentType := h.determineMimeType(filename) // 基于扩展名提取文件类型
 		resp.Propstat.Prop.ContentType = contentType
 	}
 	return resp
 }
 
-func determineMimeType(name string) string {
+func (h *webdavHandler) determineMimeType(name string) string {
 	ext := path.Ext(name)
 	mimeType := mime.TypeByExtension(ext)
 	if mimeType == "" {

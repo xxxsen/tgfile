@@ -3,8 +3,6 @@ package webdav
 import (
 	"fmt"
 	"net/http"
-	"net/url"
-	"path"
 	"strings"
 	"tgfile/filemgr"
 	"tgfile/proxyutil"
@@ -12,19 +10,13 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func handleMove(c *gin.Context) {
+func (h *webdavHandler) handleMove(c *gin.Context) {
 	ctx := c.Request.Context()
-	src := path.Clean(c.Request.URL.Path)
-	dstlink := c.GetHeader("Destination")
+	src := h.buildSrcPath(c)
 	isOverWrite := c.GetHeader("Overwrite") != "F"
-	dsturi, err := url.Parse(dstlink)
+	dst, err := h.tryBuildDstPath(c)
 	if err != nil {
-		proxyutil.FailStatus(c, http.StatusBadRequest, fmt.Errorf("parse dst failed, dst:%s, err:%w", dstlink, err))
-		return
-	}
-	dst := path.Clean(dsturi.Path)
-	if !checkSameWebdavRoot(src, dst) {
-		proxyutil.FailStatus(c, http.StatusBadRequest, fmt.Errorf("dst not in webdav root"))
+		proxyutil.FailStatus(c, http.StatusBadRequest, fmt.Errorf("build dst path failed, err:%w", err))
 		return
 	}
 	if err := filemgr.RenameLink(ctx, src, dst, isOverWrite); err != nil {
@@ -34,7 +26,7 @@ func handleMove(c *gin.Context) {
 	c.Status(http.StatusCreated)
 }
 
-func checkSameWebdavRoot(src string, dst string) bool {
+func (h *webdavHandler) checkSameWebdavRoot(src string, dst string) bool {
 	src = strings.TrimPrefix(src, "/")
 	idx := strings.Index(src, "/")
 	if idx < 0 {

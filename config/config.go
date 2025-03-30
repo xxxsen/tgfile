@@ -21,7 +21,8 @@ type DebugConfig struct {
 }
 
 type WebdavConfig struct {
-	Enable bool `json:"enable"`
+	Enable bool   `json:"enable"`
+	Root   string `json:"root"`
 }
 
 type Config struct {
@@ -46,6 +47,7 @@ func Parse(f string) (*Config, error) {
 		TempDir: path.Join(os.TempDir(), "tgfile-temp"),
 		Webdav: WebdavConfig{
 			Enable: true,
+			Root:   "/",
 		},
 	}
 	if err := json.Unmarshal(raw, c); err != nil {
