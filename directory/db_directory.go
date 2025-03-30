@@ -597,7 +597,7 @@ func (e *dbDirectory) List(ctx context.Context, dir string) ([]*DirectoryEntry, 
 			return err
 		}
 		for _, item := range items {
-			rs = append(rs, e.convTabDataToEntryData(item))
+			rs = append(rs, item.ToDirectoyEntry())
 		}
 		return nil
 	}); err != nil {
@@ -616,7 +616,7 @@ func (e *dbDirectory) Stat(ctx context.Context, filename string) (*DirectoryEntr
 		if !ok {
 			return nil, fmt.Errorf("root node not found")
 		}
-		return e.convTabDataToEntryData(ent), nil
+		return ent.ToDirectoyEntry(), nil
 	}
 	var rs *DirectoryEntry
 	if err := e.onSelectDir(ctx, dir, true, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
@@ -627,28 +627,12 @@ func (e *dbDirectory) Stat(ctx context.Context, filename string) (*DirectoryEntr
 		if !ok {
 			return fmt.Errorf("file not found, path:%s", filename)
 		}
-		rs = e.convTabDataToEntryData(t)
+		rs = t.ToDirectoyEntry()
 		return nil
 	}); err != nil {
 		return nil, err
 	}
 	return rs, nil
-}
-
-func (e *dbDirectory) convTabDataToEntryData(item *directoryEntryTab) *DirectoryEntry {
-	rs := &DirectoryEntry{
-		RefData: item.RefData,
-		Name:    item.FileName,
-		Ctime:   item.Ctime,
-		Mtime:   item.Mtime,
-		Mode:    item.FileMode,
-		Size:    item.FileSize,
-		IsDir:   item.FileKind == defaultFileKindDir,
-	}
-	if rs.IsDir {
-		rs.Name = path.Base(strings.TrimSuffix(rs.Name, "/"))
-	}
-	return rs
 }
 
 func NewDBDirectory(db database.IDatabase, tab string, idfn IDGenFunc) (IDirectory, error) {

@@ -2,16 +2,6 @@ package directory
 
 import "context"
 
-type DirectoryEntry struct {
-	RefData string
-	Name    string
-	Ctime   int64
-	Mtime   int64
-	Mode    uint32
-	Size    int64
-	IsDir   bool
-}
-
 type IDirectory interface {
 	Mkdir(ctx context.Context, dir string) error
 	Copy(ctx context.Context, src, dst string, overwrite bool) error

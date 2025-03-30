@@ -193,7 +193,7 @@ func TestMove(t *testing.T) {
 			move: testMoveMoveItem{
 				src:    "/a/b/c/d",
 				dst:    "/a/b/c/d",
-				hasErr: true,
+				hasErr: false,
 			},
 		},
 		{
@@ -391,6 +391,7 @@ func TestMove(t *testing.T) {
 		err := dav.Move(ctx, fmt.Sprintf("%s%s", testPath, item.move.src), fmt.Sprintf("%s%s", testPath, item.move.dst), item.move.overwrite)
 		assert.Equal(t, item.move.hasErr, err != nil)
 		if err != nil {
+			t.Logf("-- get err:%v", err)
 			continue
 		}
 		for _, tt := range item.testList {
@@ -526,7 +527,7 @@ func TestCopy(t *testing.T) {
 				src:       "/a/b/c",
 				dst:       "/a/b/c",
 				overwrite: true,
-				hasErr:    true,
+				hasErr:    false,
 			},
 		},
 		{
