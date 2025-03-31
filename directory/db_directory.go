@@ -362,7 +362,7 @@ func (e *dbDirectory) Mkdir(ctx context.Context, dir string) error {
 	return nil
 }
 
-func (e *dbDirectory) doTxIterAndCopy(ctx context.Context, tx database.IQueryExecer, srcinfo *directoryEntryTab, dstparent uint64) error {
+func (e *dbDirectory) doTxIterAndCopy(ctx context.Context, tx database.IQueryExecer, srcinfo *directoryEntryTab, dstparent uint64, newname string) error {
 	now := time.Now().UnixMilli()
 	dstentid, err := e.txCreateEntry(ctx, tx, dstparent, &directoryEntryTab{
 		ParentEntryId: dstparent,
@@ -372,7 +372,7 @@ func (e *dbDirectory) doTxIterAndCopy(ctx context.Context, tx database.IQueryExe
 		Mtime:         now,
 		FileSize:      srcinfo.FileSize,
 		FileMode:      srcinfo.FileMode,
-		FileName:      srcinfo.FileName,
+		FileName:      newname,
 	})
 	if err != nil {
 		return err
@@ -385,7 +385,7 @@ func (e *dbDirectory) doTxIterAndCopy(ctx context.Context, tx database.IQueryExe
 		return fmt.Errorf("list all dir failed, eid:%d, err:%w", srcinfo.EntryId, err)
 	}
 	for _, item := range items { //递归创建子节点
-		if err := e.doTxIterAndCopy(ctx, tx, item, dstentid); err != nil {
+		if err := e.doTxIterAndCopy(ctx, tx, item, dstentid, item.FileName); err != nil {
 			return err
 		}
 	}
@@ -409,6 +409,10 @@ func (e *dbDirectory) doTxCopy(ctx context.Context, tx database.IQueryExecer, sr
 		return fmt.Errorf("src not found, loc:%s", src)
 	}
 	var dstparentid uint64
+	_, dname, isRoot := e.splitFilename(dst)
+	if isRoot {
+		return fmt.Errorf("target should not be root, dst:%s", dst)
+	}
 	dinfo, exist, err := e.txGetEntryInfo(ctx, tx, dst, &dstparentid)
 	if err != nil {
 		return err
@@ -426,7 +430,7 @@ func (e *dbDirectory) doTxCopy(ctx context.Context, tx database.IQueryExecer, sr
 		}
 	}
 	//执行递归copy流程
-	if err := e.doTxIterAndCopy(ctx, tx, sinfo, dstparentid); err != nil {
+	if err := e.doTxIterAndCopy(ctx, tx, sinfo, dstparentid, dname); err != nil {
 		return fmt.Errorf("do iter copy failed, srcparentid:%d, dstparentid:%d, sname:%s, err:%w", sinfo.ParentEntryId, dstparentid, sinfo.FileName, err)
 	}
 	return nil
