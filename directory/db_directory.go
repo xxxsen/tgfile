@@ -3,6 +3,7 @@ package directory
 import (
 	"context"
 	"fmt"
+	"os"
 	"path"
 	"strings"
 	"time"
@@ -243,7 +244,7 @@ func (e *dbDirectory) txOnSelectDir(ctx context.Context, tx database.IQueryExece
 		}
 		if !ok {
 			if !allowCreate {
-				return fmt.Errorf("dir not found")
+				return os.ErrNotExist
 			}
 			pid, err := e.txCreateDir(ctx, tx, parentid, item)
 			if err != nil {
@@ -565,7 +566,7 @@ func (e *dbDirectory) Create(ctx context.Context, filename string, size int64, r
 			return err
 		}
 		if exist {
-			return fmt.Errorf("file exist, skip create")
+			return os.ErrExist
 		}
 		now := time.Now().UnixMilli()
 		if _, err := e.txCreateFile(ctx, tx, parentid, &directoryEntryTab{
@@ -611,7 +612,7 @@ func (e *dbDirectory) Stat(ctx context.Context, filename string) (*DirectoryEntr
 			return nil, err
 		}
 		if !ok {
-			return nil, fmt.Errorf("root node not found")
+			return nil, os.ErrNotExist
 		}
 		return ent.ToDirectoyEntry(), nil
 	}
@@ -622,7 +623,7 @@ func (e *dbDirectory) Stat(ctx context.Context, filename string) (*DirectoryEntr
 			return err
 		}
 		if !ok {
-			return fmt.Errorf("file not found, path:%s", filename)
+			return os.ErrNotExist
 		}
 		rs = t.ToDirectoyEntry()
 		return nil

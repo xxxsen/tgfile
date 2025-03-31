@@ -24,13 +24,13 @@ var sqllist = []struct {
 		name: "init_tg_file_tab",
 		sql: `
 CREATE TABLE IF NOT EXISTS tg_file_tab (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id          INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     file_id     INTEGER NOT NULL,
 	file_size   INTEGER NOT NULL,
     file_part_count  INTEGER NOT NULL,
     file_state INTEGER NOT NULL,
-    ctime       INTEGER,
-    mtime       INTEGER,
+    ctime       INTEGER NOT NULL,
+    mtime       INTEGER NOT NULL,
     UNIQUE (file_id)
 );
 		`,
@@ -39,12 +39,12 @@ CREATE TABLE IF NOT EXISTS tg_file_tab (
 		name: "init_tg_file_part_tab",
 		sql: `
 CREATE TABLE IF NOT EXISTS tg_file_part_tab (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    id            INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     file_id       INTEGER NOT NULL,
     file_part_id  INTEGER NOT NULL,
     file_key TEXT NOT NULL,
-    ctime         INTEGER,
-    mtime         INTEGER,
+    ctime         INTEGER NOT NULL,
+    mtime         INTEGER NOT NULL,
     UNIQUE (file_id, file_part_id)
 );
 		`,
@@ -53,15 +53,15 @@ CREATE TABLE IF NOT EXISTS tg_file_part_tab (
 		name: "init_tg_file_mapping_tab",
 		sql: `
 CREATE TABLE IF NOT EXISTS tg_file_mapping_tab (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    id            INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     entry_id      INTEGER NOT NULL,
     parent_entry_id INTEGER NOT NULL,
-    ref_data      TEXT,
-    file_kind     INTEGER,
-    ctime         INTEGER,
-    mtime         INTEGER,
-    file_size     INTEGER,
-    file_mode     INTEGER,
+    ref_data      TEXT NOT NULL,
+    file_kind     INTEGER NOT NULL,
+    ctime         INTEGER NOT NULL,
+    mtime         INTEGER NOT NULL,
+    file_size     INTEGER NOT NULL,
+    file_mode     INTEGER NOT NULL,
     file_name     TEXT NOT NULL,
     UNIQUE (parent_entry_id, file_name)
 );

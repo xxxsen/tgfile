@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"tgfile/blockio"
 	"tgfile/dao"
 	"tgfile/dao/cache"
@@ -65,7 +66,7 @@ func (d *defaultFileManager) Open(ctx context.Context, fileid uint64) (io.ReadSe
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("file not found")
+		return nil, os.ErrNotExist
 	}
 	rsc := newFileStream(ctx, d.bkio, func(ctx context.Context, blkid int32) (fk string, err error) {
 		defer func() {
