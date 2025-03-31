@@ -362,7 +362,7 @@ func (e *dbDirectory) Mkdir(ctx context.Context, dir string) error {
 	return nil
 }
 
-func (e *dbDirectory) doTxIterAndCopy(ctx context.Context, tx database.IQueryExecer, srcinfo *directoryEntryTab, dstparent uint64, newname string) error {
+func (e *dbDirectory) txDoIterAndCopy(ctx context.Context, tx database.IQueryExecer, srcinfo *directoryEntryTab, dstparent uint64, newname string) error {
 	now := time.Now().UnixMilli()
 	dstentid, err := e.txCreateEntry(ctx, tx, dstparent, &directoryEntryTab{
 		ParentEntryId: dstparent,
@@ -385,14 +385,14 @@ func (e *dbDirectory) doTxIterAndCopy(ctx context.Context, tx database.IQueryExe
 		return fmt.Errorf("list all dir failed, eid:%d, err:%w", srcinfo.EntryId, err)
 	}
 	for _, item := range items { //递归创建子节点
-		if err := e.doTxIterAndCopy(ctx, tx, item, dstentid, item.FileName); err != nil {
+		if err := e.txDoIterAndCopy(ctx, tx, item, dstentid, item.FileName); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (e *dbDirectory) doTxCopy(ctx context.Context, tx database.IQueryExecer, src, dst string, overwrite bool) error {
+func (e *dbDirectory) txDoCopy(ctx context.Context, tx database.IQueryExecer, src, dst string, overwrite bool) error {
 	next, err := e.precheckMoveCopy(src, dst)
 	if err != nil {
 		return fmt.Errorf("precheck copy failed, err:%w", err)
@@ -430,7 +430,7 @@ func (e *dbDirectory) doTxCopy(ctx context.Context, tx database.IQueryExecer, sr
 		}
 	}
 	//执行递归copy流程
-	if err := e.doTxIterAndCopy(ctx, tx, sinfo, dstparentid, dname); err != nil {
+	if err := e.txDoIterAndCopy(ctx, tx, sinfo, dstparentid, dname); err != nil {
 		return fmt.Errorf("do iter copy failed, srcparentid:%d, dstparentid:%d, sname:%s, err:%w", sinfo.ParentEntryId, dstparentid, sinfo.FileName, err)
 	}
 	return nil
@@ -438,7 +438,7 @@ func (e *dbDirectory) doTxCopy(ctx context.Context, tx database.IQueryExecer, sr
 
 func (e *dbDirectory) Copy(ctx context.Context, src string, dst string, overwrite bool) error {
 	if err := e.db.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
-		return e.doTxCopy(ctx, tx, src, dst, overwrite)
+		return e.txDoCopy(ctx, tx, src, dst, overwrite)
 	}); err != nil {
 		return fmt.Errorf("do copy failed, err:%w", err)
 	}
@@ -463,7 +463,7 @@ func (e *dbDirectory) precheckMoveCopy(src string, dst string) (bool, error) {
 	return true, nil
 }
 
-func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, src, dst string, overwrite bool) error {
+func (e *dbDirectory) txDoMove(ctx context.Context, tx database.IQueryExecer, src, dst string, overwrite bool) error {
 	//将/a/b/1.txt 移动到目录/c下, 那么src = /a/b/1.txt, dst = /c/1.txt
 	next, err := e.precheckMoveCopy(src, dst)
 	if err != nil {
@@ -507,7 +507,7 @@ func (e *dbDirectory) doTxMove(ctx context.Context, tx database.IQueryExecer, sr
 
 func (e *dbDirectory) Move(ctx context.Context, src string, dst string, overwrite bool) error {
 	if err := e.db.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
-		return e.doTxMove(ctx, tx, src, dst, overwrite)
+		return e.txDoMove(ctx, tx, src, dst, overwrite)
 	}); err != nil {
 		return fmt.Errorf("do move failed, err:%w", err)
 	}
