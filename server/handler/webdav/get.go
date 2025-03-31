@@ -1,8 +1,10 @@
 package webdav
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"tgfile/filemgr"
 	"tgfile/proxyutil"
@@ -15,6 +17,10 @@ func (h *webdavHandler) handleGet(c *gin.Context) {
 	ctx := c.Request.Context()
 	file := h.buildSrcPath(c)
 	item, err := filemgr.ResolveLink(ctx, file)
+	if errors.Is(err, os.ErrNotExist) {
+		proxyutil.FailStatus(c, http.StatusNotFound, err)
+		return
+	}
 	if err != nil {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("read link info failed, err:%w", err))
 		return
