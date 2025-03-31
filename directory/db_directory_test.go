@@ -197,6 +197,50 @@ func TestMove(t *testing.T) {
 			},
 		},
 		{
+			name: "test_same_root",
+			prepareList: []testMovePrepareItem{
+				{
+					link: "/a/1.txt",
+				},
+			},
+			move: testMoveMoveItem{
+				src: "/a/1.txt",
+				dst: "/a/2.txt",
+			},
+			testList: []testMoveTestItem{
+				{
+					link:  "/a/1.txt",
+					exist: false,
+				},
+				{
+					link:  "/a/2.txt",
+					exist: true,
+				},
+			},
+		},
+		{
+			name: "test_move_on_root",
+			prepareList: []testMovePrepareItem{
+				{
+					link: "/1.txt",
+				},
+			},
+			move: testMoveMoveItem{
+				src: "/1.txt",
+				dst: "/2.txt",
+			},
+			testList: []testMoveTestItem{
+				{
+					link:  "/1.txt",
+					exist: false,
+				},
+				{
+					link:  "/2.txt",
+					exist: true,
+				},
+			},
+		},
+		{
 			name: "check_succ_move",
 			prepareList: []testMovePrepareItem{
 				{
@@ -447,6 +491,50 @@ func TestCopy(t *testing.T) {
 					link:  "/x/y/z/c",
 					exist: true,
 					isDir: true,
+				},
+			},
+		},
+		{
+			name: "test_same_root",
+			prepareList: []testMovePrepareItem{
+				{
+					link: "/a/1.txt",
+				},
+			},
+			copy: testMoveMoveItem{
+				src: "/a/1.txt",
+				dst: "/a/2.txt",
+			},
+			testList: []testMoveTestItem{
+				{
+					link:  "/a/1.txt",
+					exist: true,
+				},
+				{
+					link:  "/a/2.txt",
+					exist: true,
+				},
+			},
+		},
+		{
+			name: "test_copy_on_root",
+			prepareList: []testMovePrepareItem{
+				{
+					link: "/1.txt",
+				},
+			},
+			copy: testMoveMoveItem{
+				src: "/1.txt",
+				dst: "/2.txt",
+			},
+			testList: []testMoveTestItem{
+				{
+					link:  "/1.txt",
+					exist: true,
+				},
+				{
+					link:  "/2.txt",
+					exist: true,
 				},
 			},
 		},
