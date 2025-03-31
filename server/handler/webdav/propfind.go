@@ -2,9 +2,11 @@ package webdav
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"mime"
 	"net/http"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -29,6 +31,11 @@ func (h *webdavHandler) handlePropfind(c *gin.Context) {
 		depth = 1
 	}
 	base, entries, err := h.propFindEntries(ctx, location, depth)
+	if errors.Is(err, os.ErrNotExist) {
+		proxyutil.FailStatus(c, http.StatusNotFound, err)
+		return
+	}
+
 	if err != nil {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("find entries failed, location:%s, depth:%d, err:%w", location, depth, err))
 		return
