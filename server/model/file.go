@@ -1,6 +1,10 @@
 package model
 
-import "mime/multipart"
+import (
+	"encoding/base64"
+	"encoding/json"
+	"mime/multipart"
+)
 
 type DownloadFileRequest struct {
 	Key string `form:"key" binding:"required"`
@@ -28,4 +32,52 @@ type FileInfoItem struct {
 
 type GetFileInfoResponse struct {
 	Item *FileInfoItem `json:"item"`
+}
+
+type BeginUploadRequest struct {
+	FileSize int64 `json:"file_size"`
+}
+
+type BeginUploadResponse struct {
+	Key       string `json:"key"`
+	BlockSize int64  `json:"block_size"`
+}
+
+type PartUploadRequest struct {
+	Key      string                `form:"key" binding:"required"`
+	PartData *multipart.FileHeader `form:"part_data" binding:"required"`
+	PartId   int64                 `form:"part_id" binding:"required"`
+}
+
+type PartUploadResponse struct {
+}
+
+type FinishUploadRequest struct {
+	Key      string `json:"key"`
+	FileName string `json:"file_name"`
+}
+
+type FinishUploadResponse struct {
+}
+
+type MultiPartUploadContext struct {
+	FileId    uint64 `json:"file_id"`
+	FileSize  int64  `json:"file_size"`
+	BlockSize int64  `json:"block_size"`
+}
+
+func (c *MultiPartUploadContext) Encode() (string, error) {
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(raw), nil
+}
+
+func (c *MultiPartUploadContext) Decode(key string) error {
+	raw, err := base64.StdEncoding.DecodeString(key)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, c)
 }
