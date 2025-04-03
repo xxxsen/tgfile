@@ -37,6 +37,7 @@ func initContext(ctx *Context, cfgs []string) error {
 		if err != nil {
 			continue
 		}
+		break
 	}
 	if err != nil {
 		return fmt.Errorf("no valid config file found, last err:%w", err)
