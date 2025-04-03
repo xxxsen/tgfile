@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 
+	"github.com/xxxsen/common/utils"
 	"github.com/xxxsen/tgfile/blockio"
 
 	"github.com/google/uuid"
@@ -47,9 +48,25 @@ func (f *localFileBlockIO) Download(ctx context.Context, filekey string, pos int
 	return file, nil
 }
 
+func (l *localFileBlockIO) Name() string {
+	return "localfile"
+}
+
 func New(dir string, blksize int64) (blockio.IBlockIO, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
 	return &localFileBlockIO{baseDir: dir, blksize: blksize}, nil
+}
+
+func create(args interface{}) (blockio.IBlockIO, error) {
+	c := &config{}
+	if err := utils.ConvStructJson(args, c); err != nil {
+		return nil, err
+	}
+	return New(c.Dir, c.BlockSize)
+}
+
+func init() {
+	blockio.Register("localfile", create)
 }

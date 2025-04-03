@@ -17,6 +17,10 @@ func NewRotateIO(impl IBlockIO, rotateVal int) IBlockIO {
 	return &rotateIO{impl: impl, rotateVal: rotateVal}
 }
 
+func (r *rotateIO) Name() string {
+	return r.impl.Name()
+}
+
 func (r *rotateIO) MaxFileSize() int64 {
 	return r.impl.MaxFileSize()
 }

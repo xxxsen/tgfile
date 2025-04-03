@@ -78,15 +78,16 @@ func (s *Server) initAPI(router *gin.Engine) {
 		backupRouter.GET("/export", backup.Export)
 		backupRouter.POST("/import", proxyutil.WrapBizFunc(backup.Import, &model.ImportRequest{}))
 	}
-	{
+	if s.c.s3Enable {
 		for _, bk := range s.c.s3Buckets {
 			bucketRouter := router.Group(fmt.Sprintf("/%s", bk))
 			bucketRouter.GET("", s3.GetBucket)
 			bucketRouter.GET("/*object", s3.DownloadObject)
 			bucketRouter.PUT("/*object", mustAuthMiddleware, s3.UploadObject)
 		}
+
 	}
-	if s.c.webdav {
+	if s.c.webdavEnable {
 		webdavRouter := router.Group("/webdav", mustAuthMiddleware)
 		{
 			for _, method := range webdav.AllowMethods {

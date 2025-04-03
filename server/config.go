@@ -1,16 +1,18 @@
 package server
 
 type config struct {
-	s3Buckets  []string
-	userMap    map[string]string
-	webdav     bool
-	webdavRoot string
+	s3Enable     bool
+	s3Buckets    []string
+	userMap      map[string]string
+	webdavEnable bool
+	webdavRoot   string
 }
 
 type Option func(c *config)
 
-func WithS3Buckets(bks []string) Option {
+func WithEnableS3(enable bool, bks []string) Option {
 	return func(c *config) {
+		c.s3Enable = enable
 		c.s3Buckets = bks
 	}
 }
@@ -31,7 +33,7 @@ func applyOpts(opts ...Option) *config {
 
 func WithEnableWebdav(v bool, root string) Option {
 	return func(c *config) {
-		c.webdav = v
+		c.webdavEnable = v
 		c.webdavRoot = root
 	}
 }

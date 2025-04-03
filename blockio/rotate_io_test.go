@@ -15,6 +15,10 @@ type fakeIO struct {
 	data []byte
 }
 
+func (f *fakeIO) Name() string {
+	return "fake"
+}
+
 func (f *fakeIO) MaxFileSize() int64 {
 	return 1024 * 1024 * 1024
 }

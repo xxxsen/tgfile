@@ -3,14 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
-	"os"
-	"path"
 
 	_ "github.com/xxxsen/tgfile/auth"
 	"github.com/xxxsen/tgfile/blockio"
-	"github.com/xxxsen/tgfile/blockio/localfile"
-	"github.com/xxxsen/tgfile/blockio/mem"
-	"github.com/xxxsen/tgfile/blockio/telegram"
+	_ "github.com/xxxsen/tgfile/blockio/register"
 	"github.com/xxxsen/tgfile/cache"
 	"github.com/xxxsen/tgfile/config"
 	"github.com/xxxsen/tgfile/db"
@@ -37,6 +33,8 @@ func main() {
 		logger.Fatal("init idgen fail", zap.Error(err))
 	}
 	logger.Info("recv config", zap.Any("config", c))
+	logger.Info("current available blockio", zap.Strings("list", blockio.List()))
+	logger.Info("current use block io impl", zap.String("name", c.BotKind))
 	if err := db.InitDB(c.DBFile); err != nil {
 		logger.Fatal("init media db fail", zap.Error(err))
 	}
@@ -46,8 +44,11 @@ func main() {
 	if err := initCache(c); err != nil {
 		logger.Fatal("init cache fail", zap.Error(err))
 	}
+	logger.Info("current file protocol feature")
+	logger.Info("-- s3 feature", zap.Bool("enable", c.S3.Enable), zap.Strings("buckets", c.S3.Bucket))
+	logger.Info("-- webdav feature", zap.Bool("enable", c.Webdav.Enable), zap.String("root", c.Webdav.Root))
 	svr, err := server.New(c.Bind,
-		server.WithS3Buckets(c.S3Bucket),
+		server.WithEnableS3(c.S3.Enable, c.S3.Bucket),
 		server.WithUser(c.UserInfo),
 		server.WithEnableWebdav(c.Webdav.Enable, c.Webdav.Root),
 	)
@@ -61,27 +62,12 @@ func main() {
 }
 
 func initStorage(c *config.Config) error {
-	getter := func() (blockio.IBlockIO, error) {
-		return telegram.New(int64(c.BotInfo.Chatid), c.BotInfo.Token)
-	}
-	if c.DebugMode.Enable {
-		getter = func() (blockio.IBlockIO, error) {
-			switch c.DebugMode.BlockType {
-			case "file":
-				return localfile.New(path.Join(os.TempDir(), "tgfile-temp"), c.DebugMode.BlockSize)
-			case "mem":
-				return mem.New(c.DebugMode.BlockSize), nil
-			default:
-				return nil, fmt.Errorf("unknown debug block type:%s", c.DebugMode.BlockType)
-			}
-		}
-	}
-	bkio, err := getter()
+	blkio, err := blockio.Create(c.BotKind, c.BotInfo)
 	if err != nil {
-		return err
+		return fmt.Errorf("init block io failed, kind:%s, err:%w", c.BotKind, err)
 	}
-	bkio = blockio.NewRotateIO(bkio, int(c.RotateStream))
-	fmgr := filemgr.NewFileManager(bkio)
+	blkio = blockio.NewRotateIO(blkio, int(c.RotateStream))
+	fmgr := filemgr.NewFileManager(blkio)
 	filemgr.SetFileManagerImpl(fmgr)
 	return nil
 }

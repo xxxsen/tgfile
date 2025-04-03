@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 
+	"github.com/xxxsen/common/utils"
 	"github.com/xxxsen/tgfile/blockio"
 
 	"github.com/google/uuid"
@@ -43,9 +44,25 @@ func (m *memBlockIO) Download(ctx context.Context, filekey string, pos int64) (i
 	return io.NopCloser(bytes.NewReader(data[pos:])), nil
 }
 
-func New(bksize int64) blockio.IBlockIO {
+func (m *memBlockIO) Name() string {
+	return "mem"
+}
+
+func New(bksize int64) (blockio.IBlockIO, error) {
 	if bksize == 0 {
 		bksize = 4 * 1024
 	}
-	return &memBlockIO{bksize: bksize}
+	return &memBlockIO{bksize: bksize}, nil
+}
+
+func create(args interface{}) (blockio.IBlockIO, error) {
+	c := &config{}
+	if err := utils.ConvStructJson(args, c); err != nil {
+		return nil, err
+	}
+	return New(c.BlockSize)
+}
+
+func init() {
+	blockio.Register("mem", create)
 }

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/xxxsen/common/utils"
 	"github.com/xxxsen/tgfile/blockio"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -116,4 +117,20 @@ func (t *tgBlockIO) Download(ctx context.Context, filekey string, pos int64) (io
 		return nil, fmt.Errorf("not support range")
 	}
 	return rsp.Body, nil
+}
+
+func (t *tgBlockIO) Name() string {
+	return "telegram"
+}
+
+func create(args interface{}) (blockio.IBlockIO, error) {
+	c := &config{}
+	if err := utils.ConvStructJson(args, c); err != nil {
+		return nil, err
+	}
+	return New(c.Chatid, c.Token)
+}
+
+func init() {
+	blockio.Register("telegram", create)
 }

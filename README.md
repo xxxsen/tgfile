@@ -26,9 +26,12 @@ tgfile
 	"user_info": { //用户信息, 上传接口需要鉴权
 		"abc": "123"
 	},
-	"s3_bucket": [ //启用s3协议支持, 这里配置的是要开启的s3 bucket名
-		"hackmd"
-	],
+	"s3": {
+		"enable": true, //启用s3协议支持, 这里配置的是要开启的s3 bucket名
+		"bucket":[ 
+			"hackmd"
+		]
+	},
 	"webdav": { //启用webdav支持, 实验性, 不一定ok
 		"enable": true,
 		"root": "/"    //指定映射到底层存储的路径, 与接口上的'/webdav'不是一个东西
@@ -58,7 +61,7 @@ tgfile
 
 ## 运行
 
-推荐使用docker运行
+**服务端**使用docker运行
 
 ```
 services:
@@ -76,6 +79,17 @@ services:
 
 - config目录: 存储配置文件
 - data目录: 存储索引信息
+
+对于**客户端**, 直接二进制运行, 可以通过release下载二进制文件, 或者通过`go install github.com/xxxsen/tgfile/cmd/tgc@latest` 安装最新的版本。
+
+在`/etc/tgc`(如果是windows则路径为:`C:/tgc`)下创建tgc_config.json 配置, 之后执行下面命令即可进行文件上传。
+
+```shell
+# 如果下载回来的文件名不为tgc, 建议重命名为tgc, 通过go install安装则名字为`tgc`
+tgc upload --file=./README.md
+```
+
+上传完成后, 会返回一个链接, 通过链接即可下载刚刚上传的文件。
 
 ## 接口信息
 
