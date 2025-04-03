@@ -28,10 +28,17 @@ func register(cr CreateFunc) {
 	cmds = append(cmds, cr)
 }
 
-func initContext(ctx *Context, cfg string) error {
-	c, err := config.Parse(cfg)
+func initContext(ctx *Context, cfgs []string) error {
+	var c *config.Config
+	var err error
+	for _, cfg := range cfgs {
+		c, err = config.Parse(cfg)
+		if err != nil {
+			continue
+		}
+	}
 	if err != nil {
-		return err
+		return fmt.Errorf("no valid config file found, last err:%w", err)
 	}
 	ctx.Config = c
 	logger.Init("", c.LogLevel, 0, 0, 0, true)
@@ -54,13 +61,8 @@ func NewRoot() *cobra.Command {
 		rootCmd.AddCommand(cr(ctx))
 	}
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		if len(configFile) == 0 {
-			configFile, _ = os.LookupEnv(defaultConfigFileEnv)
-		}
-		if len(configFile) == 0 {
-			return fmt.Errorf("no config file found")
-		}
-		return initContext(ctx, configFile)
+		envConfigFile, _ := os.LookupEnv(defaultConfigFileEnv)
+		return initContext(ctx, []string{configFile, "/etc/tgc/tgc_config.json", "C:/tgc/tgc_config.json", envConfigFile})
 	}
 	rootCmd.PersistentFlags().StringVarP(&configFile, "config", "c", "", "config file")
 	return rootCmd

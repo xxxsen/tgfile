@@ -7,7 +7,9 @@ import (
 	"os"
 	"time"
 
+	"github.com/xxxsen/common/logutil"
 	"github.com/xxxsen/common/retry"
+	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -58,6 +60,7 @@ func (c *TGFileClient) UploadFile(ctx context.Context, src string) (string, erro
 	blockcnt := int((info.Size() + blocksize - 1) / blocksize)
 	eg, _ := errgroup.WithContext(ctx)
 	eg.SetLimit(c.c.Thread)
+	logutil.GetLogger(ctx).Debug("start upload file", zap.Int64("block_size", blocksize), zap.Int("block_cnt", blockcnt))
 	for i := 0; i < blockcnt; i++ {
 		partid := int64(i)
 		startAt := int64(i) * blocksize
@@ -66,6 +69,10 @@ func (c *TGFileClient) UploadFile(ctx context.Context, src string) (string, erro
 			partSize = info.Size() - startAt
 		}
 		eg.Go(func() error {
+			start := time.Now()
+			defer func() {
+				logutil.GetLogger(ctx).Debug("part upload finish", zap.Int64("part_id", partid), zap.Duration("cost", time.Since(start)))
+			}()
 			return c.partUpload(ctx, src, uploadKey, partid, startAt, partSize)
 		})
 	}

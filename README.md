@@ -7,6 +7,8 @@ tgfile
 
 ## 配置
 
+### 服务端
+
 一份简单的配置
 
 ```json
@@ -18,7 +20,7 @@ tgfile
 	},
 	"db_file": "/data/data.db", //索引存储位置
 	"bot_info": { //用于存储文件块的机器人配置
-		"chatid": 12345,
+		"chatid": 12345, //用户自己的chatid, 通过其他机器人获取到自己的chatid, 然后自己再主动跟机器人发起会话, 后面上传的文件会发给这个chatid进行存储 
 		"token": "abc"
 	},
 	"user_info": { //用户信息, 上传接口需要鉴权
@@ -33,6 +35,26 @@ tgfile
 	}
 }
 ```
+
+### 客户端
+
+非必要配置, 如果想在本地通过命令行上传文件才需要客户端配置, 用户也可以通过其他方式进行文件上传, 如s3, webdav.
+
+```json
+{
+    "schema": "http",
+    "host": "abc.example.com:9901", 
+    "access_key": "aaa", //用户名
+    "secret_key": "1111", //密码,
+	"thread": 5  //指定上传时分块上传的线程数
+}
+```
+
+客户端搜索配置会在下面几个路径下搜索, 优先级由高到低
+
+- 用户自己指定的配置, 通过--config传入
+- /etc/tgc/tgc_config.json (windows则为c:/tgc/tgc_config.json)
+- 基于环境变量 TGC_CONFIG 指定
 
 ## 运行
 

@@ -23,7 +23,7 @@ func Parse(f string) (*Config, error) {
 	c := &Config{
 		Schema:   "https",
 		Thread:   5,
-		LogLevel: "debug",
+		LogLevel: "info",
 	}
 	if err := json.Unmarshal(raw, c); err != nil {
 		return nil, fmt.Errorf("unmarshal file:%w", err)
