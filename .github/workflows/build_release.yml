@@ -24,8 +24,8 @@ jobs:
 
     - name: Build
       run: |
-        ./build_release.sh ${{matrix.go-os}} ${{matrix.go-arch}} tgfile-server ./cmd
-        ./build_release.sh ${{matrix.go-os}} ${{matrix.go-arch}} tgfile-client ./cmd/tgc
+        ./build_release.sh ${{matrix.go-os}} ${{matrix.go-arch}} tgfile ./cmd
+        ./build_release.sh ${{matrix.go-os}} ${{matrix.go-arch}} tgc ./cmd/tgc
         
 
     - name: Upload binaries to release
