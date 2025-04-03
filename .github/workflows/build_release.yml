@@ -1,4 +1,4 @@
-name: build_tgc_release
+name: build_release
 
 on:
   create:
