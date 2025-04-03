@@ -13,6 +13,9 @@ var defaultFileMgr IFileManager
 type IFileManager interface {
 	Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error)
 	Create(ctx context.Context, size int64, r io.Reader) (uint64, error)
+	CreateDraft(ctx context.Context, size int64) (uint64, int64, error)
+	CreatePart(ctx context.Context, fileid uint64, partid int64, r io.Reader) error
+	FinishCreate(ctx context.Context, fileid uint64) error
 	CreateLink(ctx context.Context, link string, fileid uint64, size int64, isDir bool) error
 	ResolveLink(ctx context.Context, link string) (*entity.FileMappingItem, error)
 	IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error
@@ -31,6 +34,18 @@ func Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {
 
 func Create(ctx context.Context, size int64, r io.Reader) (uint64, error) {
 	return defaultFileMgr.Create(ctx, size, r)
+}
+
+func CreateDraft(ctx context.Context, size int64) (uint64, int64, error) {
+	return defaultFileMgr.CreateDraft(ctx, size)
+}
+
+func CreatePart(ctx context.Context, fileid uint64, partid int64, r io.Reader) error {
+	return defaultFileMgr.CreatePart(ctx, fileid, partid, r)
+}
+
+func FinishCreate(ctx context.Context, fileid uint64) error {
+	return defaultFileMgr.FinishCreate(ctx, fileid)
 }
 
 func CreateLink(ctx context.Context, link string, fileid uint64, size int64, isDir bool) error {

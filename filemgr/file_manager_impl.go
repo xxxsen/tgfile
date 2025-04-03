@@ -90,6 +90,33 @@ func (d *defaultFileManager) internalCalcFileBlockCount(sz uint64, blksz uint64)
 	return int((sz + blksz - 1) / blksz)
 }
 
+func (d *defaultFileManager) CreateDraft(ctx context.Context, size int64) (uint64, int64, error) {
+	blkcnt := d.internalCalcFileBlockCount(uint64(size), uint64(d.bkio.MaxFileSize()))
+	fileid, err := d.internalCreateFileDraft(ctx, size, int32(blkcnt))
+	if err != nil {
+		return 0, 0, fmt.Errorf("create file draft failed, err:%w", err)
+	}
+	return fileid, d.bkio.MaxFileSize(), nil
+}
+
+func (d *defaultFileManager) CreatePart(ctx context.Context, fileid uint64, partid int64, r io.Reader) error {
+	fileKey, err := d.bkio.Upload(ctx, r)
+	if err != nil {
+		return fmt.Errorf("upload part failed, err:%w", err)
+	}
+	if err := d.internalCreateFilePart(ctx, fileid, int32(partid), fileKey); err != nil {
+		return fmt.Errorf("create part record failed, err:%w", err)
+	}
+	return nil
+}
+
+func (d *defaultFileManager) FinishCreate(ctx context.Context, fileid uint64) error {
+	if err := d.internalFinishCreateFile(ctx, fileid); err != nil {
+		return fmt.Errorf("finish create file failed, err:%w", err)
+	}
+	return nil
+}
+
 func (d *defaultFileManager) Create(ctx context.Context, size int64, reader io.Reader) (uint64, error) {
 	blkcnt := d.internalCalcFileBlockCount(uint64(size), uint64(d.bkio.MaxFileSize()))
 	fileid, err := d.internalCreateFileDraft(ctx, size, int32(blkcnt))
