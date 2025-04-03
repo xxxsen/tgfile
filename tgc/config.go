@@ -1,6 +1,6 @@
 package tgc
 
-import "tgfile/tgc/client"
+import "github.com/xxxsen/tgfile/tgc/client"
 
 type config struct {
 	Thread int

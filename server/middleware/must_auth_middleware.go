@@ -2,7 +2,8 @@ package middleware
 
 import (
 	"net/http"
-	"tgfile/proxyutil"
+
+	"github.com/xxxsen/tgfile/proxyutil"
 
 	"github.com/gin-gonic/gin"
 )

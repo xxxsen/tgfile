@@ -3,9 +3,10 @@ package s3
 import (
 	"fmt"
 	"net/http"
-	"tgfile/filemgr"
-	"tgfile/server/handler/s3/s3base"
 	"time"
+
+	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/server/handler/s3/s3base"
 
 	"github.com/gin-gonic/gin"
 )

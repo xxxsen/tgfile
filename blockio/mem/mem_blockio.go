@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
-	"tgfile/blockio"
+
+	"github.com/xxxsen/tgfile/blockio"
 
 	"github.com/google/uuid"
 )

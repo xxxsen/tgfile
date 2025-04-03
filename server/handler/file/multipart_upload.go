@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"tgfile/filemgr"
-	"tgfile/proxyutil"
-	"tgfile/server/model"
-	"tgfile/utils"
+
+	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/proxyutil"
+
+	"github.com/xxxsen/tgfile/server/model"
+	"github.com/xxxsen/tgfile/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/logutil"

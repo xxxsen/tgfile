@@ -2,7 +2,8 @@ package main
 
 import (
 	"log"
-	"tgfile/cmd/tgc/cmd"
+
+	"github.com/xxxsen/tgfile/cmd/tgc/cmd"
 )
 
 func main() {

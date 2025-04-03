@@ -3,9 +3,10 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"tgfile/cmd/tgc/config"
-	"tgfile/tgc"
-	"tgfile/tgc/client"
+
+	"github.com/xxxsen/tgfile/cmd/tgc/config"
+	"github.com/xxxsen/tgfile/tgc"
+	"github.com/xxxsen/tgfile/tgc/client"
 
 	"github.com/spf13/cobra"
 	"github.com/xxxsen/common/logger"

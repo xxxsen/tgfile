@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"tgfile/blockio"
-	"tgfile/dao"
-	"tgfile/dao/cache"
-	"tgfile/entity"
+
+	"github.com/xxxsen/tgfile/blockio"
+	"github.com/xxxsen/tgfile/dao"
+	"github.com/xxxsen/tgfile/dao/cache"
+	"github.com/xxxsen/tgfile/entity"
 
 	"github.com/xxxsen/common/logutil"
 	"go.uber.org/zap"

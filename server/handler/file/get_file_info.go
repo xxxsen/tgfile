@@ -3,9 +3,11 @@ package file
 import (
 	"fmt"
 	"net/http"
-	"tgfile/filemgr"
-	"tgfile/proxyutil"
-	"tgfile/server/model"
+
+	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/proxyutil"
+
+	"github.com/xxxsen/tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
 )

@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"tgfile/filemgr"
-	"tgfile/server/model"
 	"time"
+
+	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/logutil"

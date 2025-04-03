@@ -3,7 +3,8 @@ package filemgr
 import (
 	"context"
 	"io"
-	"tgfile/entity"
+
+	"github.com/xxxsen/tgfile/entity"
 )
 
 type IterLinkFunc func(ctx context.Context, link string, item *entity.FileMappingItem) (bool, error)

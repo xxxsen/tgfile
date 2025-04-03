@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"os"
 	"testing"
-	"tgfile/db"
+
+	"github.com/xxxsen/tgfile/db"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/xxxsen/common/database"

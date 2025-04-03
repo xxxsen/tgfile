@@ -4,8 +4,9 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"tgfile/filemgr"
-	"tgfile/proxyutil"
+
+	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/proxyutil"
 
 	"github.com/gin-gonic/gin"
 )

@@ -8,9 +8,10 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"tgfile/proxyutil"
-	"tgfile/server/model"
 	"time"
+
+	"github.com/xxxsen/tgfile/proxyutil"
+	"github.com/xxxsen/tgfile/server/model"
 )
 
 var (

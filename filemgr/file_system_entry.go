@@ -9,8 +9,9 @@ import (
 	"path"
 	"strings"
 	"sync"
-	"tgfile/entity"
 	"time"
+
+	"github.com/xxxsen/tgfile/entity"
 )
 
 type fileSystemFileEntry struct {

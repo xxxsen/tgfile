@@ -3,10 +3,11 @@ package cache
 import (
 	"context"
 	"fmt"
-	"tgfile/cache"
-	"tgfile/dao"
-	"tgfile/entity"
 	"time"
+
+	"github.com/xxxsen/tgfile/cache"
+	"github.com/xxxsen/tgfile/dao"
+	"github.com/xxxsen/tgfile/entity"
 
 	"github.com/xxxsen/common/logutil"
 	"go.uber.org/zap"

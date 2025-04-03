@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"path"
 	"strconv"
-	"tgfile/db"
-	"tgfile/directory"
-	"tgfile/entity"
+
+	"github.com/xxxsen/tgfile/entity"
+
+	"github.com/xxxsen/tgfile/db"
+	"github.com/xxxsen/tgfile/directory"
 
 	"github.com/xxxsen/common/idgen"
 )

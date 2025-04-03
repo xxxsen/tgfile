@@ -5,7 +5,8 @@ import (
 	"io"
 	"os"
 	"path"
-	"tgfile/blockio"
+
+	"github.com/xxxsen/tgfile/blockio"
 
 	"github.com/google/uuid"
 )

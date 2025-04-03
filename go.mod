@@ -1,4 +1,4 @@
-module tgfile
+module github.com/xxxsen/tgfile
 
 go 1.24.0
 

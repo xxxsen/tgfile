@@ -4,7 +4,8 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"tgfile/blockio"
+
+	"github.com/xxxsen/tgfile/blockio"
 
 	"github.com/xxxsen/common/logutil"
 	"go.uber.org/zap"

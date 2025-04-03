@@ -4,14 +4,15 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"tgfile/filemgr"
-	"tgfile/proxyutil"
-	"tgfile/server/handler/backup"
-	"tgfile/server/handler/file"
-	"tgfile/server/handler/s3"
-	"tgfile/server/handler/webdav"
-	"tgfile/server/middleware"
-	"tgfile/server/model"
+
+	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/proxyutil"
+	"github.com/xxxsen/tgfile/server/handler/backup"
+	"github.com/xxxsen/tgfile/server/handler/file"
+	"github.com/xxxsen/tgfile/server/handler/s3"
+	"github.com/xxxsen/tgfile/server/handler/webdav"
+	"github.com/xxxsen/tgfile/server/middleware"
+	"github.com/xxxsen/tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
 )

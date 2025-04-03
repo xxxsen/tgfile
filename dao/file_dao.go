@@ -2,10 +2,11 @@ package dao
 
 import (
 	"context"
-	"tgfile/constant"
-	"tgfile/db"
-	"tgfile/entity"
 	"time"
+
+	"github.com/xxxsen/tgfile/constant"
+	"github.com/xxxsen/tgfile/db"
+	"github.com/xxxsen/tgfile/entity"
 
 	"github.com/didi/gendry/builder"
 	"github.com/xxxsen/common/database/dbkit"

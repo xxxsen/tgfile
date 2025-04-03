@@ -10,11 +10,12 @@ import (
 	"path"
 	"sort"
 	"strings"
-	"tgfile/entity"
-	"tgfile/filemgr"
-	"tgfile/proxyutil"
-	"tgfile/server/model"
 	"time"
+
+	"github.com/xxxsen/tgfile/entity"
+	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/proxyutil"
+	"github.com/xxxsen/tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/logutil"

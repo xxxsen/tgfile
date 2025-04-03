@@ -1,8 +1,9 @@
 package middleware
 
 import (
-	"tgfile/proxyutil"
 	"time"
+
+	"github.com/xxxsen/tgfile/proxyutil"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/logutil"
