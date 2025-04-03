@@ -34,7 +34,7 @@ func main() {
 	}
 	logger.Info("recv config", zap.Any("config", c))
 	logger.Info("current available blockio", zap.Strings("list", blockio.List()))
-	logger.Info("current use block io impl", zap.String("name", c.BotKind))
+	logger.Info("current use blockio impl", zap.String("name", c.BotKind))
 	if err := db.InitDB(c.DBFile); err != nil {
 		logger.Fatal("init media db fail", zap.Error(err))
 	}
