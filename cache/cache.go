@@ -51,6 +51,14 @@ func New(sz int) (ICache, error) {
 	}, nil
 }
 
+func MustNew(sz int) ICache {
+	c, err := New(sz)
+	if err != nil {
+		panic(err)
+	}
+	return c
+}
+
 func Set(ctx context.Context, k string, v interface{}, expire time.Duration) error {
 	return defaultInst.Set(ctx, k, v, expire)
 }

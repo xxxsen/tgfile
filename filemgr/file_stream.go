@@ -1,6 +1,7 @@
 package filemgr
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -116,4 +117,16 @@ func (f *defaultFsIO) Close() error {
 	}
 	f.isOpen = false
 	return err
+}
+
+type bytesStream struct {
+	*bytes.Reader
+}
+
+func (b *bytesStream) Close() error {
+	return nil
+}
+
+func newBytesStream(raw []byte) io.ReadSeekCloser {
+	return &bytesStream{Reader: bytes.NewReader(raw)}
 }
