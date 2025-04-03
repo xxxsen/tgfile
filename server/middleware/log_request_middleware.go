@@ -18,6 +18,7 @@ func LogRequestMiddleware() gin.HandlerFunc {
 			With(zap.String("method", ctx.Request.Method),
 				zap.String("path", ctx.Request.URL.Path),
 				zap.String("ip", ctx.ClientIP()),
+				zap.Int("body_size", int(ctx.Request.ContentLength)),
 				zap.String("refer", ctx.Request.Referer()),
 				zap.String("user_agent", ctx.Request.UserAgent()),
 			).Info("request start")
