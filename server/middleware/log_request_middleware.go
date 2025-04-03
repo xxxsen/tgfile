@@ -17,9 +17,17 @@ func LogRequestMiddleware() gin.HandlerFunc {
 		logutil.GetLogger(ctx.Request.Context()).
 			With(zap.String("method", ctx.Request.Method),
 				zap.String("path", ctx.Request.URL.Path),
-				zap.String("ip", ctx.ClientIP())).Info("request start")
+				zap.String("ip", ctx.ClientIP()),
+				zap.String("refer", ctx.Request.Referer()),
+				zap.String("user_agent", ctx.Request.UserAgent()),
+			).Info("request start")
 		ctx.Next()
 		cost := time.Since(start)
-		logutil.GetLogger(ctx.Request.Context()).Info("request finish", zap.Error(proxyutil.GetReplyErrInfo(ctx)), zap.Int("status_code", ctx.Writer.Status()), zap.Duration("cost", cost))
+		logutil.GetLogger(ctx.Request.Context()).Info("request finish",
+			zap.Error(proxyutil.GetReplyErrInfo(ctx)),
+			zap.Int("status_code", ctx.Writer.Status()),
+			zap.Duration("cost", cost),
+			zap.Int("write_bytes", ctx.Writer.Size()),
+		)
 	}
 }
