@@ -60,7 +60,12 @@ func (s *Server) initAPI(router *gin.Engine) {
 		fileRouter.POST("/upload", mustAuthMiddleware, proxyutil.WrapBizFunc(file.FileUpload, &model.UploadFileRequest{}))
 		fileRouter.GET("/download/:key", file.FileDownload)
 		fileRouter.GET("/meta/:key", file.GetMetaInfo)
-
+	}
+	multiPartRouter := fileRouter.Group("/multipart")
+	{
+		multiPartRouter.POST("/begin", mustAuthMiddleware, proxyutil.WrapBizFunc(file.BeginUpload, &model.BeginUploadRequest{}))
+		multiPartRouter.POST("/part", mustAuthMiddleware, proxyutil.WrapBizFunc(file.PartUpload, &model.PartUploadRequest{}))
+		multiPartRouter.POST("/end", mustAuthMiddleware, proxyutil.WrapBizFunc(file.FinishUpload, &model.FinishUploadRequest{}))
 	}
 	staticRouter := router.Group("/static", mustAuthMiddleware)
 	{

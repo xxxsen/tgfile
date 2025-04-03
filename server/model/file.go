@@ -39,25 +39,25 @@ type BeginUploadRequest struct {
 }
 
 type BeginUploadResponse struct {
-	Key       string `json:"key"`
+	UploadKey string `json:"upload_key"`
 	BlockSize int64  `json:"block_size"`
 }
 
 type PartUploadRequest struct {
-	Key      string                `form:"key" binding:"required"`
-	PartData *multipart.FileHeader `form:"part_data" binding:"required"`
-	PartId   int64                 `form:"part_id" binding:"required"`
+	UploadKey string                `form:"upload_key" binding:"required"`
+	PartData  *multipart.FileHeader `form:"part_data" binding:"required"`
+	PartId    *int64                `form:"part_id" binding:"required"`
 }
 
 type PartUploadResponse struct {
 }
 
 type FinishUploadRequest struct {
-	Key      string `json:"key"`
-	FileName string `json:"file_name"`
+	UploadKey string `json:"upload_key"`
 }
 
 type FinishUploadResponse struct {
+	FileKey string `json:"file_key"`
 }
 
 type MultiPartUploadContext struct {

@@ -7,6 +7,7 @@ import (
 	"tgfile/filemgr"
 	"tgfile/proxyutil"
 	"tgfile/server/model"
+	"tgfile/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/logutil"
@@ -31,7 +32,7 @@ func BeginUpload(c *gin.Context, ctx context.Context, request interface{}) {
 		return
 	}
 	proxyutil.SuccessJson(c, &model.BeginUploadResponse{
-		Key:       key,
+		UploadKey: key,
 		BlockSize: blocksize,
 	})
 }
@@ -45,11 +46,11 @@ func PartUpload(c *gin.Context, ctx context.Context, request interface{}) {
 	}
 	defer f.Close()
 	fctx := &model.MultiPartUploadContext{}
-	if err := fctx.Decode(req.Key); err != nil {
+	if err := fctx.Decode(req.UploadKey); err != nil {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("decode file key failed, err:%w", err))
 		return
 	}
-	if err := filemgr.CreatePart(ctx, fctx.FileId, req.PartId, f); err != nil {
+	if err := filemgr.CreatePart(ctx, fctx.FileId, *req.PartId, f); err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("upload part failed, err:%w", err))
 		return
 	}
@@ -59,7 +60,7 @@ func PartUpload(c *gin.Context, ctx context.Context, request interface{}) {
 func FinishUpload(c *gin.Context, ctx context.Context, request interface{}) {
 	req := request.(*model.FinishUploadRequest)
 	fctx := &model.MultiPartUploadContext{}
-	if err := fctx.Decode(req.Key); err != nil {
+	if err := fctx.Decode(req.UploadKey); err != nil {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("decode file key failed, err:%w", err))
 		return
 	}
@@ -67,10 +68,15 @@ func FinishUpload(c *gin.Context, ctx context.Context, request interface{}) {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("finish upload failed, err:%w", err))
 		return
 	}
-	if err := filemgr.CreateLink(ctx, req.FileName, fctx.FileId, fctx.FileSize, false); err != nil {
+	fileKey := utils.EncodeFileId(fctx.FileId)
+	path := defaultUploadPrefix + fileKey
+	if err := filemgr.CreateLink(ctx, path, fctx.FileId, fctx.FileSize, false); err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
 		return
 	}
-	logutil.GetLogger(ctx).Info("finish big file upload", zap.Uint64("file_id", fctx.FileId), zap.String("file_name", req.FileName), zap.Int64("file_size", fctx.FileSize))
-	proxyutil.SuccessJson(c, &model.FinishUploadResponse{})
+
+	logutil.GetLogger(ctx).Info("finish big file upload", zap.Uint64("file_id", fctx.FileId), zap.Int64("file_size", fctx.FileSize))
+	proxyutil.SuccessJson(c, &model.FinishUploadResponse{
+		FileKey: fileKey,
+	})
 }
