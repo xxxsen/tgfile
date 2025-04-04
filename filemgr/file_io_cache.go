@@ -134,10 +134,11 @@ func (f *fileIOCacheImpl) buildFileIdLocation(fileid uint64) string {
 	//文件格式: filename := fileid-expire.cache
 	//文件路径:
 	// hash := hex.EncodeToString(binary(fileid))
-	// fullpath := basedir + "/" + hash[:2] + "/" + hash[2:] + "/" + filename
+	// fullpath := basedir + "/" + hash[:2] + "/" + filename
 	data := hex.EncodeToString(utils.FileIdToHash(fileid))
 	filename := fmt.Sprintf("%d.cache", fileid)
-	return path.Join(f.c.FileCacheDir, data[:2], data[2:4], filename)
+	//一层结构即可, 假设每个桶存储1000个文件, 36*36*1000 能够存储129.6w个文件
+	return path.Join(f.c.FileCacheDir, data[:2], filename)
 }
 
 func (f *fileIOCacheImpl) loadL2FromDisk() error {
