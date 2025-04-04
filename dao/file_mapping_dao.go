@@ -8,13 +8,14 @@ import (
 
 	"github.com/xxxsen/tgfile/entity"
 
-	"github.com/xxxsen/tgfile/db"
 	"github.com/xxxsen/tgfile/directory"
 
+	"github.com/xxxsen/common/database"
 	"github.com/xxxsen/common/idgen"
 )
 
 type IterFileMappingFunc func(ctx context.Context, name string, ent *entity.FileMappingItem) (bool, error)
+type ScanFileMappingFunc func(ctx context.Context, res []*entity.FileMappingItem) (bool, error)
 
 type IFileMappingDao interface {
 	GetFileMapping(ctx context.Context, req *entity.GetFileMappingRequest) (*entity.GetFileMappingResponse, bool, error)
@@ -23,15 +24,19 @@ type IFileMappingDao interface {
 	RemoveFileMapping(ctx context.Context, link string) error
 	RenameFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error
 	CopyFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error
+	ScanFileMapping(ctx context.Context, batch int64, cb ScanFileMappingFunc) error
 }
 
 type fileMappingDao struct {
+	dbc database.IDatabase
 	dir directory.IDirectory
 }
 
-func NewFileMappingDao() IFileMappingDao {
-	d := &fileMappingDao{}
-	dir, err := directory.NewDBDirectory(db.GetClient(), d.table(), idgen.Default().NextId)
+func NewFileMappingDao(dbc database.IDatabase) IFileMappingDao {
+	d := &fileMappingDao{
+		dbc: dbc,
+	}
+	dir, err := directory.NewDBDirectory(dbc, d.table(), idgen.Default().NextId)
 	if err != nil {
 		panic(err)
 	}
@@ -48,18 +53,9 @@ func (f *fileMappingDao) GetFileMapping(ctx context.Context, req *entity.GetFile
 	if err != nil {
 		return nil, false, err
 	}
-	var fileid uint64
-	fileid, err = f.retrieveFileId(ent)
+	item, err := f.directoryEntryToFileMappingItem(ent)
 	if err != nil {
 		return nil, false, err
-	}
-	item := &entity.FileMappingItem{
-		FileName: ent.Name,
-		FileId:   fileid,
-		Ctime:    ent.Ctime,
-		Mtime:    ent.Mtime,
-		FileSize: ent.Size,
-		IsDir:    ent.IsDir,
 	}
 	return &entity.GetFileMappingResponse{Item: item}, true, nil
 }
@@ -75,13 +71,6 @@ func (f *fileMappingDao) CreateFileMapping(ctx context.Context, req *entity.Crea
 		return nil, err
 	}
 	return &entity.CreateFileMappingResponse{}, nil
-}
-
-func (f *fileMappingDao) retrieveFileId(ent *directory.DirectoryEntry) (uint64, error) {
-	if ent.IsDir {
-		return 0, nil
-	}
-	return strconv.ParseUint(ent.RefData, 10, 64)
 }
 
 func (f *fileMappingDao) RemoveFileMapping(ctx context.Context, link string) error {
@@ -102,18 +91,11 @@ func (f *fileMappingDao) IterFileMapping(ctx context.Context, prefix string, cb 
 		return err
 	}
 	for _, item := range ents {
-		fid, err := f.retrieveFileId(item)
+		cbitem, err := f.directoryEntryToFileMappingItem(item)
 		if err != nil {
 			return err
 		}
-		next, err := cb(ctx, path.Join(prefix, item.Name), &entity.FileMappingItem{
-			FileName: item.Name,
-			FileId:   fid,
-			FileSize: item.Size,
-			Ctime:    item.Ctime,
-			Mtime:    item.Mtime,
-			IsDir:    item.IsDir,
-		})
+		next, err := cb(ctx, path.Join(prefix, item.Name), cbitem)
 		if err != nil {
 			return err
 		}
@@ -122,4 +104,38 @@ func (f *fileMappingDao) IterFileMapping(ctx context.Context, prefix string, cb 
 		}
 	}
 	return nil
+}
+
+func (f *fileMappingDao) directoryEntryToFileMappingItem(item *directory.DirectoryEntry) (*entity.FileMappingItem, error) {
+	rs := &entity.FileMappingItem{
+		FileName: item.Name,
+		FileId:   0,
+		FileSize: item.Size,
+		Mode:     item.Mode,
+		Ctime:    item.Ctime,
+		Mtime:    item.Mtime,
+		IsDir:    item.IsDir,
+	}
+	if !rs.IsDir {
+		fid, err := strconv.ParseUint(item.RefData, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+		rs.FileId = fid
+	}
+	return rs, nil
+}
+
+func (f *fileMappingDao) ScanFileMapping(ctx context.Context, batch int64, cb ScanFileMappingFunc) error {
+	return f.dir.Scan(ctx, batch, func(ctx context.Context, res []*directory.DirectoryEntry) (bool, error) {
+		cbitems := make([]*entity.FileMappingItem, 0, len(res))
+		for _, item := range res {
+			cbitem, err := f.directoryEntryToFileMappingItem(item)
+			if err != nil {
+				return false, err
+			}
+			cbitems = append(cbitems, cbitem)
+		}
+		return cb(ctx, cbitems)
+	})
 }

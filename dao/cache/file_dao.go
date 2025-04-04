@@ -15,22 +15,18 @@ const (
 )
 
 type fileDao struct {
-	impl dao.IFileDao
+	dao.IFileDao
 }
 
 func NewFileDao(impl dao.IFileDao) dao.IFileDao {
 	return &fileDao{
-		impl: impl,
+		IFileDao: impl,
 	}
-}
-
-func (f *fileDao) CreateFileDraft(ctx context.Context, req *entity.CreateFileDraftRequest) (*entity.CreateFileDraftResponse, error) {
-	return f.impl.CreateFileDraft(ctx, req)
 }
 
 func (f *fileDao) MarkFileReady(ctx context.Context, req *entity.MarkFileReadyRequest) (*entity.MarkFileReadyResponse, error) {
 	defer cache.Del(ctx, f.buildCacheKey(req.FileID))
-	return f.impl.MarkFileReady(ctx, req)
+	return f.IFileDao.MarkFileReady(ctx, req)
 }
 
 func (f *fileDao) buildCacheKey(fid uint64) string {
@@ -50,7 +46,7 @@ func (f *fileDao) GetFileInfo(ctx context.Context, req *entity.GetFileInfoReques
 		for _, k := range ks {
 			fids = append(fids, mapping[k])
 		}
-		rs, err := f.impl.GetFileInfo(ctx, &entity.GetFileInfoRequest{
+		rs, err := f.IFileDao.GetFileInfo(ctx, &entity.GetFileInfoRequest{
 			FileIds: fids,
 		})
 		if err != nil {

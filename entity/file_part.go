@@ -16,3 +16,10 @@ type FilePartInfoItem struct {
 type GetFilePartInfoResponse struct {
 	List []*FilePartInfoItem
 }
+
+type DeleteFilePartRequest struct {
+	FileId []uint64
+}
+
+type DeleteFilePartResponse struct {
+}

@@ -84,7 +84,7 @@ func initStorage(c *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("create file io cache failed, err:%w", err)
 	}
-	fmgr := filemgr.NewFileManager(blkio, ioc)
+	fmgr := filemgr.NewFileManager(db.GetClient(), blkio, ioc)
 	filemgr.SetFileManagerImpl(fmgr)
 	return nil
 }

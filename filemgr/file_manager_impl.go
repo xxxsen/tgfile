@@ -5,14 +5,20 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/xxxsen/tgfile/blockio"
 	"github.com/xxxsen/tgfile/dao"
 	"github.com/xxxsen/tgfile/dao/cache"
 	"github.com/xxxsen/tgfile/entity"
 
+	"github.com/xxxsen/common/database"
 	"github.com/xxxsen/common/logutil"
 	"go.uber.org/zap"
+)
+
+const (
+	defaultPurgeInterval = 24 * time.Hour
 )
 
 type defaultFileManager struct {
@@ -222,11 +228,70 @@ func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filenam
 	return rsp.Item, true, nil
 }
 
-func NewFileManager(bkio blockio.IBlockIO, ioc IFileIOCache) IFileManager {
+func (d *defaultFileManager) cleanUnRefFileIdList(ctx context.Context, fidlist []uint64) error {
+	for _, fid := range fidlist {
+		if _, err := d.filePartDao.DeleteFilePart(ctx, &entity.DeleteFilePartRequest{FileId: []uint64{fid}}); err != nil {
+			return err
+		}
+		if _, err := d.fileDao.DeleteFile(ctx, &entity.DeleteFileRequest{FileId: []uint64{fid}}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (d *defaultFileManager) readUnRefFileIdList(ctx context.Context) ([]uint64, error) {
+	var defaultBatch int64 = 2000
+	fidMap := make(map[uint64]struct{}, 64)
+	limitMtime := time.Now().AddDate(0, 0, -1).UnixMilli() //mtime 在一天之前的数据才进行清理
+	if err := d.fileDao.ScanFile(ctx, defaultBatch, func(ctx context.Context, res []*entity.FileInfoItem) (bool, error) {
+		for _, item := range res {
+			if item.Mtime >= limitMtime {
+				continue
+			}
+			fidMap[item.FileId] = struct{}{}
+		}
+		return true, nil
+	}); err != nil {
+		return nil, err
+	}
+	if len(fidMap) == 0 {
+		return nil, nil
+	}
+	if err := d.fileMappingDao.ScanFileMapping(ctx, defaultBatch, func(ctx context.Context, res []*entity.FileMappingItem) (bool, error) {
+		for _, item := range res {
+			delete(fidMap, item.FileId)
+		}
+		return true, nil
+	}); err != nil {
+		return nil, err
+	}
+	if len(fidMap) == 0 {
+		return nil, nil
+	}
+	rs := make([]uint64, 0, len(fidMap))
+	for fid := range fidMap {
+		rs = append(rs, fid)
+	}
+	return rs, nil
+}
+
+func (d *defaultFileManager) Purge(ctx context.Context) (int64, error) {
+	fidList, err := d.readUnRefFileIdList(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read un-ref fid list failed, err:%w", err)
+	}
+	if err := d.cleanUnRefFileIdList(ctx, fidList); err != nil {
+		return 0, fmt.Errorf("clean un-ref fid list failed, err:%w", err)
+	}
+	return int64(len(fidList)), nil
+}
+
+func NewFileManager(dbc database.IDatabase, bkio blockio.IBlockIO, ioc IFileIOCache) IFileManager {
 	return &defaultFileManager{
-		fileDao:        cache.NewFileDao(dao.NewFileDao()),
-		filePartDao:    cache.NewFilePartDao(dao.NewFilePartDao()),
-		fileMappingDao: dao.NewFileMappingDao(),
+		fileDao:        cache.NewFileDao(dao.NewFileDao(dbc)),
+		filePartDao:    cache.NewFilePartDao(dao.NewFilePartDao(dbc)),
+		fileMappingDao: dao.NewFileMappingDao(dbc),
 		bkio:           bkio,
 		ioc:            ioc,
 	}
