@@ -38,7 +38,11 @@ func (c *TGFileClient) partUpload(ctx context.Context, src string, filekey strin
 			return err
 		}
 		r := io.LimitReader(f, size)
-		return c.c.Client.CreatePart(ctx, filekey, partid, r)
+		if err := c.c.Client.CreatePart(ctx, filekey, partid, r); err != nil {
+			logutil.GetLogger(ctx).Error("upload part failed, wait retry", zap.Error(err), zap.Int64("part_id", partid))
+			return err
+		}
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -52,13 +56,14 @@ func (c *TGFileClient) UploadFile(ctx context.Context, src string) (string, erro
 	}
 	uploadKey, blocksize, err := c.c.Client.CreateDraft(ctx, info.Size())
 	if err != nil {
+		logutil.GetLogger(ctx).Error("create file draft failed", zap.Error(err), zap.Int64("file_size", info.Size()))
 		return "", err
 	}
 	if blocksize == 0 {
 		return "", fmt.Errorf("zero block size from server")
 	}
 	blockcnt := int((info.Size() + blocksize - 1) / blocksize)
-	eg, _ := errgroup.WithContext(ctx)
+	eg, subctx := errgroup.WithContext(ctx)
 	eg.SetLimit(c.c.Thread)
 	logutil.GetLogger(ctx).Debug("start upload file", zap.Int64("block_size", blocksize), zap.Int("block_cnt", blockcnt))
 	for i := 0; i < blockcnt; i++ {
@@ -73,14 +78,16 @@ func (c *TGFileClient) UploadFile(ctx context.Context, src string) (string, erro
 			defer func() {
 				logutil.GetLogger(ctx).Debug("part upload finish", zap.Int64("part_id", partid), zap.Duration("cost", time.Since(start)))
 			}()
-			return c.partUpload(ctx, src, uploadKey, partid, startAt, partSize)
+			return c.partUpload(subctx, src, uploadKey, partid, startAt, partSize)
 		})
 	}
 	if err := eg.Wait(); err != nil {
+		logutil.GetLogger(ctx).Error("upload part failed", zap.Error(err))
 		return "", err
 	}
 	fileKey, err := c.c.Client.FinishCreate(ctx, uploadKey)
 	if err != nil {
+		logutil.GetLogger(ctx).Error("finish create failed", zap.Error(err))
 		return "", err
 	}
 	return fileKey, nil

@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/xxxsen/tgfile/cmd/tgc/config"
 	"github.com/xxxsen/tgfile/tgc"
@@ -44,7 +45,12 @@ func initContext(ctx *Context, cfgs []string) error {
 	}
 	ctx.Config = c
 	logger.Init("", c.LogLevel, 0, 0, 0, true)
-	cli, err := client.New(client.WithSchema(c.Schema), client.WithHost(c.Host), client.WithAuth(c.AccessKey, c.SecretKey))
+	cli, err := client.New(
+		client.WithSchema(c.Schema),
+		client.WithHost(c.Host),
+		client.WithAuth(c.AccessKey, c.SecretKey),
+		client.WithTimeout(time.Duration(c.Timeout)*time.Second),
+	)
 	if err != nil {
 		return err
 	}

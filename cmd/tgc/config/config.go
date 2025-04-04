@@ -13,6 +13,7 @@ type Config struct {
 	SecretKey string `json:"secret_key"`
 	Thread    int    `json:"thread"`
 	LogLevel  string `json:"log_level"`
+	Timeout   int64  `json:"timeout"`
 }
 
 func Parse(f string) (*Config, error) {
@@ -22,8 +23,9 @@ func Parse(f string) (*Config, error) {
 	}
 	c := &Config{
 		Schema:   "https",
-		Thread:   5,
-		LogLevel: "info",
+		Thread:   10,
+		LogLevel: "debug",
+		Timeout:  600,
 	}
 	if err := json.Unmarshal(raw, c); err != nil {
 		return nil, fmt.Errorf("unmarshal file:%w", err)

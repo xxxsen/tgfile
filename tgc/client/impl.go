@@ -14,19 +14,9 @@ import (
 	"github.com/xxxsen/tgfile/server/model"
 )
 
-var (
-	defaultHttpClient = &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			IdleConnTimeout:     20 * time.Second,
-			MaxIdleConns:        5,
-			MaxIdleConnsPerHost: 1,
-		},
-	}
-)
-
 type defaultClient struct {
-	c *config
+	c   *config
+	cli *http.Client
 }
 
 func (d *defaultClient) buildUrl(api string) string {
@@ -44,7 +34,7 @@ func (d *defaultClient) callJsonPost(ctx context.Context, api string, in interfa
 	}
 	d.applyAuth(req)
 	req.Header.Set("Content-Type", "application/json")
-	rsp, err := defaultHttpClient.Do(req)
+	rsp, err := d.cli.Do(req)
 	if err != nil {
 		return err
 	}
@@ -106,7 +96,7 @@ func (d *defaultClient) CreatePart(ctx context.Context, uploadKey string, partid
 	d.applyAuth(req)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
-	rsp, err := defaultHttpClient.Do(req)
+	rsp, err := d.cli.Do(req)
 	if err != nil {
 		return err
 	}
@@ -147,5 +137,15 @@ func New(opts ...Option) (IClient, error) {
 	if len(c.Host) == 0 {
 		return nil, fmt.Errorf("no host found")
 	}
-	return &defaultClient{c: c}, nil
+	if c.Timeout == 0 {
+		c.Timeout = 600 * time.Second
+	}
+	cli := &http.Client{
+		Timeout: c.Timeout,
+		Transport: &http.Transport{
+			IdleConnTimeout: 120 * time.Second,
+			MaxIdleConns:    5,
+		},
+	}
+	return &defaultClient{c: c, cli: cli}, nil
 }
