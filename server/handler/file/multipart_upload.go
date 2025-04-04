@@ -41,6 +41,7 @@ func BeginUpload(c *gin.Context, ctx context.Context, request interface{}) {
 
 func PartUpload(c *gin.Context, ctx context.Context, request interface{}) {
 	req := request.(*model.PartUploadRequest)
+	logutil.GetLogger(ctx).Debug("recv file part upload request", zap.String("upload_key", req.UploadKey), zap.Int64("part_id", *req.PartId), zap.Int64("size", req.PartData.Size))
 	f, err := req.PartData.Open()
 	if err != nil {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("open file fail, err:%w", err))
