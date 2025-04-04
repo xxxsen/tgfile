@@ -11,7 +11,7 @@ tgfile
 
 **基础配置:**
 
-```json
+```jsonc
 {
 	"bind": ":9901", //监听地址
 	"log_info": { //日志信息
@@ -44,7 +44,7 @@ tgfile
 
 由于底层对接的是网络io(目前为telegram), 速率相对较慢, 一个小文件, 获取链接+下载完成大概需要1~2s的时间, 为了加快小文件下载过程, 可以考虑加上缓存配置
 
-```json
+```jsonc
 { 
     "io_cache": { //与`bind`同级
         "enable_mem": true, //启用内存缓存
@@ -62,7 +62,7 @@ tgfile
 
 非必要配置, 如果想在本地通过命令行上传文件才需要客户端配置, 用户也可以通过其他方式进行文件上传, 如s3, webdav.
 
-```json
+```jsonc
 {
     "schema": "http",
     "host": "abc.example.com:9901", 
