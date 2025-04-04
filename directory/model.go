@@ -13,25 +13,34 @@ type directoryEntryTab struct {
 	FileName      string `json:"file_name"`
 }
 
-func (e *directoryEntryTab) ToDirectoyEntry() *DirectoryEntry {
-	rs := &DirectoryEntry{
-		RefData: e.RefData,
-		Name:    e.FileName,
-		Ctime:   e.Ctime,
-		Mtime:   e.Mtime,
-		Mode:    e.FileMode,
-		Size:    e.FileSize,
-		IsDir:   e.FileKind == defaultFileKindDir,
-	}
-	return rs
+func (e *directoryEntryTab) ToDirectoyEntry() IDirectoryEntry {
+	return e
 }
 
-type DirectoryEntry struct {
-	RefData string
-	Name    string
-	Ctime   int64
-	Mtime   int64
-	Mode    uint32
-	Size    int64
-	IsDir   bool
+func (d *directoryEntryTab) GetRefData() string {
+	return d.RefData
+}
+
+func (d *directoryEntryTab) GetName() string {
+	return d.FileName
+}
+
+func (d *directoryEntryTab) GetCtime() int64 {
+	return d.Ctime
+}
+
+func (d *directoryEntryTab) GetMtime() int64 {
+	return d.Mtime
+}
+
+func (d *directoryEntryTab) GetMode() uint32 {
+	return d.FileMode
+}
+
+func (d *directoryEntryTab) GetSize() int64 {
+	return d.FileSize
+}
+
+func (d *directoryEntryTab) GetIsDir() bool {
+	return d.FileKind == defaultFileKindDir
 }

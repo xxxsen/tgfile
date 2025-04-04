@@ -5,10 +5,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/xxxsen/tgfile/blockio"
 
 	"github.com/xxxsen/common/logutil"
+	"github.com/xxxsen/common/retry"
 	"go.uber.org/zap"
 )
 
@@ -68,6 +70,19 @@ func (f *defaultFsIO) Seek(offset int64, whence int) (int64, error) {
 	return cur, nil
 }
 
+func (f *defaultFsIO) retryGetDownloadStream(ctx context.Context, filekey string, pos int64) (io.ReadCloser, error) {
+	var rc io.ReadCloser
+	if err := retry.RetryDo(ctx, 3, 1*time.Second, func(ctx context.Context) error {
+		var err error
+		rc, err = f.bkio.Download(ctx, filekey, pos)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("retry get stream final failed, err:%w", err)
+	}
+	return rc, nil
+
+}
+
 func (f *defaultFsIO) Read(b []byte) (n int, err error) {
 	defer func() {
 		if err != nil && err != io.EOF {
@@ -89,7 +104,7 @@ func (f *defaultFsIO) Read(b []byte) (n int, err error) {
 		if err != nil {
 			return 0, fmt.Errorf("unable to convert blockid:%d to fileid, err:%w", blkid, err)
 		}
-		rc, err := f.bkio.Download(f.ctx, filekey, pos)
+		rc, err := f.retryGetDownloadStream(f.ctx, filekey, pos)
 		if err != nil {
 			return 0, fmt.Errorf("open stream fail, err:%w", err)
 		}
