@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"time"
 
 	_ "github.com/xxxsen/tgfile/auth"
 	"github.com/xxxsen/tgfile/blockio"
@@ -16,6 +18,7 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/xxxsen/common/idgen"
 	"github.com/xxxsen/common/logger"
+	"github.com/xxxsen/common/logutil"
 	"go.uber.org/zap"
 )
 
@@ -84,9 +87,23 @@ func initStorage(c *config.Config) error {
 	if err != nil {
 		return fmt.Errorf("create file io cache failed, err:%w", err)
 	}
-	fmgr := filemgr.NewFileManager(blkio, ioc)
+	fmgr := filemgr.NewFileManager(db.GetClient(), blkio, ioc)
 	filemgr.SetFileManagerImpl(fmgr)
+	go startDataPurge(fmgr)
 	return nil
+}
+
+func startDataPurge(mgr filemgr.IFileManager) {
+	ctx := context.Background()
+	ticker := time.NewTicker(24 * time.Hour)
+	for range ticker.C {
+		cnt, err := mgr.Purge(ctx, nil)
+		if err != nil {
+			logutil.GetLogger(ctx).Error("purge un-ref file failed", zap.Error(err))
+			continue
+		}
+		logutil.GetLogger(ctx).Info("clean un-ref file succ", zap.Int64("cnt", cnt))
+	}
 }
 
 func initCache(c *config.Config) error {

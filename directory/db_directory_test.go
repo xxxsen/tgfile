@@ -742,3 +742,20 @@ func TestCopy(t *testing.T) {
 		}
 	}
 }
+
+func TestScan(t *testing.T) {
+	ctx := context.Background()
+	_ = dav.Remove(ctx, "/")
+	for i := 0; i < 10; i++ {
+		err := dav.Create(ctx, fmt.Sprintf("/%d.txt", i), 0, "123")
+		assert.NoError(t, err)
+	}
+	err := dav.Scan(ctx, 1, func(ctx context.Context, res []*DirectoryEntry) (bool, error) {
+		if len(res) == 0 {
+			return false, nil
+		}
+		t.Logf("recv item:%+v", *res[0])
+		return true, nil
+	})
+	assert.NoError(t, err)
+}

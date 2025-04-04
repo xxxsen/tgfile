@@ -633,6 +633,49 @@ func (e *dbDirectory) Stat(ctx context.Context, filename string) (*DirectoryEntr
 	return rs, nil
 }
 
+func (e *dbDirectory) Scan(ctx context.Context, batch int64, cb DirectoryScanCallbackFunc) error {
+	var lastid uint64
+	for {
+		res, nextid, err := e.innerScan(ctx, lastid, batch)
+		if err != nil {
+			return err
+		}
+		lastid = nextid
+		next, err := cb(ctx, res)
+		if err != nil {
+			return err
+		}
+		if !next {
+			break
+		}
+		if len(res) < int(batch) {
+			break
+		}
+	}
+	return nil
+}
+
+func (e *dbDirectory) innerScan(ctx context.Context, lastid uint64, batch int64) ([]*DirectoryEntry, uint64, error) {
+	where := map[string]interface{}{
+		"id >":     lastid,
+		"_orderby": "id asc",
+		"_limit":   []uint{0, uint(batch)},
+	}
+	rs := make([]*directoryEntryTab, 0, batch)
+	if err := dbkit.SimpleQuery(ctx, e.db, e.table(), where, &rs, dbkit.ScanWithTagName("json")); err != nil {
+		return nil, 0, err
+	}
+	if len(rs) == 0 {
+		return nil, 0, nil
+	}
+	out := make([]*DirectoryEntry, 0, len(rs))
+	for _, item := range rs {
+		out = append(out, item.ToDirectoyEntry())
+	}
+	nextid := rs[len(rs)-1].Id
+	return out, nextid, nil
+}
+
 func NewDBDirectory(db database.IDatabase, tab string, idfn IDGenFunc) (IDirectory, error) {
 	return &dbDirectory{
 		db:   db,

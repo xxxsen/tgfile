@@ -5,23 +5,27 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/xxxsen/tgfile/db"
 	"github.com/xxxsen/tgfile/entity"
 
 	"github.com/didi/gendry/builder"
+	"github.com/xxxsen/common/database"
 	"github.com/xxxsen/common/database/dbkit"
 )
 
 type IFilePartDao interface {
 	CreateFilePart(ctx context.Context, req *entity.CreateFilePartRequest) (*entity.CreateFilePartResponse, error)
 	GetFilePartInfo(ctx context.Context, req *entity.GetFilePartInfoRequest) (*entity.GetFilePartInfoResponse, error)
+	DeleteFilePart(ctx context.Context, req *entity.DeleteFilePartRequest) (*entity.DeleteFilePartResponse, error)
 }
 
 type filePartDaoImpl struct {
+	dbc database.IDatabase
 }
 
-func NewFilePartDao() IFilePartDao {
-	return &filePartDaoImpl{}
+func NewFilePartDao(dbc database.IDatabase) IFilePartDao {
+	return &filePartDaoImpl{
+		dbc: dbc,
+	}
 }
 
 func (f *filePartDaoImpl) table() string {
@@ -43,7 +47,7 @@ func (f *filePartDaoImpl) CreateFilePart(ctx context.Context, req *entity.Create
 	if err != nil {
 		return nil, err
 	}
-	_, insertErr := db.GetClient().ExecContext(ctx, sql, args...)
+	_, insertErr := f.dbc.ExecContext(ctx, sql, args...)
 	if insertErr == nil {
 		return nil, insertErr
 	}
@@ -59,7 +63,7 @@ func (f *filePartDaoImpl) CreateFilePart(ctx context.Context, req *entity.Create
 	if err != nil {
 		return nil, err
 	}
-	rs, err := db.GetClient().ExecContext(ctx, sql, args...)
+	rs, err := f.dbc.ExecContext(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -80,9 +84,23 @@ func (f *filePartDaoImpl) GetFilePartInfo(ctx context.Context, req *entity.GetFi
 	}
 
 	rs := make([]*entity.FilePartInfoItem, 0, len(req.FilePartId))
-	if err := dbkit.SimpleQuery(ctx, db.GetClient(), f.table(), where, &rs, dbkit.ScanWithTagName("json")); err != nil {
+	if err := dbkit.SimpleQuery(ctx, f.dbc, f.table(), where, &rs, dbkit.ScanWithTagName("json")); err != nil {
 		return nil, err
 	}
 	return &entity.GetFilePartInfoResponse{List: rs}, nil
 
+}
+
+func (f *filePartDaoImpl) DeleteFilePart(ctx context.Context, req *entity.DeleteFilePartRequest) (*entity.DeleteFilePartResponse, error) {
+	where := map[string]interface{}{
+		"file_id in": req.FileId,
+	}
+	sql, args, err := builder.BuildDelete(f.table(), where)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := f.dbc.ExecContext(ctx, sql, args...); err != nil {
+		return nil, err
+	}
+	return &entity.DeleteFilePartResponse{}, nil
 }

@@ -18,19 +18,19 @@ var (
 )
 
 type filePartDao struct {
-	impl dao.IFilePartDao
+	dao.IFilePartDao
 }
 
 func NewFilePartDao(impl dao.IFilePartDao) dao.IFilePartDao {
 	return &filePartDao{
-		impl: impl,
+		IFilePartDao: impl,
 	}
 }
 
 func (f *filePartDao) CreateFilePart(ctx context.Context, req *entity.CreateFilePartRequest) (*entity.CreateFilePartResponse, error) {
 	//filepartid 能被覆盖, 所以创建后需要清理缓存
 	defer cache.Del(ctx, f.buildCacheKey(req.FileId, req.FilePartId))
-	return f.impl.CreateFilePart(ctx, req)
+	return f.IFilePartDao.CreateFilePart(ctx, req)
 }
 
 func (f *filePartDao) buildCacheKey(fid uint64, bid int32) string {
@@ -50,7 +50,7 @@ func (f *filePartDao) GetFilePartInfo(ctx context.Context, req *entity.GetFilePa
 		for _, k := range ks {
 			bids = append(bids, mapping[k])
 		}
-		rsp, err := f.impl.GetFilePartInfo(ctx, &entity.GetFilePartInfoRequest{
+		rsp, err := f.IFilePartDao.GetFilePartInfo(ctx, &entity.GetFilePartInfoRequest{
 			FileId:     req.FileId,
 			FilePartId: bids,
 		})
