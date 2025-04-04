@@ -9,7 +9,7 @@ tgfile
 
 ### 服务端
 
-一份简单的配置
+**基础配置:**
 
 ```json
 {
@@ -36,6 +36,25 @@ tgfile
 		"enable": true,
 		"root": "/"    //指定映射到底层存储的路径, 与接口上的'/webdav'不是一个东西
 	}
+	//其他配置项
+}
+```
+
+**io缓存:**
+
+由于底层对接的是网络io(目前为telegram), 速率相对较慢, 一个文件, 获取链接+下载完成大概需要1s的时间, 为了加快文件下载过程, 可以考虑加上缓存配置
+
+```json
+{ 
+    "io_cache": { //与`bind`同级
+        "enable_mem": true, //启用内存缓存
+        "mem_key_count": 1000, //内存缓存key的个数
+        "mem_key_size_limit": 4096, //4K, 单个内存key的最大大小(小于这个数值才会被加进内存缓存), 最终预估内存大小的占用为: mem_key_count*mem_key_size_limit
+        "enable_file": true, //启用文件缓存
+        "file_key_count": 10000, //文件缓存key的个数
+        "file_key_size_limit": 524288, //512K, 单个文件小于该值才能被缓存
+        "file_cache_dir": "/tmp/tgfile-cache" //文件缓存的存储目录
+    }
 }
 ```
 
