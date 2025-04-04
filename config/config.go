@@ -23,6 +23,16 @@ type WebdavConfig struct {
 	Root   string `json:"root"`
 }
 
+type IOCacheConfig struct {
+	EnableMem        bool   `json:"enable_mem"`
+	MemKeyCount      int    `json:"mem_key_count"`
+	MemKeySizeLimit  int    `json:"mem_key_size_limit"`
+	EnableFile       bool   `json:"enable_file"`
+	FileKeyCount     int    `json:"file_key_count"`
+	FileKeySizeLimit int    `json:"file_key_size_limit"`
+	FileCacheDir     string `json:"file_cache_dir"`
+}
+
 type Config struct {
 	Bind         string            `json:"bind"`
 	LogInfo      logger.LogConfig  `json:"log_info"`
@@ -33,6 +43,7 @@ type Config struct {
 	S3           S3Config          `json:"s3"`
 	RotateStream int               `json:"rotate_stream"`
 	Webdav       WebdavConfig      `json:"webdav"`
+	IOCache      IOCacheConfig     `json:"io_cache"`
 }
 
 func Parse(f string) (*Config, error) {

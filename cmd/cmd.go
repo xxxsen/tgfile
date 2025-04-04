@@ -13,6 +13,7 @@ import (
 	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/server"
 
+	"github.com/dustin/go-humanize"
 	"github.com/xxxsen/common/idgen"
 	"github.com/xxxsen/common/logger"
 	"go.uber.org/zap"
@@ -47,6 +48,9 @@ func main() {
 	logger.Info("current file protocol feature")
 	logger.Info("-- s3 feature", zap.Bool("enable", c.S3.Enable), zap.Strings("buckets", c.S3.Bucket))
 	logger.Info("-- webdav feature", zap.Bool("enable", c.Webdav.Enable), zap.String("root", c.Webdav.Root))
+	logger.Info("current cache config")
+	logger.Info("-- enable memory cache", zap.Bool("enable", c.IOCache.EnableMem), zap.String("max_cache_mem_usage", humanize.Bytes(uint64(c.IOCache.MemKeyCount)*uint64(c.IOCache.MemKeySizeLimit))))
+	logger.Info("-- enable file cache", zap.Bool("enable", c.IOCache.EnableFile), zap.String("max_cache_storage_usage", humanize.Bytes(uint64(c.IOCache.FileKeyCount)*uint64(c.IOCache.FileKeySizeLimit))))
 	svr, err := server.New(c.Bind,
 		server.WithEnableS3(c.S3.Enable, c.S3.Bucket),
 		server.WithUser(c.UserInfo),
@@ -67,7 +71,20 @@ func initStorage(c *config.Config) error {
 		return fmt.Errorf("init block io failed, kind:%s, err:%w", c.BotKind, err)
 	}
 	blkio = blockio.NewRotateIO(blkio, int(c.RotateStream))
-	fmgr := filemgr.NewFileManager(blkio)
+	cc := &filemgr.FileIOCacheConfig{
+		DisableMemCache:  !c.IOCache.EnableMem,
+		MemKeyCount:      c.IOCache.MemKeyCount,
+		MemKeySizeLimit:  c.IOCache.MemKeySizeLimit,
+		DisableFileCache: !c.IOCache.EnableFile,
+		FileKeyCount:     c.IOCache.FileKeyCount,
+		FileKeySizeLimit: c.IOCache.FileKeySizeLimit,
+		FileCacheDir:     c.IOCache.FileCacheDir,
+	}
+	ioc, err := filemgr.NewFileIOCache(cc)
+	if err != nil {
+		return fmt.Errorf("create file io cache failed, err:%w", err)
+	}
+	fmgr := filemgr.NewFileManager(blkio, ioc)
 	filemgr.SetFileManagerImpl(fmgr)
 	return nil
 }

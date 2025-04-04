@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"time"
 
 	"github.com/xxxsen/tgfile/blockio"
-	cacheapi "github.com/xxxsen/tgfile/cache"
 	"github.com/xxxsen/tgfile/dao"
 	"github.com/xxxsen/tgfile/dao/cache"
 	"github.com/xxxsen/tgfile/entity"
@@ -17,18 +15,12 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	defaultMaxSmallFileCountToCache = 1000
-	defaultSamllFileSize            = 4 * 1024 //4k
-	defaultSmallFileCacheTimeout    = 24 * time.Hour
-)
-
 type defaultFileManager struct {
 	fileDao        dao.IFileDao
 	filePartDao    dao.IFilePartDao
 	fileMappingDao dao.IFileMappingDao
 	bkio           blockio.IBlockIO
-	smCache        cacheapi.ICache
+	ioc            IFileIOCache
 }
 
 func (d *defaultFileManager) CreateLink(ctx context.Context, link string, fileid uint64, size int64, isDir bool) error {
@@ -70,6 +62,26 @@ func (d *defaultFileManager) CopyLink(ctx context.Context, src, dst string, isOv
 	return d.fileMappingDao.CopyFileMapping(ctx, src, dst, isOverwrite)
 }
 
+func (d *defaultFileManager) lowlevelIOStream(bkio blockio.IBlockIO, fileid uint64, filesize int64) func(ctx context.Context) (io.ReadSeekCloser, error) {
+	return func(ctx context.Context) (io.ReadSeekCloser, error) {
+		return newFileStream(ctx, bkio, func(ctx context.Context, blkid int32) (fk string, err error) {
+			defer func() {
+				if err != nil {
+					logutil.GetLogger(ctx).Error("convert blockid to filekey failed", zap.Error(err), zap.Uint64("file_id", fileid), zap.Int32("blkid", blkid))
+				}
+			}()
+			pinfo, ok, err := d.internalGetFilePartInfo(ctx, fileid, blkid)
+			if err != nil {
+				return "", fmt.Errorf("read file part info failed, err:%w", err)
+			}
+			if !ok {
+				return "", fmt.Errorf("partid:%d not found", blkid)
+			}
+			return pinfo.FileKey, nil
+		}, filesize), nil
+	}
+}
+
 func (d *defaultFileManager) Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {
 	finfo, ok, err := d.internalGetFileInfo(ctx, fileid)
 	if err != nil {
@@ -78,36 +90,9 @@ func (d *defaultFileManager) Open(ctx context.Context, fileid uint64) (io.ReadSe
 	if !ok {
 		return nil, os.ErrNotExist
 	}
-	isSmallFile := finfo.FileSize <= defaultSamllFileSize
-	if isSmallFile {
-		raw, ok, _ := d.smCache.Get(ctx, fmt.Sprintf("%d", fileid))
-		if ok {
-			return newBytesStream(raw.([]byte)), nil
-		}
-	}
-	rsc := newFileStream(ctx, d.bkio, func(ctx context.Context, blkid int32) (fk string, err error) {
-		defer func() {
-			if err != nil {
-				logutil.GetLogger(ctx).Error("convert blockid to filekey failed", zap.Error(err), zap.Uint64("file_id", fileid), zap.Int32("blkid", blkid))
-			}
-		}()
-		pinfo, ok, err := d.internalGetFilePartInfo(ctx, fileid, blkid)
-		if err != nil {
-			return "", fmt.Errorf("read file part info failed, err:%w", err)
-		}
-		if !ok {
-			return "", fmt.Errorf("partid:%d not found", blkid)
-		}
-		return pinfo.FileKey, nil
-	}, finfo.FileSize)
-	if isSmallFile {
-		raw, err := io.ReadAll(rsc)
-		_ = rsc.Close()
-		if err != nil {
-			return nil, err
-		}
-		_ = d.smCache.Set(ctx, fmt.Sprintf("%d", fileid), raw, defaultSmallFileCacheTimeout)
-		rsc = newBytesStream(raw)
+	rsc, err := d.ioc.Load(ctx, fileid, finfo.FileSize, d.lowlevelIOStream(d.bkio, fileid, finfo.FileSize))
+	if err != nil {
+		return nil, err
 	}
 	return rsc, nil
 }
@@ -237,18 +222,12 @@ func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filenam
 	return rsp.Item, true, nil
 }
 
-func NewFileManager(bkio blockio.IBlockIO) IFileManager {
-	// return &defaultFileManager{
-	// 	fileDao:        dao.NewFileDao(),
-	// 	filePartDao:    dao.NewFilePartDao(),
-	// 	fileMappingDao: dao.NewFileMappingDao(),
-	// 	bkio:           bkio,
-	// }
+func NewFileManager(bkio blockio.IBlockIO, ioc IFileIOCache) IFileManager {
 	return &defaultFileManager{
 		fileDao:        cache.NewFileDao(dao.NewFileDao()),
 		filePartDao:    cache.NewFilePartDao(dao.NewFilePartDao()),
 		fileMappingDao: dao.NewFileMappingDao(),
 		bkio:           bkio,
-		smCache:        cacheapi.MustNew(defaultMaxSmallFileCountToCache),
+		ioc:            ioc,
 	}
 }
