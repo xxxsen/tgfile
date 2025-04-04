@@ -587,8 +587,8 @@ func (e *dbDirectory) Create(ctx context.Context, filename string, size int64, r
 	return nil
 }
 
-func (e *dbDirectory) List(ctx context.Context, dir string) ([]*DirectoryEntry, error) {
-	var rs []*DirectoryEntry
+func (e *dbDirectory) List(ctx context.Context, dir string) ([]IDirectoryEntry, error) {
+	rs := make([]IDirectoryEntry, 0, 16)
 	if err := e.onSelectDir(ctx, dir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
 		items, err := e.txListAllDir(ctx, tx, parentid)
 		if err != nil {
@@ -604,7 +604,7 @@ func (e *dbDirectory) List(ctx context.Context, dir string) ([]*DirectoryEntry, 
 	return rs, nil
 }
 
-func (e *dbDirectory) Stat(ctx context.Context, filename string) (*DirectoryEntry, error) {
+func (e *dbDirectory) Stat(ctx context.Context, filename string) (IDirectoryEntry, error) {
 	dir, name, isRoot := e.splitFilename(filename)
 	if isRoot {
 		ent, ok, err := e.txGetRoot(ctx, e.db)
@@ -616,7 +616,7 @@ func (e *dbDirectory) Stat(ctx context.Context, filename string) (*DirectoryEntr
 		}
 		return ent.ToDirectoyEntry(), nil
 	}
-	var rs *DirectoryEntry
+	var rs IDirectoryEntry
 	if err := e.onSelectDir(ctx, dir, true, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
 		t, ok, err := e.txSearchEntry(ctx, tx, parentid, name)
 		if err != nil {
@@ -655,7 +655,7 @@ func (e *dbDirectory) Scan(ctx context.Context, batch int64, cb DirectoryScanCal
 	return nil
 }
 
-func (e *dbDirectory) innerScan(ctx context.Context, lastid uint64, batch int64) ([]*DirectoryEntry, uint64, error) {
+func (e *dbDirectory) innerScan(ctx context.Context, lastid uint64, batch int64) ([]IDirectoryEntry, uint64, error) {
 	where := map[string]interface{}{
 		"id >":     lastid,
 		"_orderby": "id asc",
@@ -668,7 +668,7 @@ func (e *dbDirectory) innerScan(ctx context.Context, lastid uint64, batch int64)
 	if len(rs) == 0 {
 		return nil, 0, nil
 	}
-	out := make([]*DirectoryEntry, 0, len(rs))
+	out := make([]IDirectoryEntry, 0, len(rs))
 	for _, item := range rs {
 		out = append(out, item.ToDirectoyEntry())
 	}

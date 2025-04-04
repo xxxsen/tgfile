@@ -95,7 +95,7 @@ func (f *fileMappingDaoImpl) IterFileMapping(ctx context.Context, prefix string,
 		if err != nil {
 			return err
 		}
-		next, err := cb(ctx, path.Join(prefix, item.Name), cbitem)
+		next, err := cb(ctx, path.Join(prefix, item.GetName()), cbitem)
 		if err != nil {
 			return err
 		}
@@ -106,18 +106,18 @@ func (f *fileMappingDaoImpl) IterFileMapping(ctx context.Context, prefix string,
 	return nil
 }
 
-func (f *fileMappingDaoImpl) directoryEntryToFileMappingItem(item *directory.DirectoryEntry) (*entity.FileMappingItem, error) {
+func (f *fileMappingDaoImpl) directoryEntryToFileMappingItem(item directory.IDirectoryEntry) (*entity.FileMappingItem, error) {
 	rs := &entity.FileMappingItem{
-		FileName: item.Name,
+		FileName: item.GetName(),
 		FileId:   0,
-		FileSize: item.Size,
-		Mode:     item.Mode,
-		Ctime:    item.Ctime,
-		Mtime:    item.Mtime,
-		IsDir:    item.IsDir,
+		FileSize: item.GetSize(),
+		Mode:     item.GetMode(),
+		Ctime:    item.GetCtime(),
+		Mtime:    item.GetMtime(),
+		IsDir:    item.GetIsDir(),
 	}
 	if !rs.IsDir {
-		fid, err := strconv.ParseUint(item.RefData, 10, 64)
+		fid, err := strconv.ParseUint(item.GetRefData(), 10, 64)
 		if err != nil {
 			return nil, err
 		}
@@ -127,7 +127,7 @@ func (f *fileMappingDaoImpl) directoryEntryToFileMappingItem(item *directory.Dir
 }
 
 func (f *fileMappingDaoImpl) ScanFileMapping(ctx context.Context, batch int64, cb ScanFileMappingFunc) error {
-	return f.dir.Scan(ctx, batch, func(ctx context.Context, res []*directory.DirectoryEntry) (bool, error) {
+	return f.dir.Scan(ctx, batch, func(ctx context.Context, res []directory.IDirectoryEntry) (bool, error) {
 		cbitems := make([]*entity.FileMappingItem, 0, len(res))
 		for _, item := range res {
 			cbitem, err := f.directoryEntryToFileMappingItem(item)

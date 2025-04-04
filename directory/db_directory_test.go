@@ -55,14 +55,14 @@ func TestMkdir(t *testing.T) {
 	ents, err := dav.List(ctx, "/")
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(ents))
-	assert.Equal(t, "a", ents[0].Name)
+	assert.Equal(t, "a", ents[0].GetName())
 	ents, err = dav.List(ctx, "/a/b/c/d/e/f/")
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(ents))
-	assert.Equal(t, "g", ents[0].Name)
+	assert.Equal(t, "g", ents[0].GetName())
 	info, err := dav.Stat(ctx, "/a/b/c/d/e/f")
 	assert.NoError(t, err)
-	t.Logf("info:%+v", *info)
+	t.Logf("info:%+v", info)
 }
 
 func TestCreateFile(t *testing.T) {
@@ -75,7 +75,7 @@ func TestCreateFile(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 2, len(ents))
 	for idx, ent := range ents {
-		t.Logf("item:%d => %+v", idx, *ent)
+		t.Logf("item:%d => %+v", idx, ent)
 	}
 }
 
@@ -431,7 +431,7 @@ func TestMove(t *testing.T) {
 			assert.NoError(t, err)
 			ent, err := dav.Stat(ctx, link)
 			assert.NoError(t, err)
-			assert.Equal(t, item.isDir, ent.IsDir)
+			assert.Equal(t, item.isDir, ent.GetIsDir())
 		}
 		err := dav.Move(ctx, fmt.Sprintf("%s%s", testPath, item.move.src), fmt.Sprintf("%s%s", testPath, item.move.dst), item.move.overwrite)
 		assert.Equal(t, item.move.hasErr, err != nil)
@@ -446,7 +446,7 @@ func TestMove(t *testing.T) {
 			if !tt.exist {
 				continue
 			}
-			assert.Equal(t, tt.isDir, ent.IsDir)
+			assert.Equal(t, tt.isDir, ent.GetIsDir())
 		}
 	}
 }
@@ -723,7 +723,7 @@ func TestCopy(t *testing.T) {
 			assert.NoError(t, err)
 			ent, err := dav.Stat(ctx, link)
 			assert.NoError(t, err)
-			assert.Equal(t, item.isDir, ent.IsDir)
+			assert.Equal(t, item.isDir, ent.GetIsDir())
 		}
 		err := dav.Copy(ctx, fmt.Sprintf("%s%s", testPath, item.copy.src), fmt.Sprintf("%s%s", testPath, item.copy.dst), item.copy.overwrite)
 		assert.Equal(t, item.copy.hasErr, err != nil)
@@ -738,7 +738,7 @@ func TestCopy(t *testing.T) {
 			if !tt.exist {
 				continue
 			}
-			assert.Equal(t, tt.isDir, ent.IsDir)
+			assert.Equal(t, tt.isDir, ent.GetIsDir())
 		}
 	}
 }
@@ -750,11 +750,11 @@ func TestScan(t *testing.T) {
 		err := dav.Create(ctx, fmt.Sprintf("/%d.txt", i), 0, "123")
 		assert.NoError(t, err)
 	}
-	err := dav.Scan(ctx, 1, func(ctx context.Context, res []*DirectoryEntry) (bool, error) {
+	err := dav.Scan(ctx, 1, func(ctx context.Context, res []IDirectoryEntry) (bool, error) {
 		if len(res) == 0 {
 			return false, nil
 		}
-		t.Logf("recv item:%+v", *res[0])
+		t.Logf("recv item:%+v", res[0])
 		return true, nil
 	})
 	assert.NoError(t, err)
