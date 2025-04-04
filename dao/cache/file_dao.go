@@ -73,3 +73,13 @@ func (f *fileDao) GetFileInfo(ctx context.Context, req *entity.GetFileInfoReques
 	}
 	return rsp, nil
 }
+
+func (f *fileDao) DeleteFile(ctx context.Context, req *entity.DeleteFileRequest) (*entity.DeleteFileResponse, error) {
+	defer func() {
+		for _, fid := range req.FileId {
+			_ = cache.Del(ctx, f.buildCacheKey(fid))
+		}
+	}()
+
+	return f.IFileDao.DeleteFile(ctx, req)
+}

@@ -232,14 +232,14 @@ func (d *defaultFileManager) cleanUnRefFileIdList(ctx context.Context, fidlist [
 		if _, err := d.fileDao.DeleteFile(ctx, &entity.DeleteFileRequest{FileId: []uint64{fid}}); err != nil {
 			return err
 		}
+		logutil.GetLogger(ctx).Info("purge file succ", zap.Uint64("file_id", fid))
 	}
 	return nil
 }
 
-func (d *defaultFileManager) readUnRefFileIdList(ctx context.Context) ([]uint64, error) {
+func (d *defaultFileManager) readUnRefFileIdList(ctx context.Context, limitMtime int64) ([]uint64, error) {
 	var defaultBatch int64 = 2000
 	fidMap := make(map[uint64]struct{}, 64)
-	limitMtime := time.Now().AddDate(0, 0, -1).UnixMilli() //mtime 在一天之前的数据才进行清理
 	if err := d.fileDao.ScanFile(ctx, defaultBatch, func(ctx context.Context, res []*entity.FileInfoItem) (bool, error) {
 		for _, item := range res {
 			if item.Mtime >= limitMtime {
@@ -272,8 +272,12 @@ func (d *defaultFileManager) readUnRefFileIdList(ctx context.Context) ([]uint64,
 	return rs, nil
 }
 
-func (d *defaultFileManager) Purge(ctx context.Context) (int64, error) {
-	fidList, err := d.readUnRefFileIdList(ctx)
+func (d *defaultFileManager) Purge(ctx context.Context, before *int64) (int64, error) {
+	limitMtime := time.Now().AddDate(0, 0, -1).UnixMilli() //mtime 在一天之前的数据才进行清理
+	if before != nil {
+		limitMtime = *before
+	}
+	fidList, err := d.readUnRefFileIdList(ctx, limitMtime)
 	if err != nil {
 		return 0, fmt.Errorf("read un-ref fid list failed, err:%w", err)
 	}

@@ -27,13 +27,13 @@ type IFileMappingDao interface {
 	ScanFileMapping(ctx context.Context, batch int64, cb ScanFileMappingFunc) error
 }
 
-type fileMappingDao struct {
+type fileMappingDaoImpl struct {
 	dbc database.IDatabase
 	dir directory.IDirectory
 }
 
 func NewFileMappingDao(dbc database.IDatabase) IFileMappingDao {
-	d := &fileMappingDao{
+	d := &fileMappingDaoImpl{
 		dbc: dbc,
 	}
 	dir, err := directory.NewDBDirectory(dbc, d.table(), idgen.Default().NextId)
@@ -44,11 +44,11 @@ func NewFileMappingDao(dbc database.IDatabase) IFileMappingDao {
 	return d
 }
 
-func (f *fileMappingDao) table() string {
+func (f *fileMappingDaoImpl) table() string {
 	return "tg_file_mapping_tab"
 }
 
-func (f *fileMappingDao) GetFileMapping(ctx context.Context, req *entity.GetFileMappingRequest) (*entity.GetFileMappingResponse, bool, error) {
+func (f *fileMappingDaoImpl) GetFileMapping(ctx context.Context, req *entity.GetFileMappingRequest) (*entity.GetFileMappingResponse, bool, error) {
 	ent, err := f.dir.Stat(ctx, req.FileName)
 	if err != nil {
 		return nil, false, err
@@ -60,7 +60,7 @@ func (f *fileMappingDao) GetFileMapping(ctx context.Context, req *entity.GetFile
 	return &entity.GetFileMappingResponse{Item: item}, true, nil
 }
 
-func (f *fileMappingDao) CreateFileMapping(ctx context.Context, req *entity.CreateFileMappingRequest) (*entity.CreateFileMappingResponse, error) {
+func (f *fileMappingDaoImpl) CreateFileMapping(ctx context.Context, req *entity.CreateFileMappingRequest) (*entity.CreateFileMappingResponse, error) {
 	if req.IsDir {
 		if err := f.dir.Mkdir(ctx, req.FileName); err != nil {
 			return nil, err
@@ -73,19 +73,19 @@ func (f *fileMappingDao) CreateFileMapping(ctx context.Context, req *entity.Crea
 	return &entity.CreateFileMappingResponse{}, nil
 }
 
-func (f *fileMappingDao) RemoveFileMapping(ctx context.Context, link string) error {
+func (f *fileMappingDaoImpl) RemoveFileMapping(ctx context.Context, link string) error {
 	return f.dir.Remove(ctx, link)
 }
 
-func (f *fileMappingDao) RenameFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error {
+func (f *fileMappingDaoImpl) RenameFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error {
 	return f.dir.Move(ctx, src, dst, isOverwrite)
 }
 
-func (f *fileMappingDao) CopyFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error {
+func (f *fileMappingDaoImpl) CopyFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error {
 	return f.dir.Copy(ctx, src, dst, isOverwrite)
 }
 
-func (f *fileMappingDao) IterFileMapping(ctx context.Context, prefix string, cb IterFileMappingFunc) error {
+func (f *fileMappingDaoImpl) IterFileMapping(ctx context.Context, prefix string, cb IterFileMappingFunc) error {
 	ents, err := f.dir.List(ctx, prefix)
 	if err != nil {
 		return err
@@ -106,7 +106,7 @@ func (f *fileMappingDao) IterFileMapping(ctx context.Context, prefix string, cb 
 	return nil
 }
 
-func (f *fileMappingDao) directoryEntryToFileMappingItem(item *directory.DirectoryEntry) (*entity.FileMappingItem, error) {
+func (f *fileMappingDaoImpl) directoryEntryToFileMappingItem(item *directory.DirectoryEntry) (*entity.FileMappingItem, error) {
 	rs := &entity.FileMappingItem{
 		FileName: item.Name,
 		FileId:   0,
@@ -126,7 +126,7 @@ func (f *fileMappingDao) directoryEntryToFileMappingItem(item *directory.Directo
 	return rs, nil
 }
 
-func (f *fileMappingDao) ScanFileMapping(ctx context.Context, batch int64, cb ScanFileMappingFunc) error {
+func (f *fileMappingDaoImpl) ScanFileMapping(ctx context.Context, batch int64, cb ScanFileMappingFunc) error {
 	return f.dir.Scan(ctx, batch, func(ctx context.Context, res []*directory.DirectoryEntry) (bool, error) {
 		cbitems := make([]*entity.FileMappingItem, 0, len(res))
 		for _, item := range res {

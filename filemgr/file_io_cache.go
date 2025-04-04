@@ -193,24 +193,28 @@ func NewFileIOCache(c *FileIOCacheConfig) (IFileIOCache, error) {
 	impl := &fileIOCacheImpl{
 		c: c,
 	}
-	if err := os.MkdirAll(c.FileCacheDir, 0755); err != nil {
-		return nil, err
-	}
 	if !c.DisableFileCache && len(c.FileCacheDir) == 0 {
 		return nil, fmt.Errorf("file cache is enabled but no file cache dir provided")
 	}
-	l1, err := lru.NewWithEvict(c.MemKeyCount, impl.onL1Evict)
-	if err != nil {
-		return nil, err
+	if !c.DisableMemCache {
+		l1, err := lru.NewWithEvict(c.MemKeyCount, impl.onL1Evict)
+		if err != nil {
+			return nil, err
+		}
+		impl.l1 = l1
 	}
-	l2, err := lru.NewWithEvict(c.FileKeyCount, impl.onL2Evict)
-	if err != nil {
-		return nil, err
-	}
-	impl.l1 = l1
-	impl.l2 = l2
-	if err := impl.loadL2FromDisk(); err != nil {
-		return nil, err
+	if !c.DisableFileCache {
+		l2, err := lru.NewWithEvict(c.FileKeyCount, impl.onL2Evict)
+		if err != nil {
+			return nil, err
+		}
+		impl.l2 = l2
+		if err := os.MkdirAll(c.FileCacheDir, 0755); err != nil {
+			return nil, err
+		}
+		if err := impl.loadL2FromDisk(); err != nil {
+			return nil, err
+		}
 	}
 	return impl, nil
 }
