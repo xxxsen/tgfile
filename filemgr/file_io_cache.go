@@ -2,7 +2,6 @@ package filemgr
 
 import (
 	"context"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -10,7 +9,6 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"time"
 
 	lru "github.com/hnlq715/golang-lru"
 	"github.com/xxxsen/common/logutil"
@@ -41,6 +39,7 @@ func (f *fileIOCacheImpl) readL1Cache(ctx context.Context, fileid uint64, size i
 	}
 	val, ok := f.l1.Get(fileid)
 	if ok {
+		logutil.GetLogger(ctx).Debug("read fileid from l1 cache", zap.Uint64("fileid", fileid))
 		return newBytesStream(val.([]byte)), nil // 直接返回缓存的字节流
 	}
 	rsc, err := onMiss(ctx)
@@ -53,7 +52,7 @@ func (f *fileIOCacheImpl) readL1Cache(ctx context.Context, fileid uint64, size i
 		return nil, err
 	}
 	// 将读取到的内容存入L1缓存
-	_ = f.l1.AddEx(fileid, raw, time.Duration(f.c.MemCacheTime)*time.Second)
+	_ = f.l1.Add(fileid, raw)
 	//之后直接通过读到的内存重建字节流返回
 	return newBytesStream(raw), nil
 }
@@ -66,6 +65,7 @@ func (f *fileIOCacheImpl) readL2Cache(ctx context.Context, fileid uint64, size i
 	if ok { //fileid缓存存在, 且对应的文件也存在, 则直接返回文件句柄
 		fio, err := os.Open(val.(string)) //如果打开失败, 那么对应的文件可能已经无了, 这里直接忽略错误, 从底层io再换回数据流
 		if err == nil {
+			logutil.GetLogger(ctx).Debug("read fileid from l2 cache", zap.Uint64("fileid", fileid))
 			return fio, nil // 返回文件句柄
 		}
 	}
@@ -76,12 +76,12 @@ func (f *fileIOCacheImpl) readL2Cache(ctx context.Context, fileid uint64, size i
 	}
 	defer rsc.Close()
 	// 读取数据并存储到临时变量
-	location := f.buildFileIdLocation(fileid, uint64(f.c.FileCacheTime))
+	location := f.buildFileIdLocation(fileid)
 	if err := utils.SafeSaveIOToFile(location, rsc); err != nil {
 		return nil, fmt.Errorf("failed to save file to local: %w", err)
 	}
 	// 将文件路径加入到L2缓存
-	_ = f.l2.AddEx(fileid, location, time.Duration(f.c.FileCacheTime)*time.Second)
+	_ = f.l2.Add(fileid, location)
 	// 返回文件句柄
 	fio, err := os.Open(location)
 	return fio, err
@@ -100,11 +100,9 @@ type FileIOCacheConfig struct {
 	DisableMemCache  bool
 	MemKeyCount      int
 	MemKeySizeLimit  int
-	MemCacheTime     int
 	DisableFileCache bool
 	FileKeyCount     int
 	FileKeySizeLimit int
-	FileCacheTime    int
 	FileCacheDir     string // 文件缓存目录，必须存在
 }
 
@@ -113,35 +111,32 @@ func NewDefaultFileIOCacheConfig() *FileIOCacheConfig {
 		DisableMemCache:  false,
 		MemKeyCount:      1024,
 		MemKeySizeLimit:  4 * 1024, // 4k, 最终占用内存大小4M
-		MemCacheTime:     0,
 		DisableFileCache: false,
 		FileKeyCount:     10240,
 		FileKeySizeLimit: 512 * 1024,                              // 512k, 最终占用磁盘空间5G
-		FileCacheTime:    0,                                       // 磁盘缓存时间，0表示永久保存，直到手动删除或磁盘空间不足
 		FileCacheDir:     path.Join(os.TempDir(), "tgfile-cache"), // 默认使用系统临时目录
 	}
 }
 
 func (f *fileIOCacheImpl) onL1Evict(key interface{}, value interface{}) {
-
+	fileid := key.(uint64)
+	logutil.GetLogger(context.Background()).Debug("evit from l1 cache", zap.Uint64("fileid", fileid))
 }
 
 func (f *fileIOCacheImpl) onL2Evict(key interface{}, value interface{}) {
 	fileid := key.(uint64)
 	location := value.(string)
 	_ = os.Remove(location)
-	logutil.GetLogger(context.Background()).Debug("remove evit file cache", zap.Uint64("fileid", fileid), zap.String("path", location))
+	logutil.GetLogger(context.Background()).Debug("evit l2 file cache", zap.Uint64("fileid", fileid), zap.String("path", location))
 }
 
-func (f *fileIOCacheImpl) buildFileIdLocation(fileid uint64, expire uint64) string {
+func (f *fileIOCacheImpl) buildFileIdLocation(fileid uint64) string {
 	//文件格式: filename := fileid-expire.cache
 	//文件路径:
 	// hash := hex.EncodeToString(binary(fileid))
 	// fullpath := basedir + "/" + hash[:2] + "/" + hash[2:] + "/" + filename
-	buf := make([]byte, 8)
-	binary.BigEndian.PutUint64(buf, fileid)
-	data := hex.EncodeToString(buf)
-	filename := fmt.Sprintf("%d-%d.cache", fileid, uint64(time.Now().Unix())+expire)
+	data := hex.EncodeToString(utils.FileIdToHash(fileid))
+	filename := fmt.Sprintf("%d.cache", fileid)
 	return path.Join(f.c.FileCacheDir, data[:2], data[2:4], filename)
 }
 
@@ -159,7 +154,6 @@ func (f *fileIOCacheImpl) loadL2FromDisk() error {
 	if f.c.FileCacheDir == "" {
 		return fmt.Errorf("file cache dir is empty")
 	}
-	now := time.Now().Unix()
 	// 递归读取文件目录下的所有文件
 	err := filepath.Walk(f.c.FileCacheDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -178,24 +172,18 @@ func (f *fileIOCacheImpl) loadL2FromDisk() error {
 		}
 		// 解析文件名获取fileid和expire
 		var fileid uint64
-		var expire int64
 		var filename = info.Name()
-		n, err := fmt.Sscanf(filename, "%d-%d.cache", &fileid, &expire)
-		if err != nil || n != 2 {
+		n, err := fmt.Sscanf(filename, "%d.cache", &fileid)
+		if err != nil || n != 1 {
 			return nil
 		}
-		spareCacheTime := expire - now
-		if expire != 0 && spareCacheTime < 0 { // 如果expire小于当前时间, 则表示缓存已过期, 不加载
-			_ = os.Remove(path) // 删除过期的缓存文件
-			return nil
-		}
-		f.l2.AddEx(fileid, path, time.Duration(spareCacheTime)*time.Second) // 加入到L2缓存中
-		logutil.GetLogger(context.Background()).Debug("load file to L2 cache", zap.Uint64("fileid", fileid), zap.String("path", path), zap.Int64("spare_cache_time", spareCacheTime))
+		f.l2.Add(fileid, path) // 加入到L2缓存中
+		logutil.GetLogger(context.Background()).Debug("load file to l2 cache", zap.Uint64("fileid", fileid), zap.String("path", path))
 		return nil
 	})
 	if err != nil {
 		// 如果遍历目录失败，返回错误
-		return fmt.Errorf("failed to load L2 cache from disk: %w", err)
+		return fmt.Errorf("failed to load l2 cache from disk: %w", err)
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"io"
 	"testing"
 
+	lru "github.com/hnlq715/golang-lru"
 	"github.com/stretchr/testify/assert"
 	"github.com/xxxsen/common/logger"
 )
@@ -15,12 +16,10 @@ func TestFileIOCache(t *testing.T) {
 		DisableMemCache:  false,
 		MemKeyCount:      10,
 		MemKeySizeLimit:  5,
-		MemCacheTime:     5,
 		DisableFileCache: false,
 		FileKeyCount:     30,
 		FileKeySizeLimit: 20,
-		FileCacheTime:    10,
-		FileCacheDir:     "/tmp/tgfile_cache",
+		FileCacheDir:     "/tmp/tgfile-cache",
 	})
 	assert.NoError(t, err)
 	ctx := context.Background()
@@ -66,4 +65,23 @@ func TestFileIOCache(t *testing.T) {
 			assert.NoError(t, err)
 		}
 	}
+	{ //测试l1缓存淘汰
+		for i := 0; i < 20; i++ {
+			_, err = cc.Load(ctx, uint64(i+4), 2, dataReader(2))
+			assert.NoError(t, err)
+		}
+	}
+}
+
+func TestEvitTwice(t *testing.T) {
+	evited := false
+	cc, err := lru.NewWithEvict(5,
+		func(key, value interface{}) {
+			evited = true
+		},
+	)
+	assert.NoError(t, err)
+	cc.Add(1, "hello")
+	cc.Add(1, "world") //对同一个数据的修改, 不会触发淘汰
+	assert.False(t, evited)
 }
