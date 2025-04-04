@@ -49,7 +49,7 @@ tgfile
     "host": "abc.example.com:9901", 
     "access_key": "aaa", //用户名
     "secret_key": "1111", //密码,
-	"thread": 5  //指定上传时分块上传的线程数
+    "thread": 5  //指定上传时分块上传的线程数
 }
 ```
 
