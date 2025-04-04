@@ -17,10 +17,6 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	defaultPurgeInterval = 24 * time.Hour
-)
-
 type defaultFileManager struct {
 	fileDao        dao.IFileDao
 	filePartDao    dao.IFilePartDao
