@@ -18,6 +18,10 @@ import (
 
 func BeginUpload(c *gin.Context, ctx context.Context, request interface{}) {
 	req := request.(*model.BeginUploadRequest)
+	if len(req.FileName) == 0 {
+		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("no file name found"))
+		return
+	}
 	fileid, blocksize, err := filemgr.CreateDraft(ctx, req.FileSize)
 	if err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("create draft failed, err:%w", err))
@@ -66,7 +70,7 @@ func FinishUpload(c *gin.Context, ctx context.Context, request interface{}) {
 	req := request.(*model.FinishUploadRequest)
 	fctx := &model.MultiPartUploadContext{}
 	if err := fctx.Decode(req.UploadKey); err != nil {
-		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("decode file key failed, err:%w", err))
+		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("decode file key failed, key:%s, err:%w", req.UploadKey, err))
 		return
 	}
 	if err := filemgr.FinishCreate(ctx, fctx.FileId); err != nil {
