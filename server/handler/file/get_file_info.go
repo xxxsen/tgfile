@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"os"
 
+	"github.com/xxxsen/common/webapi/proxyutil"
 	"github.com/xxxsen/tgfile/filemgr"
-	"github.com/xxxsen/tgfile/proxyutil"
 
 	"github.com/xxxsen/tgfile/server/model"
 

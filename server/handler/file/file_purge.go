@@ -6,8 +6,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/logutil"
+	"github.com/xxxsen/common/webapi/proxyutil"
 	"github.com/xxxsen/tgfile/filemgr"
-	"github.com/xxxsen/tgfile/proxyutil"
 	"go.uber.org/zap"
 )
 

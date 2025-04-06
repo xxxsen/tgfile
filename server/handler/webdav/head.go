@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/xxxsen/common/webapi/proxyutil"
 	"github.com/xxxsen/tgfile/filemgr"
-	"github.com/xxxsen/tgfile/proxyutil"
 
 	"github.com/gin-gonic/gin"
 )
