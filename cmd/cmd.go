@@ -49,8 +49,8 @@ func main() {
 	logger.Info("-- s3 feature", zap.Bool("enable", c.S3.Enable), zap.Strings("buckets", c.S3.Bucket))
 	logger.Info("-- webdav feature", zap.Bool("enable", c.Webdav.Enable), zap.String("root", c.Webdav.Root))
 	logger.Info("current cache config")
-	logger.Info("-- enable memory cache", zap.Bool("enable", c.IOCache.EnableMem), zap.String("max_cache_mem_usage", humanize.Bytes(uint64(c.IOCache.MemKeyCount)*uint64(c.IOCache.MemKeySizeLimit))))
-	logger.Info("-- enable file cache", zap.Bool("enable", c.IOCache.EnableFile), zap.String("max_cache_storage_usage", humanize.Bytes(uint64(c.IOCache.FileKeyCount)*uint64(c.IOCache.FileKeySizeLimit))))
+	logger.Info("-- enable memory cache", zap.Bool("enable", c.IOCache.EnableMem), zap.String("max_cache_mem_usage", humanize.IBytes(uint64(c.IOCache.MemKeyCount)*uint64(c.IOCache.MemKeySizeLimit))))
+	logger.Info("-- enable file cache", zap.Bool("enable", c.IOCache.EnableFile), zap.String("max_cache_storage_usage", humanize.IBytes(uint64(c.IOCache.FileKeyCount)*uint64(c.IOCache.FileKeySizeLimit))))
 	svr, err := server.New(c.Bind,
 		server.WithEnableS3(c.S3.Enable, c.S3.Bucket),
 		server.WithUser(c.UserInfo),

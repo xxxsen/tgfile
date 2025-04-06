@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/xxxsen/common/logutil"
 	"github.com/xxxsen/common/retry"
 	"go.uber.org/zap"
@@ -76,7 +77,12 @@ func (c *TGFileClient) UploadFile(ctx context.Context, src string) (string, erro
 		eg.Go(func() error {
 			start := time.Now()
 			defer func() {
-				logutil.GetLogger(ctx).Debug("part upload finish", zap.Int64("part_id", partid), zap.Duration("cost", time.Since(start)))
+				cost := time.Since(start)
+				speed := "-"
+				if cost > 0 {
+					speed = humanize.IBytes(uint64(float64(blocksize) * 1000 / float64(int64(cost/time.Millisecond))))
+				}
+				logutil.GetLogger(ctx).Debug("part upload finish", zap.Int64("part_id", partid), zap.Duration("cost", cost), zap.String("speed", speed+"/s"))
 			}()
 			return c.partUpload(subctx, src, uploadKey, partid, startAt, partSize)
 		})
