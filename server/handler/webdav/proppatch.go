@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/xxxsen/tgfile/proxyutil"
+	"github.com/xxxsen/common/webapi/proxyutil"
 
 	"github.com/gin-gonic/gin"
 )

@@ -4,7 +4,7 @@ import (
 	"flag"
 	"fmt"
 
-	_ "github.com/xxxsen/tgfile/auth"
+	_ "github.com/xxxsen/common/webapi/auth"
 	"github.com/xxxsen/tgfile/blockio"
 	_ "github.com/xxxsen/tgfile/blockio/register"
 	"github.com/xxxsen/tgfile/cache"

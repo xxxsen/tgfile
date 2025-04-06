@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/xxxsen/tgfile/proxyutil"
+	"github.com/xxxsen/common/webapi/proxyutil"
 	"github.com/xxxsen/tgfile/server/model"
 )
 

@@ -5,13 +5,15 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/xxxsen/common/webapi"
+	"github.com/xxxsen/common/webapi/auth"
+	"github.com/xxxsen/common/webapi/middleware"
+	"github.com/xxxsen/common/webapi/proxyutil"
 	"github.com/xxxsen/tgfile/filemgr"
-	"github.com/xxxsen/tgfile/proxyutil"
 	"github.com/xxxsen/tgfile/server/handler/backup"
 	"github.com/xxxsen/tgfile/server/handler/file"
 	"github.com/xxxsen/tgfile/server/handler/s3"
 	"github.com/xxxsen/tgfile/server/handler/webdav"
-	"github.com/xxxsen/tgfile/server/middleware"
 	"github.com/xxxsen/tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
@@ -22,39 +24,22 @@ func init() {
 }
 
 type Server struct {
-	addr   string
 	c      *config
-	engine *gin.Engine
+	engine webapi.IWebEngine
 }
 
 func New(bind string, opts ...Option) (*Server, error) {
 	c := applyOpts(opts...)
-	svr := &Server{addr: bind, c: c}
-	if err := svr.init(); err != nil {
+	svr := &Server{c: c}
+	var err error
+	svr.engine, err = webapi.NewEngine("/", bind, webapi.WithAuth(auth.MapUserMatch(c.userMap)), webapi.WithRegister(svr.initAPI))
+	if err != nil {
 		return nil, err
 	}
 	return svr, nil
 }
 
-func (s *Server) init() error {
-	s.engine = gin.New()
-	s.initMiddleware(s.engine)
-	s.initAPI(s.engine)
-	return nil
-}
-
-func (s *Server) initMiddleware(router *gin.Engine) {
-	mds := []gin.HandlerFunc{
-		middleware.PanicRecoverMiddleware(),
-		middleware.TraceMiddleware(),
-		middleware.LogRequestMiddleware(),
-		middleware.TryAuthMiddleware(s.c.userMap),
-		middleware.NonLengthIOLimitMiddleware(),
-	}
-	router.Use(mds...)
-}
-
-func (s *Server) initAPI(router *gin.Engine) {
+func (s *Server) initAPI(router *gin.RouterGroup) {
 	mustAuthMiddleware := middleware.MustAuthMiddleware()
 	fileRouter := router.Group("/file")
 	{
@@ -98,5 +83,5 @@ func (s *Server) initAPI(router *gin.Engine) {
 	}
 }
 func (s *Server) Run() error {
-	return s.engine.Run(s.addr)
+	return s.engine.Run()
 }
