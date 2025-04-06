@@ -54,8 +54,9 @@ func (d *defaultClient) callJsonPost(ctx context.Context, api string, in interfa
 	return nil
 }
 
-func (d *defaultClient) CreateDraft(ctx context.Context, size int64) (string, int64, error) {
+func (d *defaultClient) CreateDraft(ctx context.Context, filename string, size int64) (string, int64, error) {
 	req := &model.BeginUploadRequest{
+		FileName: filename,
 		FileSize: size,
 	}
 	rsp := &model.BeginUploadResponse{}

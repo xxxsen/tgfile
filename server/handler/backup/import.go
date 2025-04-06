@@ -61,7 +61,7 @@ func Import(c *gin.Context, ctx context.Context, request interface{}) {
 		logutil.GetLogger(ctx).Info("import one file succ", zap.String("name", h.Name), zap.Int64("size", h.Size))
 	}
 	if retErr != nil {
-		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("import file failed, err:%w", err))
+		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("import file failed, err:%w", retErr))
 		return
 	}
 	if !containStatisticFile {

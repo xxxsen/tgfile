@@ -1,10 +1,8 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
-	"time"
 
 	_ "github.com/xxxsen/tgfile/auth"
 	"github.com/xxxsen/tgfile/blockio"
@@ -18,7 +16,6 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/xxxsen/common/idgen"
 	"github.com/xxxsen/common/logger"
-	"github.com/xxxsen/common/logutil"
 	"go.uber.org/zap"
 )
 
@@ -52,8 +49,8 @@ func main() {
 	logger.Info("-- s3 feature", zap.Bool("enable", c.S3.Enable), zap.Strings("buckets", c.S3.Bucket))
 	logger.Info("-- webdav feature", zap.Bool("enable", c.Webdav.Enable), zap.String("root", c.Webdav.Root))
 	logger.Info("current cache config")
-	logger.Info("-- enable memory cache", zap.Bool("enable", c.IOCache.EnableMem), zap.String("max_cache_mem_usage", humanize.Bytes(uint64(c.IOCache.MemKeyCount)*uint64(c.IOCache.MemKeySizeLimit))))
-	logger.Info("-- enable file cache", zap.Bool("enable", c.IOCache.EnableFile), zap.String("max_cache_storage_usage", humanize.Bytes(uint64(c.IOCache.FileKeyCount)*uint64(c.IOCache.FileKeySizeLimit))))
+	logger.Info("-- enable memory cache", zap.Bool("enable", c.IOCache.EnableMem), zap.String("max_cache_mem_usage", humanize.IBytes(uint64(c.IOCache.MemKeyCount)*uint64(c.IOCache.MemKeySizeLimit))))
+	logger.Info("-- enable file cache", zap.Bool("enable", c.IOCache.EnableFile), zap.String("max_cache_storage_usage", humanize.IBytes(uint64(c.IOCache.FileKeyCount)*uint64(c.IOCache.FileKeySizeLimit))))
 	svr, err := server.New(c.Bind,
 		server.WithEnableS3(c.S3.Enable, c.S3.Bucket),
 		server.WithUser(c.UserInfo),
@@ -89,21 +86,7 @@ func initStorage(c *config.Config) error {
 	}
 	fmgr := filemgr.NewFileManager(db.GetClient(), blkio, ioc)
 	filemgr.SetFileManagerImpl(fmgr)
-	go startDataPurge(fmgr)
 	return nil
-}
-
-func startDataPurge(mgr filemgr.IFileManager) {
-	ctx := context.Background()
-	ticker := time.NewTicker(24 * time.Hour)
-	for range ticker.C {
-		cnt, err := mgr.Purge(ctx, nil)
-		if err != nil {
-			logutil.GetLogger(ctx).Error("purge un-ref file failed", zap.Error(err))
-			continue
-		}
-		logutil.GetLogger(ctx).Info("clean un-ref file succ", zap.Int64("cnt", cnt))
-	}
 }
 
 func initCache(c *config.Config) error {

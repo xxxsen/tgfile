@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/proxyutil"
 
 	"github.com/xxxsen/tgfile/server/model"
-	"github.com/xxxsen/tgfile/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/logutil"
@@ -18,15 +18,21 @@ import (
 
 func BeginUpload(c *gin.Context, ctx context.Context, request interface{}) {
 	req := request.(*model.BeginUploadRequest)
+	if len(req.FileName) == 0 {
+		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("no file name found"))
+		return
+	}
 	fileid, blocksize, err := filemgr.CreateDraft(ctx, req.FileSize)
 	if err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("create draft failed, err:%w", err))
 		return
 	}
 	fctx := &model.MultiPartUploadContext{
-		FileId:    fileid,
-		FileSize:  req.FileSize,
-		BlockSize: blocksize,
+		FileName:   req.FileName,
+		CreateTime: time.Now().UnixMilli(),
+		FileId:     fileid,
+		FileSize:   req.FileSize,
+		BlockSize:  blocksize,
 	}
 	key, err := fctx.Encode()
 	if err != nil {
@@ -64,15 +70,14 @@ func FinishUpload(c *gin.Context, ctx context.Context, request interface{}) {
 	req := request.(*model.FinishUploadRequest)
 	fctx := &model.MultiPartUploadContext{}
 	if err := fctx.Decode(req.UploadKey); err != nil {
-		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("decode file key failed, err:%w", err))
+		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("decode file key failed, key:%s, err:%w", req.UploadKey, err))
 		return
 	}
 	if err := filemgr.FinishCreate(ctx, fctx.FileId); err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("finish upload failed, err:%w", err))
 		return
 	}
-	fileKey := utils.EncodeFileId(fctx.FileId)
-	path := defaultUploadPrefix + fileKey
+	path, fileKey := buildFileKeyLink(fctx.FileName, fctx.FileId)
 	if err := filemgr.CreateLink(ctx, path, fctx.FileId, fctx.FileSize, false); err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
 		return
