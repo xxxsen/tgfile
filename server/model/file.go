@@ -35,7 +35,8 @@ type GetFileInfoResponse struct {
 }
 
 type BeginUploadRequest struct {
-	FileSize int64 `json:"file_size"`
+	FileName string `json:"file_name"`
+	FileSize int64  `json:"file_size"`
 }
 
 type BeginUploadResponse struct {
@@ -61,9 +62,11 @@ type FinishUploadResponse struct {
 }
 
 type MultiPartUploadContext struct {
-	FileId    uint64 `json:"file_id"`
-	FileSize  int64  `json:"file_size"`
-	BlockSize int64  `json:"block_size"`
+	FileName   string `json:"file_name"`
+	CreateTime int64  `json:"create_time"`
+	FileId     uint64 `json:"file_id"`
+	FileSize   int64  `json:"file_size"`
+	BlockSize  int64  `json:"block_size"`
 }
 
 func (c *MultiPartUploadContext) Encode() (string, error) {

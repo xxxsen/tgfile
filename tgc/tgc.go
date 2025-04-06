@@ -54,7 +54,7 @@ func (c *TGFileClient) UploadFile(ctx context.Context, src string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	uploadKey, blocksize, err := c.c.Client.CreateDraft(ctx, info.Size())
+	uploadKey, blocksize, err := c.c.Client.CreateDraft(ctx, info.Name(), info.Size())
 	if err != nil {
 		logutil.GetLogger(ctx).Error("create file draft failed", zap.Error(err), zap.Int64("file_size", info.Size()))
 		return "", err

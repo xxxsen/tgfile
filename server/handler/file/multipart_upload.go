@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/proxyutil"
 
 	"github.com/xxxsen/tgfile/server/model"
-	"github.com/xxxsen/tgfile/utils"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/logutil"
@@ -24,9 +24,11 @@ func BeginUpload(c *gin.Context, ctx context.Context, request interface{}) {
 		return
 	}
 	fctx := &model.MultiPartUploadContext{
-		FileId:    fileid,
-		FileSize:  req.FileSize,
-		BlockSize: blocksize,
+		FileName:   req.FileName,
+		CreateTime: time.Now().UnixMilli(),
+		FileId:     fileid,
+		FileSize:   req.FileSize,
+		BlockSize:  blocksize,
 	}
 	key, err := fctx.Encode()
 	if err != nil {
@@ -71,8 +73,7 @@ func FinishUpload(c *gin.Context, ctx context.Context, request interface{}) {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("finish upload failed, err:%w", err))
 		return
 	}
-	fileKey := utils.EncodeFileId(fctx.FileId)
-	path := defaultUploadPrefix + fileKey
+	path, fileKey := buildFileKeyLink(fctx.FileName, fctx.FileId)
 	if err := filemgr.CreateLink(ctx, path, fctx.FileId, fctx.FileSize, false); err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
 		return

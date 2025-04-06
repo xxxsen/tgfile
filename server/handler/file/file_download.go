@@ -15,7 +15,11 @@ import (
 func FileDownload(c *gin.Context) {
 	ctx := c.Request.Context()
 	key := c.Param("key")
-	path := defaultUploadPrefix + key
+	path, err := extractLinkFromFileKey(key)
+	if err != nil {
+		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("invalid fkey, err:%w", err))
+		return
+	}
 	finfo, err := filemgr.ResolveLink(ctx, path)
 	if err != nil {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("invalid down key, key:%s, err:%w", key, err))
