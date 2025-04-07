@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/xxxsen/common/logger"
 	"github.com/xxxsen/tgfile/blockio/mem"
-	"github.com/xxxsen/tgfile/cache"
 	"github.com/xxxsen/tgfile/db"
 )
 
@@ -35,7 +34,7 @@ func setup() {
 		panic(err)
 	}
 	logger.Init("", "debug", 0, 0, 0, true)
-	cache.SetImpl(cache.MustNew(1000))
+	//cache.SetImpl(cache.MustNew(1000))
 	mgr := NewFileManager(db.GetClient(), blkio, cc)
 	SetFileManagerImpl(mgr)
 }

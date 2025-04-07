@@ -2,74 +2,62 @@ package cache
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	"github.com/xxxsen/tgfile/cache"
+	lru "github.com/hashicorp/golang-lru/v2/expirable"
+	"github.com/xxxsen/tgfile/cacheapi"
+	cachewrap "github.com/xxxsen/tgfile/cacheapi/adaptor"
 	"github.com/xxxsen/tgfile/dao"
 	"github.com/xxxsen/tgfile/entity"
 )
 
 const (
+	defaultMaxFileDaoCacheSize    = 10000
 	defaultFileDaoCacheExpireTime = 7 * 24 * time.Hour
 )
 
 type fileDao struct {
 	dao.IFileDao
+	cache cacheapi.ICache[uint64, *entity.FileInfoItem]
 }
 
 func NewFileDao(impl dao.IFileDao) dao.IFileDao {
+	cc := lru.NewLRU[uint64, *entity.FileInfoItem](defaultMaxFileDaoCacheSize, nil, defaultFileDaoCacheExpireTime)
 	return &fileDao{
 		IFileDao: impl,
+		cache:    cachewrap.WrapExpirableLruCache(cc),
 	}
 }
 
 func (f *fileDao) MarkFileReady(ctx context.Context, req *entity.MarkFileReadyRequest) (*entity.MarkFileReadyResponse, error) {
-	defer cache.Del(ctx, f.buildCacheKey(req.FileID))
+	defer f.cache.Del(ctx, req.FileID)
 	return f.IFileDao.MarkFileReady(ctx, req)
 }
 
-func (f *fileDao) buildCacheKey(fid uint64) string {
-	return fmt.Sprintf("tgfile:cache:fileid:%d", fid)
-}
-
 func (f *fileDao) GetFileInfo(ctx context.Context, req *entity.GetFileInfoRequest) (*entity.GetFileInfoResponse, error) {
-	keys := make([]string, 0, len(req.FileIds))
-	mapping := make(map[string]uint64, len(req.FileIds))
-	for _, fid := range req.FileIds {
-		key := f.buildCacheKey(fid)
-		keys = append(keys, key)
-		mapping[key] = fid
-	}
-	cacheRs, err := cache.LoadMany(ctx, keys, func(ctx context.Context, c cache.ICache, ks []string) (map[string]interface{}, error) {
-		fids := make([]uint64, 0, len(ks))
-		for _, k := range ks {
-			fids = append(fids, mapping[k])
-		}
-		rs, err := f.IFileDao.GetFileInfo(ctx, &entity.GetFileInfoRequest{
-			FileIds: fids,
+	m, err := cacheapi.LoadMany(ctx, f.cache, req.FileIds, func(ctx context.Context, miss []uint64) (map[uint64]*entity.FileInfoItem, error) {
+		res, err := f.IFileDao.GetFileInfo(ctx, &entity.GetFileInfoRequest{
+			FileIds: miss,
 		})
 		if err != nil {
 			return nil, err
 		}
-		ret := make(map[string]interface{}, len(rs.List))
-		for _, item := range rs.List {
-			k := f.buildCacheKey(item.FileId)
-			ret[k] = item
-			_ = c.Set(ctx, k, item, defaultFileDaoCacheExpireTime)
+		rs := make(map[uint64]*entity.FileInfoItem, len(res.List))
+		for _, item := range res.List {
+			rs[item.FileId] = item
 		}
-		return ret, nil
+		return rs, nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	rsp := &entity.GetFileInfoResponse{}
 	for _, fid := range req.FileIds {
-		v, ok := cacheRs[f.buildCacheKey(fid)]
+		v, ok := m[fid]
 		if !ok {
 			continue
 		}
-		rsp.List = append(rsp.List, v.(*entity.FileInfoItem))
+		rsp.List = append(rsp.List, v)
 	}
 	return rsp, nil
 }
@@ -77,7 +65,7 @@ func (f *fileDao) GetFileInfo(ctx context.Context, req *entity.GetFileInfoReques
 func (f *fileDao) DeleteFile(ctx context.Context, req *entity.DeleteFileRequest) (*entity.DeleteFileResponse, error) {
 	defer func() {
 		for _, fid := range req.FileId {
-			_ = cache.Del(ctx, f.buildCacheKey(fid))
+			_ = f.cache.Del(ctx, fid)
 		}
 	}()
 

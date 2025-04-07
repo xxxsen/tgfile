@@ -2,10 +2,11 @@ package cache
 
 import (
 	"context"
-	"fmt"
 	"time"
 
-	"github.com/xxxsen/tgfile/cache"
+	lru "github.com/hashicorp/golang-lru/v2/expirable"
+	"github.com/xxxsen/tgfile/cacheapi"
+	cachewrap "github.com/xxxsen/tgfile/cacheapi/adaptor"
 	"github.com/xxxsen/tgfile/dao"
 	"github.com/xxxsen/tgfile/entity"
 
@@ -14,54 +15,56 @@ import (
 )
 
 var (
+	defaultMaxFilePartCacheSize    = 20000
 	defaultFilePartCacheExpireTime = 7 * 24 * time.Hour
 )
 
+type filePartPair struct {
+	FileId uint64
+	PartId int32
+}
+
 type filePartDao struct {
 	dao.IFilePartDao
+	cache cacheapi.ICache[filePartPair, *entity.FilePartInfoItem]
 }
 
 func NewFilePartDao(impl dao.IFilePartDao) dao.IFilePartDao {
+	cc := lru.NewLRU[filePartPair, *entity.FilePartInfoItem](defaultMaxFilePartCacheSize, nil, defaultFilePartCacheExpireTime)
 	return &filePartDao{
 		IFilePartDao: impl,
+		cache:        cachewrap.WrapExpirableLruCache(cc),
 	}
 }
 
 func (f *filePartDao) CreateFilePart(ctx context.Context, req *entity.CreateFilePartRequest) (*entity.CreateFilePartResponse, error) {
 	//filepartid 能被覆盖, 所以创建后需要清理缓存
-	defer cache.Del(ctx, f.buildCacheKey(req.FileId, req.FilePartId))
+	defer f.cache.Del(ctx, filePartPair{FileId: req.FileId, PartId: req.FilePartId})
 	return f.IFilePartDao.CreateFilePart(ctx, req)
 }
 
-func (f *filePartDao) buildCacheKey(fid uint64, bid int32) string {
-	return fmt.Sprintf("tgfile:cache:filepart:%d:%d", fid, bid)
-}
-
 func (f *filePartDao) GetFilePartInfo(ctx context.Context, req *entity.GetFilePartInfoRequest) (*entity.GetFilePartInfoResponse, error) {
-	ks := make([]string, 0, len(req.FilePartId))
-	mapping := make(map[string]int32, len(req.FilePartId))
-	for _, bid := range req.FilePartId {
-		key := f.buildCacheKey(req.FileId, bid)
-		ks = append(ks, key)
-		mapping[key] = bid
-	}
-	cacheRs, err := cache.LoadMany(ctx, ks, func(ctx context.Context, c cache.ICache, ks []string) (map[string]interface{}, error) {
-		bids := make([]int32, 0, len(ks))
-		for _, k := range ks {
-			bids = append(bids, mapping[k])
-		}
-		rsp, err := f.IFilePartDao.GetFilePartInfo(ctx, &entity.GetFilePartInfoRequest{
-			FileId:     req.FileId,
-			FilePartId: bids,
+	ks := make([]filePartPair, 0, len(req.FilePartId))
+	for _, item := range req.FilePartId {
+		ks = append(ks, filePartPair{
+			FileId: req.FileId,
+			PartId: item,
 		})
+	}
+	m, err := cacheapi.LoadMany(ctx, f.cache, ks, func(ctx context.Context, miss []filePartPair) (map[filePartPair]*entity.FilePartInfoItem, error) {
+		subreq := &entity.GetFilePartInfoRequest{
+			FileId: miss[0].FileId,
+		}
+		for _, item := range miss {
+			subreq.FilePartId = append(subreq.FilePartId, item.PartId)
+		}
+		subrsp, err := f.IFilePartDao.GetFilePartInfo(ctx, subreq)
 		if err != nil {
 			return nil, err
 		}
-		rs := make(map[string]interface{})
-		for _, item := range rsp.List {
-			key := f.buildCacheKey(req.FileId, item.FilePartId)
-			_ = c.Set(ctx, key, item, defaultFilePartCacheExpireTime)
-			rs[key] = item
+		rs := make(map[filePartPair]*entity.FilePartInfoItem, len(subrsp.List))
+		for _, item := range subrsp.List {
+			rs[filePartPair{FileId: item.FileId, PartId: item.FilePartId}] = item
 		}
 		return rs, nil
 	})
@@ -70,13 +73,12 @@ func (f *filePartDao) GetFilePartInfo(ctx context.Context, req *entity.GetFilePa
 	}
 	rsp := &entity.GetFilePartInfoResponse{}
 	for _, k := range ks {
-		bid := mapping[k]
-		res, ok := cacheRs[k]
+		res, ok := m[k]
 		if !ok {
-			logutil.GetLogger(ctx).Error("cache key not found", zap.Uint64("file_id", req.FileId), zap.Int32("file_part_id", bid), zap.String("key", k))
+			logutil.GetLogger(ctx).Error("cache key not found", zap.Uint64("file_id", req.FileId), zap.Int32("file_part_id", k.PartId))
 			continue
 		}
-		rsp.List = append(rsp.List, res.(*entity.FilePartInfoItem))
+		rsp.List = append(rsp.List, res)
 	}
 	return rsp, nil
 }
