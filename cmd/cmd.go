@@ -7,7 +7,6 @@ import (
 	_ "github.com/xxxsen/common/webapi/auth"
 	"github.com/xxxsen/tgfile/blockio"
 	_ "github.com/xxxsen/tgfile/blockio/register"
-	"github.com/xxxsen/tgfile/cache"
 	"github.com/xxxsen/tgfile/config"
 	"github.com/xxxsen/tgfile/db"
 	"github.com/xxxsen/tgfile/filemgr"
@@ -41,9 +40,6 @@ func main() {
 	}
 	if err := initStorage(c); err != nil {
 		logger.Fatal("init storage fail", zap.Error(err))
-	}
-	if err := initCache(c); err != nil {
-		logger.Fatal("init cache fail", zap.Error(err))
 	}
 	logger.Info("current file protocol feature")
 	logger.Info("-- s3 feature", zap.Bool("enable", c.S3.Enable), zap.Strings("buckets", c.S3.Bucket))
@@ -86,14 +82,5 @@ func initStorage(c *config.Config) error {
 	}
 	fmgr := filemgr.NewFileManager(db.GetClient(), blkio, ioc)
 	filemgr.SetFileManagerImpl(fmgr)
-	return nil
-}
-
-func initCache(c *config.Config) error {
-	cimpl, err := cache.New(50000)
-	if err != nil {
-		return err
-	}
-	cache.SetImpl(cimpl)
 	return nil
 }
