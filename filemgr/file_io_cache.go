@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	lru "github.com/hnlq715/golang-lru"
+	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/xxxsen/common/logutil"
 	"github.com/xxxsen/tgfile/utils"
 	"go.uber.org/zap"
@@ -22,8 +22,8 @@ type IFileIOCache interface {
 
 type fileIOCacheImpl struct {
 	c  *FileIOCacheConfig
-	l1 *lru.Cache //fileid=>[]byte, 内存缓存，速度快，适合小文件
-	l2 *lru.Cache //fileid=>filename, 磁盘缓存，速度慢，适合大文件
+	l1 *lru.Cache[uint64, []byte] //fileid=>[]byte, 内存缓存，速度快，适合小文件
+	l2 *lru.Cache[uint64, string] //fileid=>filename, 磁盘缓存，速度慢，适合大文件
 }
 
 func (f *fileIOCacheImpl) isCacheable(size int64) bool {
@@ -40,7 +40,7 @@ func (f *fileIOCacheImpl) readL1Cache(ctx context.Context, fileid uint64, size i
 	val, ok := f.l1.Get(fileid)
 	if ok {
 		logutil.GetLogger(ctx).Debug("read fileid from l1 cache", zap.Uint64("fileid", fileid))
-		return newBytesStream(val.([]byte)), nil // 直接返回缓存的字节流
+		return newBytesStream(val), nil // 直接返回缓存的字节流
 	}
 	rsc, err := onMiss(ctx)
 	if err != nil {
@@ -63,7 +63,7 @@ func (f *fileIOCacheImpl) readL2Cache(ctx context.Context, fileid uint64, size i
 	}
 	val, ok := f.l2.Get(fileid)
 	if ok { //fileid缓存存在, 且对应的文件也存在, 则直接返回文件句柄
-		fio, err := os.Open(val.(string)) //如果打开失败, 那么对应的文件可能已经无了, 这里直接忽略错误, 从底层io再换回数据流
+		fio, err := os.Open(val) //如果打开失败, 那么对应的文件可能已经无了, 这里直接忽略错误, 从底层io再换回数据流
 		if err == nil {
 			logutil.GetLogger(ctx).Debug("read fileid from l2 cache", zap.Uint64("fileid", fileid))
 			return fio, nil // 返回文件句柄
@@ -118,14 +118,13 @@ func NewDefaultFileIOCacheConfig() *FileIOCacheConfig {
 	}
 }
 
-func (f *fileIOCacheImpl) onL1Evict(key interface{}, value interface{}) {
-	fileid := key.(uint64)
-	logutil.GetLogger(context.Background()).Debug("evit from l1 cache", zap.Uint64("fileid", fileid))
+func (f *fileIOCacheImpl) onL1Evict(key uint64, value []byte) {
+	logutil.GetLogger(context.Background()).Debug("evit from l1 cache", zap.Uint64("fileid", key))
 }
 
-func (f *fileIOCacheImpl) onL2Evict(key interface{}, value interface{}) {
-	fileid := key.(uint64)
-	location := value.(string)
+func (f *fileIOCacheImpl) onL2Evict(key uint64, value string) {
+	fileid := key
+	location := value
 	_ = os.Remove(location)
 	logutil.GetLogger(context.Background()).Debug("evit l2 file cache", zap.Uint64("fileid", fileid), zap.String("path", location))
 }
