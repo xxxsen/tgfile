@@ -13,11 +13,13 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/google/uuid"
-	lru "github.com/hnlq715/golang-lru"
+	lru "github.com/hashicorp/golang-lru/v2/expirable"
 )
 
 const (
-	defaultMaxFileSize = 20 * 1024 * 1024
+	defaultMaxFileSize         = 20 * 1024 * 1024
+	defaultMaxFileLinkToCache  = 2000
+	defaultMaxFileLinkCacheTTL = 30 * time.Minute
 )
 
 var defaultHTTPClient = &http.Client{
@@ -35,14 +37,11 @@ type tgBlockIO struct {
 	chatid    int64
 	token     string
 	bot       *tgbotapi.BotAPI
-	linkCache *lru.Cache
+	linkCache *lru.LRU[string, string]
 }
 
 func New(chatid int64, token string) (blockio.IBlockIO, error) {
-	cache, err := lru.New(1000)
-	if err != nil {
-		return nil, err
-	}
+	cache := lru.NewLRU[string, string](defaultMaxFileLinkToCache, nil, defaultMaxFileLinkCacheTTL)
 	bot, err := tgbotapi.NewBotAPI(token)
 	if err != nil {
 		return nil, fmt.Errorf("init bot fail, err:%w", err)
@@ -77,7 +76,7 @@ func (t *tgBlockIO) Upload(ctx context.Context, r io.Reader) (string, error) {
 
 func (t *tgBlockIO) cacheGetDownloadLink(filekey string) (string, error) {
 	if lnk, ok := t.linkCache.Get(filekey); ok {
-		return lnk.(string), nil
+		return lnk, nil
 	}
 	cf := tgbotapi.FileConfig{FileID: filekey}
 	f, err := t.bot.GetFile(cf)
@@ -85,8 +84,7 @@ func (t *tgBlockIO) cacheGetDownloadLink(filekey string) (string, error) {
 		return "", err
 	}
 	lnk := f.Link(t.bot.Token)
-	//这里应该能1小时有效的...
-	t.linkCache.AddEx(filekey, lnk, 30*time.Minute)
+	_ = t.linkCache.Add(filekey, lnk)
 	return lnk, nil
 }
 
