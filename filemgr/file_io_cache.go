@@ -229,6 +229,9 @@ func (f *fileIOCacheImpl) buildL1Cache(c *FileIOCacheConfig) error {
 		OnEvict: func(item *ristretto.Item[[]byte]) {
 			f.onL1Evict(item.Key, item.Value)
 		},
+		OnReject: func(item *ristretto.Item[[]byte]) {
+			logutil.GetLogger(context.Background()).Debug("l1 cache reject", zap.Uint64("fileid", item.Key), zap.Int("cost", len(item.Value)))
+		},
 	})
 	if err != nil {
 		return err
@@ -256,6 +259,9 @@ func (f *fileIOCacheImpl) buildL2Cache(c *FileIOCacheConfig) error {
 		},
 		OnEvict: func(item *ristretto.Item[string]) {
 			f.onL2Evict(item.Key, item.Value)
+		},
+		OnReject: func(item *ristretto.Item[string]) {
+			logutil.GetLogger(context.Background()).Debug("l2 cache reject", zap.Uint64("fileid", item.Key), zap.String("location", item.Value))
 		},
 	})
 	if err != nil {
