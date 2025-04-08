@@ -36,7 +36,7 @@ type fileIOCacheImpl struct {
 }
 
 func (f *fileIOCacheImpl) isCacheable(size int64) bool {
-	if size > int64(f.c.L2KeySizeLimit) || (f.c.DisableL1Cache && f.c.DisableL2Cache) {
+	if (int64(f.c.L2KeySizeLimit) > 0 && size > int64(f.c.L2KeySizeLimit)) || (f.c.DisableL1Cache && f.c.DisableL2Cache) {
 		return false
 	}
 	return true
@@ -220,9 +220,10 @@ func (f *fileIOCacheImpl) buildL1Cache(c *FileIOCacheConfig) error {
 		return nil
 	}
 	cc, err := ristretto.NewCache(&ristretto.Config[uint64, []byte]{
-		NumCounters: int64(float64(c.L1CacheSize) / float64(c.L1KeySizeLimit) * 10),
-		MaxCost:     int64(c.L1CacheSize),
-		BufferItems: 64,
+		NumCounters:        int64(float64(c.L1CacheSize) / float64(c.L1KeySizeLimit) * 10),
+		MaxCost:            int64(c.L1CacheSize),
+		BufferItems:        64,
+		IgnoreInternalCost: true,
 		Cost: func(value []byte) int64 {
 			return int64(len(value))
 		},
@@ -245,9 +246,10 @@ func (f *fileIOCacheImpl) buildL2Cache(c *FileIOCacheConfig) error {
 		return nil
 	}
 	cc, err := ristretto.NewCache(&ristretto.Config[uint64, string]{
-		NumCounters: int64(float64(c.L2CacheSize) / float64(c.L2KeySizeLimit) * 10),
-		MaxCost:     int64(c.L2CacheSize),
-		BufferItems: 64,
+		NumCounters:        int64(float64(c.L2CacheSize) / float64(c.L2KeySizeLimit) * 10),
+		MaxCost:            int64(c.L2CacheSize),
+		BufferItems:        64,
+		IgnoreInternalCost: true,
 		Cost: func(value string) int64 {
 			size, err := f.extractFileIdLocationInfo(value)
 			if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"testing"
+	"time"
 
 	lru "github.com/hnlq715/golang-lru"
 	"github.com/stretchr/testify/assert"
@@ -84,4 +85,36 @@ func TestEvitTwice(t *testing.T) {
 	cc.Add(1, "hello")
 	cc.Add(1, "world") //对同一个数据的修改, 不会触发淘汰
 	assert.False(t, evited)
+}
+
+func TestEvit(t *testing.T) {
+	logger.Init("", "debug", 0, 0, 0, true)
+	cc, err := NewFileIOCache(&FileIOCacheConfig{
+		DisableL1Cache: false,
+		L1CacheSize:    10,
+		L1KeySizeLimit: 5,
+		DisableL2Cache: true,
+	})
+	assert.NoError(t, err)
+	dataReader := func(sz int) func(ctx context.Context) (io.ReadSeekCloser, error) {
+		return func(ctx context.Context) (io.ReadSeekCloser, error) {
+			buf := make([]byte, sz)
+			for i := 0; i < sz; i++ {
+				buf[i] = byte(i % 256) // 填充一些数据
+			}
+			return newBytesStream(buf), nil
+		}
+	}
+
+	for i := 0; i < 30; i++ {
+		_, err := cc.Load(context.Background(), uint64(i), 3, dataReader(3))
+		assert.NoError(t, err)
+		time.Sleep(100 * time.Millisecond)
+	}
+	impl := cc.(*fileIOCacheImpl)
+	ctx := context.Background()
+	for i := 0; i < 30; i++ {
+		_, err := impl.l1.Get(ctx, uint64(i))
+		t.Logf("%d=>err:%v", i, err)
+	}
 }
