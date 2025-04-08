@@ -27,8 +27,8 @@ func setup() {
 		panic(err)
 	}
 	cc, err := NewFileIOCache(&FileIOCacheConfig{
-		DisableMemCache:  true,
-		DisableFileCache: true,
+		DisableL1Cache: true,
+		DisableL2Cache: true,
 	})
 	if err != nil {
 		panic(err)

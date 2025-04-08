@@ -24,13 +24,13 @@ type WebdavConfig struct {
 }
 
 type IOCacheConfig struct {
-	EnableMem        bool   `json:"enable_mem"`
-	MemKeyCount      int    `json:"mem_key_count"`
-	MemKeySizeLimit  int    `json:"mem_key_size_limit"`
-	EnableFile       bool   `json:"enable_file"`
-	FileKeyCount     int    `json:"file_key_count"`
-	FileKeySizeLimit int    `json:"file_key_size_limit"`
-	FileCacheDir     string `json:"file_cache_dir"`
+	EnableL1Cache  bool   `json:"enable_l1_cache"`
+	L1CacheSize    int    `json:"l1_cache_size"`
+	L1KeySizeLimit int    `json:"l1_key_size_limit"`
+	EnableL2Cache  bool   `json:"enable_l2_cache"`
+	L2CacheSize    int    `json:"l2_cache_size"`
+	L2KeySizeLimit int    `json:"l2_key_size_limit"`
+	L2CacheDir     string `json:"l2_cache_dir"`
 }
 
 type Config struct {

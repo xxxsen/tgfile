@@ -13,13 +13,13 @@ import (
 func TestFileIOCache(t *testing.T) {
 	logger.Init("", "debug", 0, 0, 0, true)
 	cc, err := NewFileIOCache(&FileIOCacheConfig{
-		DisableMemCache:  false,
-		MemKeyCount:      10,
-		MemKeySizeLimit:  5,
-		DisableFileCache: false,
-		FileKeyCount:     30,
-		FileKeySizeLimit: 20,
-		FileCacheDir:     "/tmp/tgfile-cache",
+		DisableL1Cache: false,
+		L1CacheSize:    10,
+		L1KeySizeLimit: 5,
+		DisableL2Cache: false,
+		L2CacheSize:    30,
+		L2KeySizeLimit: 10,
+		L2CacheDir:     "/tmp/tgfile-cache",
 	})
 	assert.NoError(t, err)
 	ctx := context.Background()

@@ -45,8 +45,8 @@ func main() {
 	logger.Info("-- s3 feature", zap.Bool("enable", c.S3.Enable), zap.Strings("buckets", c.S3.Bucket))
 	logger.Info("-- webdav feature", zap.Bool("enable", c.Webdav.Enable), zap.String("root", c.Webdav.Root))
 	logger.Info("current cache config")
-	logger.Info("-- enable memory cache", zap.Bool("enable", c.IOCache.EnableMem), zap.String("max_cache_mem_usage", humanize.IBytes(uint64(c.IOCache.MemKeyCount)*uint64(c.IOCache.MemKeySizeLimit))))
-	logger.Info("-- enable file cache", zap.Bool("enable", c.IOCache.EnableFile), zap.String("max_cache_storage_usage", humanize.IBytes(uint64(c.IOCache.FileKeyCount)*uint64(c.IOCache.FileKeySizeLimit))))
+	logger.Info("-- enable l1 cache", zap.Bool("enable", c.IOCache.EnableL1Cache), zap.String("max_cache_mem_usage", humanize.IBytes(uint64(c.IOCache.L1CacheSize))))
+	logger.Info("-- enable l2 cache", zap.Bool("enable", c.IOCache.EnableL2Cache), zap.String("max_cache_storage_usage", humanize.IBytes(uint64(c.IOCache.L2CacheSize))))
 	svr, err := server.New(c.Bind,
 		server.WithEnableS3(c.S3.Enable, c.S3.Bucket),
 		server.WithUser(c.UserInfo),
@@ -68,13 +68,13 @@ func initStorage(c *config.Config) error {
 	}
 	blkio = blockio.NewRotateIO(blkio, int(c.RotateStream))
 	cc := &filemgr.FileIOCacheConfig{
-		DisableMemCache:  !c.IOCache.EnableMem,
-		MemKeyCount:      c.IOCache.MemKeyCount,
-		MemKeySizeLimit:  c.IOCache.MemKeySizeLimit,
-		DisableFileCache: !c.IOCache.EnableFile,
-		FileKeyCount:     c.IOCache.FileKeyCount,
-		FileKeySizeLimit: c.IOCache.FileKeySizeLimit,
-		FileCacheDir:     c.IOCache.FileCacheDir,
+		DisableL1Cache: !c.IOCache.EnableL1Cache,
+		L1CacheSize:    c.IOCache.L1CacheSize,
+		L1KeySizeLimit: c.IOCache.L1KeySizeLimit,
+		DisableL2Cache: !c.IOCache.EnableL2Cache,
+		L2CacheSize:    c.IOCache.L2CacheSize,
+		L2KeySizeLimit: c.IOCache.L2KeySizeLimit,
+		L2CacheDir:     c.IOCache.L2CacheDir,
 	}
 	ioc, err := filemgr.NewFileIOCache(cc)
 	if err != nil {
