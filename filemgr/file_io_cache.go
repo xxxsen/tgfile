@@ -12,6 +12,8 @@ import (
 
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/xxxsen/common/logutil"
+	"github.com/xxxsen/tgfile/cacheapi"
+	cachewrap "github.com/xxxsen/tgfile/cacheapi/adaptor"
 	"github.com/xxxsen/tgfile/utils"
 	"go.uber.org/zap"
 )
@@ -22,8 +24,8 @@ type IFileIOCache interface {
 
 type fileIOCacheImpl struct {
 	c  *FileIOCacheConfig
-	l1 *lru.Cache[uint64, []byte] //fileid=>[]byte, 内存缓存，速度快，适合小文件
-	l2 *lru.Cache[uint64, string] //fileid=>filename, 磁盘缓存，速度慢，适合大文件
+	l1 cacheapi.ICache[uint64, []byte] //fileid=>[]byte, 内存缓存，速度快，适合小文件
+	l2 cacheapi.ICache[uint64, string] //fileid=>filename, 磁盘缓存，速度慢，适合大文件
 }
 
 func (f *fileIOCacheImpl) isCacheable(size int64) bool {
@@ -37,8 +39,8 @@ func (f *fileIOCacheImpl) readL1Cache(ctx context.Context, fileid uint64, size i
 	if f.c.DisableMemCache || size > int64(f.c.MemKeySizeLimit) {
 		return onMiss(ctx)
 	}
-	val, ok := f.l1.Get(fileid)
-	if ok {
+	val, err := f.l1.Get(ctx, fileid)
+	if err == nil {
 		logutil.GetLogger(ctx).Debug("read fileid from l1 cache", zap.Uint64("fileid", fileid))
 		return newBytesStream(val), nil // 直接返回缓存的字节流
 	}
@@ -52,7 +54,7 @@ func (f *fileIOCacheImpl) readL1Cache(ctx context.Context, fileid uint64, size i
 		return nil, err
 	}
 	// 将读取到的内容存入L1缓存
-	_ = f.l1.Add(fileid, raw)
+	_ = f.l1.Set(ctx, fileid, raw)
 	//之后直接通过读到的内存重建字节流返回
 	return newBytesStream(raw), nil
 }
@@ -61,8 +63,8 @@ func (f *fileIOCacheImpl) readL2Cache(ctx context.Context, fileid uint64, size i
 	if f.c.DisableFileCache || size > int64(f.c.FileKeySizeLimit) {
 		return onMiss(ctx)
 	}
-	val, ok := f.l2.Get(fileid)
-	if ok { //fileid缓存存在, 且对应的文件也存在, 则直接返回文件句柄
+	val, err := f.l2.Get(ctx, fileid)
+	if err == nil { //fileid缓存存在, 且对应的文件也存在, 则直接返回文件句柄
 		fio, err := os.Open(val) //如果打开失败, 那么对应的文件可能已经无了, 这里直接忽略错误, 从底层io再换回数据流
 		if err == nil {
 			logutil.GetLogger(ctx).Debug("read fileid from l2 cache", zap.Uint64("fileid", fileid))
@@ -81,7 +83,7 @@ func (f *fileIOCacheImpl) readL2Cache(ctx context.Context, fileid uint64, size i
 		return nil, fmt.Errorf("failed to save file to local: %w", err)
 	}
 	// 将文件路径加入到L2缓存
-	_ = f.l2.Add(fileid, location)
+	_ = f.l2.Set(ctx, fileid, location)
 	// 返回文件句柄
 	fio, err := os.Open(location)
 	return fio, err
@@ -177,7 +179,7 @@ func (f *fileIOCacheImpl) loadL2FromDisk() error {
 		if err != nil || n != 1 {
 			return nil
 		}
-		f.l2.Add(fileid, path) // 加入到L2缓存中
+		_ = f.l2.Set(context.Background(), fileid, path) // 加入到L2缓存中
 		logutil.GetLogger(context.Background()).Debug("load file to l2 cache", zap.Uint64("fileid", fileid), zap.String("path", path))
 		return nil
 	})
@@ -200,14 +202,14 @@ func NewFileIOCache(c *FileIOCacheConfig) (IFileIOCache, error) {
 		if err != nil {
 			return nil, err
 		}
-		impl.l1 = l1
+		impl.l1 = cachewrap.WrapLruCache(l1)
 	}
 	if !c.DisableFileCache {
 		l2, err := lru.NewWithEvict(c.FileKeyCount, impl.onL2Evict)
 		if err != nil {
 			return nil, err
 		}
-		impl.l2 = l2
+		impl.l2 = cachewrap.WrapLruCache(l2)
 		if err := os.MkdirAll(c.FileCacheDir, 0755); err != nil {
 			return nil, err
 		}

@@ -37,27 +37,27 @@ func TestFileIOCache(t *testing.T) {
 	{ // 内存有, 文件有
 		_, err = cc.Load(ctx, 1, 1, dataReader(1))
 		assert.NoError(t, err)
-		val, ok := impl.l1.Get(uint64(1))
-		assert.True(t, ok)
+		val, err := impl.l1.Get(ctx, uint64(1))
+		assert.NoError(t, err)
 		assert.Len(t, val, 1)
-		_, ok = impl.l2.Get(uint64(1))
-		assert.True(t, ok)
+		_, err = impl.l2.Get(ctx, uint64(1))
+		assert.NoError(t, err)
 	}
 	{ //内存无, 文件有
 		_, err = cc.Load(ctx, 2, 10, dataReader(10))
 		assert.NoError(t, err)
-		_, ok := impl.l1.Get(uint64(2))
-		assert.False(t, ok)
-		_, ok = impl.l2.Get(uint64(2))
-		assert.True(t, ok)
+		_, err := impl.l1.Get(ctx, uint64(2))
+		assert.Error(t, err)
+		_, err = impl.l2.Get(ctx, uint64(2))
+		assert.NoError(t, err)
 	}
 	{ // 内存无, 文件无, 直接从数据源加载
 		_, err = cc.Load(ctx, 3, 100, dataReader(100))
 		assert.NoError(t, err)
-		_, ok := impl.l1.Get(uint64(3))
-		assert.False(t, ok)
-		_, ok = impl.l2.Get(uint64(3))
-		assert.False(t, ok)
+		_, err := impl.l1.Get(ctx, uint64(3))
+		assert.Error(t, err)
+		_, err = impl.l2.Get(ctx, uint64(3))
+		assert.Error(t, err)
 	}
 	{ //测试l2缓存淘汰
 		for i := 0; i < 40; i++ {
