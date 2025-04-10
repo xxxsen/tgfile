@@ -47,13 +47,13 @@ tgfile
 ```jsonc
 { 
     "io_cache": { //与`bind`同级
-        "enable_mem": true, //启用内存缓存
-        "mem_key_count": 1000, //内存缓存key的个数
-        "mem_key_size_limit": 4096, //4K, 单个内存key的最大大小(小于这个数值才会被加进内存缓存), 最终预估内存大小的占用为: mem_key_count*mem_key_size_limit
-        "enable_file": true, //启用文件缓存
-        "file_key_count": 10000, //文件缓存key的个数
-        "file_key_size_limit": 524288, //512K, 单个文件小于该值才能被缓存
-        "file_cache_dir": "/tmp/tgfile-cache" //文件缓存的存储目录
+        "enable_l1_cache": true, //启用l1缓存
+        "l1_cache_size": 16777216, //l1缓存占用(内存), 16M
+        "l1_key_size_limit": 4096, //4K, 文件大小小于该值才可以被加入l1缓存
+        "enable_l2_cache": true, //启用l2缓存
+        "l2_cache_size": 5368709120, //l2缓存占用(磁盘), 5G
+        "l2_key_size_limit": 524288, //512K, 文件大小小于该值才可以被加入l2缓存
+        "l2_cache_dir": "/tmp/tgfile-cache" //l2缓存的数据存储目录
     }
 }
 ```
