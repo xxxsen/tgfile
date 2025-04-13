@@ -12,6 +12,7 @@ require (
 	github.com/hnlq715/golang-lru v0.3.0
 	github.com/stretchr/testify v1.10.0
 	github.com/xxxsen/common v0.1.21
+	github.com/xxxsen/mimetype v0.0.1
 	go.uber.org/zap v1.23.0
 )
 

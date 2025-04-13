@@ -2,19 +2,16 @@ package httpkit
 
 import (
 	"fmt"
-	"mime"
 	"path"
 
 	"github.com/gin-gonic/gin"
+	"github.com/xxxsen/mimetype"
 	"github.com/xxxsen/tgfile/entity"
 )
 
 func DetermineMimeType(filename string) string {
 	ext := path.Ext(filename)
-	mimeType := mime.TypeByExtension(ext)
-	if mimeType == "" {
-		return "application/octet-stream"
-	}
+	mimeType := mimetype.LookupWithDefault(ext, "application/octet-stream")
 	return mimeType
 }
 
