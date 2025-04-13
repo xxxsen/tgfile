@@ -7,13 +7,14 @@ import (
 )
 
 type Config struct {
-	Schema    string `json:"schema"`
-	Host      string `json:"host"`
-	AccessKey string `json:"access_key"`
-	SecretKey string `json:"secret_key"`
-	Thread    int    `json:"thread"`
-	LogLevel  string `json:"log_level"`
-	Timeout   int64  `json:"timeout"`
+	Schema     string `json:"schema"`
+	Host       string `json:"host"`
+	AccessKey  string `json:"access_key"`
+	SecretKey  string `json:"secret_key"`
+	Thread     int    `json:"thread"`
+	LogLevel   string `json:"log_level"`
+	Timeout    int64  `json:"timeout"`
+	MirrorHost string `json:"mirror-host"`
 }
 
 func Parse(f string) (*Config, error) {

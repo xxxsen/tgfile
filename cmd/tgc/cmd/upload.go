@@ -37,7 +37,11 @@ func onRunUpload(ctx context.Context, c *Context, args *uploadArgs) error {
 	if err != nil {
 		return fmt.Errorf("upload file failed, err:%w", err)
 	}
-	link := fmt.Sprintf("%s://%s/file/download/%s", c.Config.Schema, c.Config.Host, filekey)
+	host := c.Config.Host
+	if len(c.Config.MirrorHost) > 0 {
+		host = c.Config.MirrorHost
+	}
+	link := fmt.Sprintf("%s://%s/file/download/%s", c.Config.Schema, host, filekey)
 	logutil.GetLogger(ctx).Info("upload file succ", zap.String("link", link), zap.Duration("cost", time.Since(start)))
 	return nil
 }
