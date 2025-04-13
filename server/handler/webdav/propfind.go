@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"mime"
 	"net/http"
 	"os"
 	"path"
@@ -15,6 +14,7 @@ import (
 	"github.com/xxxsen/common/webapi/proxyutil"
 	"github.com/xxxsen/tgfile/entity"
 	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/server/httpkit"
 	"github.com/xxxsen/tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
@@ -151,17 +151,8 @@ func (h *webdavHandler) convertFileMappingItemToResponse(root string, file *enti
 		resp.Propstat.Prop.ResourceType.Collection = " " //不能空
 	} else {
 		resp.Propstat.Prop.ContentLength = file.FileSize
-		contentType := h.determineMimeType(filename) // 基于扩展名提取文件类型
+		contentType := httpkit.DetermineMimeType(filename) // 基于扩展名提取文件类型
 		resp.Propstat.Prop.ContentType = contentType
 	}
 	return resp
-}
-
-func (h *webdavHandler) determineMimeType(name string) string {
-	ext := path.Ext(name)
-	mimeType := mime.TypeByExtension(ext)
-	if mimeType == "" {
-		return "application/octet-stream"
-	}
-	return mimeType
 }

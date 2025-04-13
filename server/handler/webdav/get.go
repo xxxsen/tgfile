@@ -10,6 +10,7 @@ import (
 
 	"github.com/xxxsen/common/webapi/proxyutil"
 	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/server/httpkit"
 
 	"github.com/gin-gonic/gin"
 )
@@ -36,5 +37,6 @@ func (h *webdavHandler) handleGet(c *gin.Context) {
 		return
 	}
 	defer stream.Close()
+	httpkit.SetDefaultDownloadHeader(c, item)
 	http.ServeContent(c.Writer, c.Request, strconv.Quote(item.FileName), time.UnixMilli(item.Mtime), stream)
 }

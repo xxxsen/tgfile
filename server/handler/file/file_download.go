@@ -8,6 +8,7 @@ import (
 
 	"github.com/xxxsen/common/webapi/proxyutil"
 	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/server/httpkit"
 
 	"github.com/gin-gonic/gin"
 )
@@ -31,6 +32,6 @@ func FileDownload(c *gin.Context) {
 		return
 	}
 	defer file.Close()
-	//c.Writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", strconv.Quote(finfo.Name())))
+	httpkit.SetDefaultDownloadHeader(c, finfo)
 	http.ServeContent(c.Writer, c.Request, strconv.Quote(finfo.FileName), time.UnixMilli(finfo.Mtime), file)
 }

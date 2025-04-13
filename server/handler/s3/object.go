@@ -7,6 +7,7 @@ import (
 
 	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/server/handler/s3/s3base"
+	"github.com/xxxsen/tgfile/server/httpkit"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,7 +26,7 @@ func DownloadObject(c *gin.Context) {
 		return
 	}
 	defer file.Close()
-	//c.Writer.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s", strconv.Quote()))
+	httpkit.SetDefaultDownloadHeader(c, finfo)
 	http.ServeContent(c.Writer, c.Request, finfo.FileName, time.UnixMilli(finfo.Mtime), file)
 }
 
