@@ -55,18 +55,18 @@ func TestMain(m *testing.M) {
 func TestPurge(t *testing.T) {
 	ctx := context.Background()
 	{
-		_, err := Create(ctx, 0, &bytes.Buffer{})
+		_, err := CreateFile(ctx, 0, &bytes.Buffer{})
 		assert.NoError(t, err)
 	}
 	{
-		fid, err := Create(ctx, 0, &bytes.Buffer{})
+		fid, err := CreateFile(ctx, 0, &bytes.Buffer{})
 		assert.NoError(t, err)
-		err = CreateLink(ctx, "/1.txt", fid, 0, false)
+		err = CreateFileLink(ctx, "/1.txt", fid, 0, false)
 		assert.NoError(t, err)
 	}
 	time.Sleep(1 * time.Second)
 	now := time.Now().UnixMilli()
-	cnt, err := Purge(ctx, &now)
+	cnt, err := PurgeFile(ctx, &now)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, int(cnt))
 }

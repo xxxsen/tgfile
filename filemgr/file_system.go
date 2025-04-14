@@ -22,7 +22,7 @@ func (f *fileSystemWrap) Open(name string) (fs.File, error) {
 	if !strings.HasPrefix(name, "/") {
 		name = "/" + name
 	}
-	item, err := ResolveLink(f.ctx, name)
+	item, err := ResolveFileLink(f.ctx, name)
 	if err != nil {
 		return nil, err
 	}

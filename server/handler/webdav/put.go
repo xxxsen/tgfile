@@ -15,12 +15,12 @@ func (h *webdavHandler) handlePut(c *gin.Context) {
 	file := h.buildSrcPath(c)
 	length := c.Request.ContentLength
 	reader := c.Request.Body
-	fileid, err := filemgr.Create(ctx, length, reader)
+	fileid, err := filemgr.CreateFile(ctx, length, reader)
 	if err != nil {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("create file failed, err:%w", err))
 		return
 	}
-	if err := filemgr.CreateLink(ctx, file, fileid, length, false); err != nil {
+	if err := filemgr.CreateFileLink(ctx, file, fileid, length, false); err != nil {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
 		return
 	}

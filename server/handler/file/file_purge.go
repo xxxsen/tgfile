@@ -13,7 +13,7 @@ import (
 
 func FilePurge(c *gin.Context) {
 	ctx := c.Request.Context()
-	cnt, err := filemgr.Purge(ctx, nil)
+	cnt, err := filemgr.PurgeFile(ctx, nil)
 	if err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("purge file failed, err:%w", err))
 		return

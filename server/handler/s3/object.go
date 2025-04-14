@@ -15,12 +15,12 @@ import (
 func DownloadObject(c *gin.Context) {
 	ctx := c.Request.Context()
 	filename := c.Request.URL.Path
-	finfo, err := filemgr.ResolveLink(ctx, filename)
+	finfo, err := filemgr.ResolveFileLink(ctx, filename)
 	if err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("get mapping info fail, err:%w", err))
 		return
 	}
-	file, err := filemgr.Open(ctx, finfo.FileId)
+	file, err := filemgr.OpenFile(ctx, finfo.FileId)
 	if err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("open file fail, err:%w", err))
 		return
@@ -33,12 +33,12 @@ func DownloadObject(c *gin.Context) {
 func UploadObject(c *gin.Context) {
 	ctx := c.Request.Context()
 	filename := c.Request.URL.Path
-	fileid, err := filemgr.Create(ctx, c.Request.ContentLength, c.Request.Body)
+	fileid, err := filemgr.CreateFile(ctx, c.Request.ContentLength, c.Request.Body)
 	if err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("do file upload fail, err:%w", err))
 		return
 	}
-	if err := filemgr.CreateLink(ctx, filename, fileid, c.Request.ContentLength, false); err != nil {
+	if err := filemgr.CreateFileLink(ctx, filename, fileid, c.Request.ContentLength, false); err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("create mapping fail, err:%w", err))
 		return
 	}

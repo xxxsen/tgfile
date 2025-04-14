@@ -37,7 +37,7 @@ func (f *fileSystemFileEntry) Stat() (fs.FileInfo, error) {
 
 func (f *fileSystemFileEntry) tryInitStream() {
 	f.streamInitOnce.Do(func() {
-		f.stream, f.initErr = Open(f.ctx, f.ent.FileId)
+		f.stream, f.initErr = OpenFile(f.ctx, f.ent.FileId)
 	})
 }
 
@@ -109,7 +109,7 @@ func internalReadDir(ctx context.Context, root string) ([]os.DirEntry, error) {
 	}
 	ents := make([]os.DirEntry, 0, 16)
 
-	err := defaultFileMgr.IterLink(ctx, root, func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
+	err := defaultFileMgr.WalkFileLink(ctx, root, func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
 		ents = append(ents, newFileSystemEntry(ctx, link, ent))
 		return true, nil
 	})

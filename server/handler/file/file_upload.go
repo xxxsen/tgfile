@@ -22,13 +22,13 @@ func FileUpload(c *gin.Context, ctx context.Context, request interface{}) {
 		return
 	}
 	defer file.Close()
-	fileid, err := filemgr.Create(ctx, header.Size, file)
+	fileid, err := filemgr.CreateFile(ctx, header.Size, file)
 	if err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("upload file fail, err:%w", err))
 		return
 	}
 	path, key := buildFileKeyLink(header.Filename, fileid)
-	if err := filemgr.CreateLink(ctx, path, fileid, header.Size, false); err != nil {
+	if err := filemgr.CreateFileLink(ctx, path, fileid, header.Size, false); err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
 		return
 	}

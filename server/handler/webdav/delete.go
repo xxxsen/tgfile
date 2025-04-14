@@ -13,7 +13,7 @@ import (
 func (h *webdavHandler) handleDelete(c *gin.Context) {
 	ctx := c.Request.Context()
 	root := h.buildSrcPath(c)
-	if err := filemgr.RemoveLink(ctx, root); err != nil {
+	if err := filemgr.RemoveFileLink(ctx, root); err != nil {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("remove link failed, err:%w", err))
 		return
 	}

@@ -25,7 +25,7 @@ type defaultFileManager struct {
 	ioc            IFileIOCache
 }
 
-func (d *defaultFileManager) CreateLink(ctx context.Context, link string, fileid uint64, size int64, isDir bool) error {
+func (d *defaultFileManager) CreateFileLink(ctx context.Context, link string, fileid uint64, size int64, isDir bool) error {
 	_, err := d.fileMappingDao.CreateFileMapping(ctx, &entity.CreateFileMappingRequest{
 		FileName: link,
 		FileId:   fileid,
@@ -35,7 +35,7 @@ func (d *defaultFileManager) CreateLink(ctx context.Context, link string, fileid
 	return err
 }
 
-func (d *defaultFileManager) ResolveLink(ctx context.Context, link string) (*entity.FileMappingItem, error) {
+func (d *defaultFileManager) ResolveFileLink(ctx context.Context, link string) (*entity.FileMappingItem, error) {
 	fid, ok, err := d.internalGetFileMapping(ctx, link)
 	if err != nil {
 		return nil, fmt.Errorf("open mapping failed, err:%w", err)
@@ -46,21 +46,21 @@ func (d *defaultFileManager) ResolveLink(ctx context.Context, link string) (*ent
 	return fid, nil
 }
 
-func (d *defaultFileManager) IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error {
+func (d *defaultFileManager) WalkFileLink(ctx context.Context, prefix string, cb IterLinkFunc) error {
 	return d.fileMappingDao.IterFileMapping(ctx, prefix, func(ctx context.Context, name string, ent *entity.FileMappingItem) (bool, error) {
 		return cb(ctx, name, ent)
 	})
 }
 
-func (d *defaultFileManager) RemoveLink(ctx context.Context, link string) error {
+func (d *defaultFileManager) RemoveFileLink(ctx context.Context, link string) error {
 	return d.fileMappingDao.RemoveFileMapping(ctx, link)
 }
 
-func (d *defaultFileManager) RenameLink(ctx context.Context, src, dst string, isOverwrite bool) error {
+func (d *defaultFileManager) RenameFileLink(ctx context.Context, src, dst string, isOverwrite bool) error {
 	return d.fileMappingDao.RenameFileMapping(ctx, src, dst, isOverwrite)
 }
 
-func (d *defaultFileManager) CopyLink(ctx context.Context, src, dst string, isOverwrite bool) error {
+func (d *defaultFileManager) CopyFileLink(ctx context.Context, src, dst string, isOverwrite bool) error {
 	return d.fileMappingDao.CopyFileMapping(ctx, src, dst, isOverwrite)
 }
 
@@ -84,7 +84,7 @@ func (d *defaultFileManager) lowlevelIOStream(bkio blockio.IBlockIO, fileid uint
 	}
 }
 
-func (d *defaultFileManager) Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {
+func (d *defaultFileManager) OpenOpen(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {
 	finfo, ok, err := d.internalGetFileInfo(ctx, fileid)
 	if err != nil {
 		return nil, err
@@ -103,7 +103,7 @@ func (d *defaultFileManager) internalCalcFileBlockCount(sz uint64, blksz uint64)
 	return int((sz + blksz - 1) / blksz)
 }
 
-func (d *defaultFileManager) CreateDraft(ctx context.Context, size int64) (uint64, int64, error) {
+func (d *defaultFileManager) CreateFileDraft(ctx context.Context, size int64) (uint64, int64, error) {
 	blkcnt := d.internalCalcFileBlockCount(uint64(size), uint64(d.bkio.MaxFileSize()))
 	fileid, err := d.internalCreateFileDraft(ctx, size, int32(blkcnt))
 	if err != nil {
@@ -112,7 +112,7 @@ func (d *defaultFileManager) CreateDraft(ctx context.Context, size int64) (uint6
 	return fileid, d.bkio.MaxFileSize(), nil
 }
 
-func (d *defaultFileManager) CreatePart(ctx context.Context, fileid uint64, partid int64, r io.Reader) error {
+func (d *defaultFileManager) CreateFilePart(ctx context.Context, fileid uint64, partid int64, r io.Reader) error {
 	fileKey, err := d.bkio.Upload(ctx, r)
 	if err != nil {
 		return fmt.Errorf("upload part failed, err:%w", err)
@@ -123,14 +123,14 @@ func (d *defaultFileManager) CreatePart(ctx context.Context, fileid uint64, part
 	return nil
 }
 
-func (d *defaultFileManager) FinishCreate(ctx context.Context, fileid uint64) error {
+func (d *defaultFileManager) FinishFileCreate(ctx context.Context, fileid uint64) error {
 	if err := d.internalFinishCreateFile(ctx, fileid); err != nil {
 		return fmt.Errorf("finish create file failed, err:%w", err)
 	}
 	return nil
 }
 
-func (d *defaultFileManager) Create(ctx context.Context, size int64, reader io.Reader) (uint64, error) {
+func (d *defaultFileManager) CreateFile(ctx context.Context, size int64, reader io.Reader) (uint64, error) {
 	blkcnt := d.internalCalcFileBlockCount(uint64(size), uint64(d.bkio.MaxFileSize()))
 	fileid, err := d.internalCreateFileDraft(ctx, size, int32(blkcnt))
 	if err != nil {
@@ -272,7 +272,7 @@ func (d *defaultFileManager) readUnRefFileIdList(ctx context.Context, limitMtime
 	return rs, nil
 }
 
-func (d *defaultFileManager) Purge(ctx context.Context, before *int64) (int64, error) {
+func (d *defaultFileManager) PurgeFile(ctx context.Context, before *int64) (int64, error) {
 	limitMtime := time.Now().AddDate(0, 0, -1).UnixMilli() //mtime 在一天之前的数据才进行清理
 	if before != nil {
 		limitMtime = *before

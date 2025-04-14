@@ -52,7 +52,7 @@ func (h *webdavHandler) handlePropfind(c *gin.Context) {
 }
 
 func (h *webdavHandler) propFindEntries(ctx context.Context, location string, depth int) (*entity.FileMappingItem, []*entity.FileMappingItem, error) {
-	base, err := filemgr.ResolveLink(ctx, location)
+	base, err := filemgr.ResolveFileLink(ctx, location)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -61,7 +61,7 @@ func (h *webdavHandler) propFindEntries(ctx context.Context, location string, de
 		return base, []*entity.FileMappingItem{}, nil
 	}
 	rs := make([]*entity.FileMappingItem, 0, 32)
-	if err := filemgr.IterLink(ctx, location, func(ctx context.Context, link string, item *entity.FileMappingItem) (bool, error) {
+	if err := filemgr.WalkFileLink(ctx, location, func(ctx context.Context, link string, item *entity.FileMappingItem) (bool, error) {
 		rs = append(rs, item)
 		return true, nil
 	}); err != nil {

@@ -17,7 +17,7 @@ func (h *webdavHandler) handleMkcol(c *gin.Context) {
 		return
 	}
 	file := h.buildSrcPath(c)
-	if err := filemgr.CreateLink(ctx, file, 0, 0, true); err != nil {
+	if err := filemgr.CreateFileLink(ctx, file, 0, 0, true); err != nil {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("create link failed, link:%s, err:%w", file, err))
 		return
 	}

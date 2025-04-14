@@ -37,11 +37,11 @@ func Export(c *gin.Context) {
 		if d.IsDir() {
 			return nil
 		}
-		ent, err := filemgr.ResolveLink(ctx, path)
+		ent, err := filemgr.ResolveFileLink(ctx, path)
 		if err != nil {
 			return err
 		}
-		stream, err := filemgr.Open(ctx, ent.FileId)
+		stream, err := filemgr.OpenFile(ctx, ent.FileId)
 		if err != nil {
 			return err
 		}

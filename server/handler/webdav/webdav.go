@@ -17,7 +17,7 @@ import (
 )
 
 func initWebdav(root string) error {
-	if err := filemgr.CreateLink(context.Background(), root, 0, 0, true); err != nil {
+	if err := filemgr.CreateFileLink(context.Background(), root, 0, 0, true); err != nil {
 		return err
 	}
 	return nil

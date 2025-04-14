@@ -18,7 +18,7 @@ import (
 func (h *webdavHandler) handleGet(c *gin.Context) {
 	ctx := c.Request.Context()
 	file := h.buildSrcPath(c)
-	item, err := filemgr.ResolveLink(ctx, file)
+	item, err := filemgr.ResolveFileLink(ctx, file)
 	if errors.Is(err, os.ErrNotExist) {
 		proxyutil.FailStatus(c, http.StatusNotFound, err)
 		return
@@ -31,7 +31,7 @@ func (h *webdavHandler) handleGet(c *gin.Context) {
 		proxyutil.FailStatus(c, http.StatusMethodNotAllowed, fmt.Errorf("cant open stream on dir"))
 		return
 	}
-	stream, err := filemgr.Open(ctx, item.FileId)
+	stream, err := filemgr.OpenFile(ctx, item.FileId)
 	if err != nil {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("open stream failed, err:%w", err))
 		return

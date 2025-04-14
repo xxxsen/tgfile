@@ -22,7 +22,7 @@ func BeginUpload(c *gin.Context, ctx context.Context, request interface{}) {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("no file name found"))
 		return
 	}
-	fileid, blocksize, err := filemgr.CreateDraft(ctx, req.FileSize)
+	fileid, blocksize, err := filemgr.CreateFileDraft(ctx, req.FileSize)
 	if err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("create draft failed, err:%w", err))
 		return
@@ -59,7 +59,7 @@ func PartUpload(c *gin.Context, ctx context.Context, request interface{}) {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("decode file key failed, err:%w", err))
 		return
 	}
-	if err := filemgr.CreatePart(ctx, fctx.FileId, *req.PartId, f); err != nil {
+	if err := filemgr.CreateFilePart(ctx, fctx.FileId, *req.PartId, f); err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("upload part failed, err:%w", err))
 		return
 	}
@@ -73,12 +73,12 @@ func FinishUpload(c *gin.Context, ctx context.Context, request interface{}) {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("decode file key failed, key:%s, err:%w", req.UploadKey, err))
 		return
 	}
-	if err := filemgr.FinishCreate(ctx, fctx.FileId); err != nil {
+	if err := filemgr.FinishFileCreate(ctx, fctx.FileId); err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("finish upload failed, err:%w", err))
 		return
 	}
 	path, fileKey := buildFileKeyLink(fctx.FileName, fctx.FileId)
-	if err := filemgr.CreateLink(ctx, path, fctx.FileId, fctx.FileSize, false); err != nil {
+	if err := filemgr.CreateFileLink(ctx, path, fctx.FileId, fctx.FileSize, false); err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
 		return
 	}
