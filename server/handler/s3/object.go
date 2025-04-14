@@ -14,7 +14,7 @@ import (
 func (h *S3Handler) DownloadObject(c *gin.Context) {
 	ctx := c.Request.Context()
 	filename := c.Request.URL.Path
-	finfo, err := h.fmgr.ResolveFileLink(ctx, filename)
+	finfo, err := h.fmgr.StatFileLink(ctx, filename)
 	if err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("get mapping info fail, err:%w", err))
 		return

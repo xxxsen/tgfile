@@ -20,7 +20,7 @@ func (h *FileHandler) FileDownload(c *gin.Context) {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("invalid fkey, err:%w", err))
 		return
 	}
-	finfo, err := h.m.ResolveFileLink(ctx, path)
+	finfo, err := h.m.StatFileLink(ctx, path)
 	if err != nil {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("invalid down key, key:%s, err:%w", key, err))
 		return

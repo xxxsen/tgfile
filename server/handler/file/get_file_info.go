@@ -21,7 +21,7 @@ func (h *FileHandler) GetMetaInfo(c *gin.Context) {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("invalid fkey, err:%w", err))
 		return
 	}
-	info, err := h.m.ResolveFileLink(ctx, link)
+	info, err := h.m.StatFileLink(ctx, link)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			proxyutil.SuccessJson(c, model.GetFileInfoResponse{

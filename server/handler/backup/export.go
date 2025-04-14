@@ -37,7 +37,7 @@ func (h *BackupHandler) Export(c *gin.Context) {
 		if d.IsDir() {
 			return nil
 		}
-		ent, err := h.fmgr.ResolveFileLink(ctx, path)
+		ent, err := h.fmgr.StatFileLink(ctx, path)
 		if err != nil {
 			return err
 		}

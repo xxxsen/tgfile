@@ -26,7 +26,7 @@ type defaultFileManager struct {
 }
 
 func (d *defaultFileManager) CreateFileLink(ctx context.Context, link string, fileid uint64, size int64, isDir bool) error {
-	_, err := d.fileMappingDao.CreateFileMapping(ctx, &entity.CreateFileMappingRequest{
+	_, err := d.fileMappingDao.CreateFileLink(ctx, &entity.CreateFileLinkRequest{
 		FileName: link,
 		FileId:   fileid,
 		FileSize: size,
@@ -35,7 +35,7 @@ func (d *defaultFileManager) CreateFileLink(ctx context.Context, link string, fi
 	return err
 }
 
-func (d *defaultFileManager) ResolveFileLink(ctx context.Context, link string) (*entity.FileMappingItem, error) {
+func (d *defaultFileManager) StatFileLink(ctx context.Context, link string) (*entity.FileLinkMeta, error) {
 	fid, ok, err := d.internalGetFileMapping(ctx, link)
 	if err != nil {
 		return nil, fmt.Errorf("open mapping failed, err:%w", err)
@@ -47,21 +47,21 @@ func (d *defaultFileManager) ResolveFileLink(ctx context.Context, link string) (
 }
 
 func (d *defaultFileManager) WalkFileLink(ctx context.Context, prefix string, cb WalkLinkFunc) error {
-	return d.fileMappingDao.IterFileMapping(ctx, prefix, func(ctx context.Context, name string, ent *entity.FileMappingItem) (bool, error) {
+	return d.fileMappingDao.IterFileLink(ctx, prefix, func(ctx context.Context, name string, ent *entity.FileLinkMeta) (bool, error) {
 		return cb(ctx, name, ent)
 	})
 }
 
 func (d *defaultFileManager) RemoveFileLink(ctx context.Context, link string) error {
-	return d.fileMappingDao.RemoveFileMapping(ctx, link)
+	return d.fileMappingDao.RemoveFileLink(ctx, link)
 }
 
 func (d *defaultFileManager) RenameFileLink(ctx context.Context, src, dst string, isOverwrite bool) error {
-	return d.fileMappingDao.RenameFileMapping(ctx, src, dst, isOverwrite)
+	return d.fileMappingDao.RenameFileLink(ctx, src, dst, isOverwrite)
 }
 
 func (d *defaultFileManager) CopyFileLink(ctx context.Context, src, dst string, isOverwrite bool) error {
-	return d.fileMappingDao.CopyFileMapping(ctx, src, dst, isOverwrite)
+	return d.fileMappingDao.CopyFileLink(ctx, src, dst, isOverwrite)
 }
 
 func (d *defaultFileManager) lowlevelIOStream(bkio blockio.IBlockIO, fileid uint64, filesize int64) func(ctx context.Context) (io.ReadSeekCloser, error) {
@@ -211,8 +211,8 @@ func (d *defaultFileManager) internalGetFilePartInfo(ctx context.Context, fileid
 	return rs.List[0], true, nil
 }
 
-func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filename string) (*entity.FileMappingItem, bool, error) {
-	rsp, ok, err := d.fileMappingDao.GetFileMapping(ctx, &entity.GetFileMappingRequest{
+func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filename string) (*entity.FileLinkMeta, bool, error) {
+	rsp, ok, err := d.fileMappingDao.GetFileLinkMeta(ctx, &entity.GetFileLinkMetaRequest{
 		FileName: filename,
 	})
 	if err != nil {
@@ -254,7 +254,7 @@ func (d *defaultFileManager) readUnRefFileIdList(ctx context.Context, limitMtime
 	if len(fidMap) == 0 {
 		return nil, nil
 	}
-	if err := d.fileMappingDao.ScanFileMapping(ctx, defaultBatch, func(ctx context.Context, res []*entity.FileMappingItem) (bool, error) {
+	if err := d.fileMappingDao.ScanFileLink(ctx, defaultBatch, func(ctx context.Context, res []*entity.FileLinkMeta) (bool, error) {
 		for _, item := range res {
 			delete(fidMap, item.FileId)
 		}

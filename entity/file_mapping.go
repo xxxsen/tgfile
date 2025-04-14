@@ -1,10 +1,10 @@
 package entity
 
-type GetFileMappingRequest struct {
+type GetFileLinkMetaRequest struct {
 	FileName string
 }
 
-type FileMappingItem struct {
+type FileLinkMeta struct {
 	FileName string `json:"file_name"`
 	FileId   uint64 `json:"file_id"`
 	FileSize int64  `json:"file_size"`
@@ -14,16 +14,16 @@ type FileMappingItem struct {
 	IsDir    bool   `json:"is_dir"`
 }
 
-type GetFileMappingResponse struct {
-	Item *FileMappingItem
+type GetFileLinkMetaResponse struct {
+	Item *FileLinkMeta
 }
 
-type CreateFileMappingRequest struct {
+type CreateFileLinkRequest struct {
 	FileName string
 	FileSize int64
 	FileId   uint64
 	IsDir    bool
 }
 
-type CreateFileMappingResponse struct {
+type CreateFileLinkResponse struct {
 }

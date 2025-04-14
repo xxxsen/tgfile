@@ -14,7 +14,7 @@ import (
 func (h *WebdavHandler) handleHead(c *gin.Context) {
 	ctx := c.Request.Context()
 	file := h.buildSrcPath(c)
-	item, err := h.fmgr.ResolveFileLink(ctx, file)
+	item, err := h.fmgr.StatFileLink(ctx, file)
 	if err != nil {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("decode link info failed, link:%s, err:%w", file, err))
 		return

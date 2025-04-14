@@ -15,7 +15,7 @@ func DetermineMimeType(filename string) string {
 	return mimeType
 }
 
-func SetDefaultDownloadHeader(c *gin.Context, finfo *entity.FileMappingItem) {
+func SetDefaultDownloadHeader(c *gin.Context, finfo *entity.FileLinkMeta) {
 	c.Writer.Header().Set("Content-Type", DetermineMimeType(finfo.FileName))
 	c.Writer.Header().Set("Cache-Control", "public, max-age=604800") //默认可以缓存7d
 	if finfo.FileId != 0 {

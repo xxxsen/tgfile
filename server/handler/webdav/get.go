@@ -17,7 +17,7 @@ import (
 func (h *WebdavHandler) handleGet(c *gin.Context) {
 	ctx := c.Request.Context()
 	file := h.buildSrcPath(c)
-	item, err := h.fmgr.ResolveFileLink(ctx, file)
+	item, err := h.fmgr.StatFileLink(ctx, file)
 	if errors.Is(err, os.ErrNotExist) {
 		proxyutil.FailStatus(c, http.StatusNotFound, err)
 		return

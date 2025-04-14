@@ -50,17 +50,17 @@ func (h *WebdavHandler) handlePropfind(c *gin.Context) {
 	}
 }
 
-func (h *WebdavHandler) propFindEntries(ctx context.Context, location string, depth int) (*entity.FileMappingItem, []*entity.FileMappingItem, error) {
-	base, err := h.fmgr.ResolveFileLink(ctx, location)
+func (h *WebdavHandler) propFindEntries(ctx context.Context, location string, depth int) (*entity.FileLinkMeta, []*entity.FileLinkMeta, error) {
+	base, err := h.fmgr.StatFileLink(ctx, location)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	if !base.IsDir || depth == 0 {
-		return base, []*entity.FileMappingItem{}, nil
+		return base, []*entity.FileLinkMeta{}, nil
 	}
-	rs := make([]*entity.FileMappingItem, 0, 32)
-	if err := h.fmgr.WalkFileLink(ctx, location, func(ctx context.Context, link string, item *entity.FileMappingItem) (bool, error) {
+	rs := make([]*entity.FileLinkMeta, 0, 32)
+	if err := h.fmgr.WalkFileLink(ctx, location, func(ctx context.Context, link string, item *entity.FileLinkMeta) (bool, error) {
 		rs = append(rs, item)
 		return true, nil
 	}); err != nil {
@@ -80,7 +80,7 @@ func (h *WebdavHandler) propFindEntries(ctx context.Context, location string, de
 	return base, rs, nil
 }
 
-func (h *WebdavHandler) generatePropfindResponse(location string, base *entity.FileMappingItem, ents []*entity.FileMappingItem) *model.Multistatus {
+func (h *WebdavHandler) generatePropfindResponse(location string, base *entity.FileLinkMeta, ents []*entity.FileLinkMeta) *model.Multistatus {
 	ms := &model.Multistatus{
 		XMLNS: "DAV:",
 	}
@@ -93,11 +93,11 @@ func (h *WebdavHandler) generatePropfindResponse(location string, base *entity.F
 	return ms
 }
 
-func (h *WebdavHandler) generatePropfindFileResponse(ms *model.Multistatus, location string, base *entity.FileMappingItem) {
+func (h *WebdavHandler) generatePropfindFileResponse(ms *model.Multistatus, location string, base *entity.FileLinkMeta) {
 	ms.Responses = append(ms.Responses, h.convertFileMappingItemToResponse(path.Dir(location), base))
 }
 
-func (h *WebdavHandler) generatePropfindDirResponse(ms *model.Multistatus, location string, base *entity.FileMappingItem, ents []*entity.FileMappingItem) {
+func (h *WebdavHandler) generatePropfindDirResponse(ms *model.Multistatus, location string, base *entity.FileLinkMeta, ents []*entity.FileLinkMeta) {
 	{ //处理父目录
 		ms.Responses = append(ms.Responses, h.convertLastDirFileMappingItemToResponse(location, base))
 	}
@@ -107,7 +107,7 @@ func (h *WebdavHandler) generatePropfindDirResponse(ms *model.Multistatus, locat
 	}
 }
 
-func (h *WebdavHandler) convertLastDirFileMappingItemToResponse(root string, file *entity.FileMappingItem) *model.Response {
+func (h *WebdavHandler) convertLastDirFileMappingItemToResponse(root string, file *entity.FileLinkMeta) *model.Response {
 	if !strings.HasSuffix(root, "/") {
 		root += "/"
 	}
@@ -126,7 +126,7 @@ func (h *WebdavHandler) convertLastDirFileMappingItemToResponse(root string, fil
 	}
 }
 
-func (h *WebdavHandler) convertFileMappingItemToResponse(root string, file *entity.FileMappingItem) *model.Response {
+func (h *WebdavHandler) convertFileMappingItemToResponse(root string, file *entity.FileLinkMeta) *model.Response {
 	filename := path.Join(root, file.FileName)
 	if file.IsDir && !strings.HasSuffix(filename, "/") {
 		filename += "/"

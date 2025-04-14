@@ -20,11 +20,11 @@ type fileSystemFileEntry struct {
 	initErr        error
 	streamInitOnce sync.Once
 	ctx            context.Context
-	ent            *entity.FileMappingItem
+	ent            *entity.FileLinkMeta
 	fullName       string
 }
 
-func newFileSystemEntry(ctx context.Context, fmgr IFileManager, fullName string, ent *entity.FileMappingItem) *fileSystemFileEntry {
+func newFileSystemEntry(ctx context.Context, fmgr IFileManager, fullName string, ent *entity.FileLinkMeta) *fileSystemFileEntry {
 	return &fileSystemFileEntry{
 		fmgr:     fmgr,
 		ctx:      ctx,
@@ -111,7 +111,7 @@ func internalReadDir(ctx context.Context, fmgr IFileManager, root string) ([]os.
 	}
 	ents := make([]os.DirEntry, 0, 16)
 
-	err := fmgr.WalkFileLink(ctx, root, func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
+	err := fmgr.WalkFileLink(ctx, root, func(ctx context.Context, link string, ent *entity.FileLinkMeta) (bool, error) {
 		ents = append(ents, newFileSystemEntry(ctx, fmgr, link, ent))
 		return true, nil
 	})
@@ -122,7 +122,7 @@ func internalReadDir(ctx context.Context, fmgr IFileManager, root string) ([]os.
 }
 
 type wrapFileMappingItem struct {
-	ent *entity.FileMappingItem
+	ent *entity.FileLinkMeta
 }
 
 func (w *wrapFileMappingItem) Name() string {
