@@ -46,7 +46,7 @@ func (d *defaultFileManager) ResolveFileLink(ctx context.Context, link string) (
 	return fid, nil
 }
 
-func (d *defaultFileManager) WalkFileLink(ctx context.Context, prefix string, cb IterLinkFunc) error {
+func (d *defaultFileManager) WalkFileLink(ctx context.Context, prefix string, cb WalkLinkFunc) error {
 	return d.fileMappingDao.IterFileMapping(ctx, prefix, func(ctx context.Context, name string, ent *entity.FileMappingItem) (bool, error) {
 		return cb(ctx, name, ent)
 	})

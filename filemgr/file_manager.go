@@ -7,7 +7,7 @@ import (
 	"github.com/xxxsen/tgfile/entity"
 )
 
-type IterLinkFunc func(ctx context.Context, link string, item *entity.FileMappingItem) (bool, error)
+type WalkLinkFunc func(ctx context.Context, link string, item *entity.FileMappingItem) (bool, error)
 
 type IFileStorage interface {
 	OpenFile(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error)
@@ -21,7 +21,7 @@ type IFileStorage interface {
 type ILinkManager interface {
 	CreateFileLink(ctx context.Context, link string, fileid uint64, size int64, isDir bool) error
 	ResolveFileLink(ctx context.Context, link string) (*entity.FileMappingItem, error)
-	WalkFileLink(ctx context.Context, prefix string, cb IterLinkFunc) error
+	WalkFileLink(ctx context.Context, prefix string, cb WalkLinkFunc) error
 	RemoveFileLink(ctx context.Context, link string) error
 	RenameFileLink(ctx context.Context, src, dst string, isOverwrite bool) error
 	CopyFileLink(ctx context.Context, src, dst string, isOverwrite bool) error
