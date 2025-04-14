@@ -95,7 +95,7 @@ func (f *fileMappingDaoImpl) IterFileMapping(ctx context.Context, prefix string,
 		if err != nil {
 			return err
 		}
-		next, err := cb(ctx, path.Join(prefix, item.GetName()), cbitem)
+		next, err := cb(ctx, path.Join(prefix, item.Name()), cbitem)
 		if err != nil {
 			return err
 		}
@@ -108,16 +108,16 @@ func (f *fileMappingDaoImpl) IterFileMapping(ctx context.Context, prefix string,
 
 func (f *fileMappingDaoImpl) directoryEntryToFileMappingItem(item directory.IDirectoryEntry) (*entity.FileMappingItem, error) {
 	rs := &entity.FileMappingItem{
-		FileName: item.GetName(),
+		FileName: item.Name(),
 		FileId:   0,
-		FileSize: item.GetSize(),
-		Mode:     item.GetMode(),
-		Ctime:    item.GetCtime(),
-		Mtime:    item.GetMtime(),
-		IsDir:    item.GetIsDir(),
+		FileSize: item.Size(),
+		Mode:     item.Mode(),
+		Ctime:    item.Ctime(),
+		Mtime:    item.Mtime(),
+		IsDir:    item.IsDir(),
 	}
 	if !rs.IsDir {
-		fid, err := strconv.ParseUint(item.GetRefData(), 10, 64)
+		fid, err := strconv.ParseUint(item.RefData(), 10, 64)
 		if err != nil {
 			return nil, err
 		}

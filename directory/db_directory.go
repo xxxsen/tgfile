@@ -140,13 +140,13 @@ func (e *dbDirectory) txCreateEntry(ctx context.Context, exec database.IExecer, 
 		{
 			"entry_id":        eid,
 			"parent_entry_id": pid,
-			"ref_data":        ent.RefData,
-			"file_kind":       ent.FileKind,
-			"ctime":           ent.Ctime,
-			"mtime":           ent.Mtime,
-			"file_size":       ent.FileSize,
-			"file_mode":       ent.FileMode,
-			"file_name":       ent.FileName,
+			"ref_data":        ent.RefData_,
+			"file_kind":       ent.FileKind_,
+			"ctime":           ent.Ctime_,
+			"mtime":           ent.Mtime_,
+			"file_size":       ent.FileSize_,
+			"file_mode":       ent.FileMode_,
+			"file_name":       ent.FileName_,
 		},
 	}
 	sql, args, err := builder.BuildInsert(e.table(), data)
@@ -185,14 +185,14 @@ func (e *dbDirectory) txRemove(ctx context.Context, tx database.IExecer, parenti
 func (e *dbDirectory) txCreateDir(ctx context.Context, exec database.IExecer, pid uint64, name string) (uint64, error) {
 	now := time.Now().UnixMilli()
 	ent := &directoryEntryTab{
-		ParentEntryId: pid,
-		RefData:       "",
-		FileKind:      defaultFileKindDir,
-		Ctime:         now,
-		Mtime:         now,
-		FileSize:      0,
-		FileMode:      defaultEntryFileMode,
-		FileName:      name,
+		ParentEntryId_: pid,
+		RefData_:       "",
+		FileKind_:      defaultFileKindDir,
+		Ctime_:         now,
+		Mtime_:         now,
+		FileSize_:      0,
+		FileMode_:      defaultEntryFileMode,
+		FileName_:      name,
 	}
 	return e.txCreateEntry(ctx, exec, pid, ent)
 }
@@ -253,10 +253,10 @@ func (e *dbDirectory) txOnSelectDir(ctx context.Context, tx database.IQueryExece
 			parentid = pid
 			continue
 		}
-		if ent.FileKind != defaultFileKindDir {
+		if ent.FileKind_ != defaultFileKindDir {
 			return fmt.Errorf("found non-dir in sub path, sub:%s", strings.Join(items[:idx+1], "/"))
 		}
-		parentid = ent.EntryId
+		parentid = ent.EntryId_
 	}
 	return cb(ctx, parentid, tx)
 }
@@ -275,14 +275,14 @@ func (e *dbDirectory) txCreateRoot(ctx context.Context, tx database.IQueryExecer
 	}
 	now := time.Now().UnixMilli()
 	_, err = e.txCreateEntry(ctx, tx, 0, &directoryEntryTab{
-		ParentEntryId: 0,
-		RefData:       "",
-		FileKind:      defaultFileKindDir,
-		Ctime:         now,
-		Mtime:         now,
-		FileSize:      0,
-		FileMode:      defaultEntryFileMode,
-		FileName:      "/",
+		ParentEntryId_: 0,
+		RefData_:       "",
+		FileKind_:      defaultFileKindDir,
+		Ctime_:         now,
+		Mtime_:         now,
+		FileSize_:      0,
+		FileMode_:      defaultEntryFileMode,
+		FileName_:      "/",
 	})
 	if err != nil {
 		return nil, err
@@ -366,27 +366,27 @@ func (e *dbDirectory) Mkdir(ctx context.Context, dir string) error {
 func (e *dbDirectory) txDoIterAndCopy(ctx context.Context, tx database.IQueryExecer, srcinfo *directoryEntryTab, dstparent uint64, newname string) error {
 	now := time.Now().UnixMilli()
 	dstentid, err := e.txCreateEntry(ctx, tx, dstparent, &directoryEntryTab{
-		ParentEntryId: dstparent,
-		RefData:       srcinfo.RefData,
-		FileKind:      srcinfo.FileKind,
-		Ctime:         now,
-		Mtime:         now,
-		FileSize:      srcinfo.FileSize,
-		FileMode:      srcinfo.FileMode,
-		FileName:      newname,
+		ParentEntryId_: dstparent,
+		RefData_:       srcinfo.RefData_,
+		FileKind_:      srcinfo.FileKind_,
+		Ctime_:         now,
+		Mtime_:         now,
+		FileSize_:      srcinfo.FileSize_,
+		FileMode_:      srcinfo.FileMode_,
+		FileName_:      newname,
 	})
 	if err != nil {
 		return err
 	}
-	if srcinfo.FileKind == defaultFileKindFile { //如果是文件, 则直接结束
+	if srcinfo.FileKind_ == defaultFileKindFile { //如果是文件, 则直接结束
 		return nil
 	}
-	items, err := e.txListAllDir(ctx, tx, srcinfo.EntryId)
+	items, err := e.txListAllDir(ctx, tx, srcinfo.EntryId_)
 	if err != nil {
-		return fmt.Errorf("list all dir failed, eid:%d, err:%w", srcinfo.EntryId, err)
+		return fmt.Errorf("list all dir failed, eid:%d, err:%w", srcinfo.EntryId_, err)
 	}
 	for _, item := range items { //递归创建子节点
-		if err := e.txDoIterAndCopy(ctx, tx, item, dstentid, item.FileName); err != nil {
+		if err := e.txDoIterAndCopy(ctx, tx, item, dstentid, item.FileName_); err != nil {
 			return err
 		}
 	}
@@ -419,20 +419,20 @@ func (e *dbDirectory) txDoCopy(ctx context.Context, tx database.IQueryExecer, sr
 		return err
 	}
 	if exist {
-		if dinfo.FileKind == defaultFileKindDir { //存在且目标为目录, 直接跳过后续流程
+		if dinfo.FileKind_ == defaultFileKindDir { //存在且目标为目录, 直接跳过后续流程
 			return fmt.Errorf("copy dst dir exist, skip next")
 		}
 		//如果为文件, 则需要检查是否启用overwrite
 		if !overwrite {
 			return fmt.Errorf("dst exist and overwrite = false, skip next")
 		}
-		if err := e.txRemove(ctx, tx, dinfo.ParentEntryId, dinfo.FileName); err != nil {
+		if err := e.txRemove(ctx, tx, dinfo.ParentEntryId_, dinfo.FileName_); err != nil {
 			return fmt.Errorf("delete before copy failed, err:%w", err)
 		}
 	}
 	//执行递归copy流程
 	if err := e.txDoIterAndCopy(ctx, tx, sinfo, dstparentid, dname); err != nil {
-		return fmt.Errorf("do iter copy failed, srcparentid:%d, dstparentid:%d, sname:%s, err:%w", sinfo.ParentEntryId, dstparentid, sinfo.FileName, err)
+		return fmt.Errorf("do iter copy failed, srcparentid:%d, dstparentid:%d, sname:%s, err:%w", sinfo.ParentEntryId_, dstparentid, sinfo.FileName_, err)
 	}
 	return nil
 }
@@ -491,9 +491,9 @@ func (e *dbDirectory) txDoMove(ctx context.Context, tx database.IQueryExecer, sr
 		return fmt.Errorf("entry should mount to root, dst name should not be root")
 	}
 	if !dexist { //目标不存在, 那么直接把src挂到dst的parent上即可
-		return e.txChangeParent(ctx, tx, sinfo.EntryId, parentid, &dname)
+		return e.txChangeParent(ctx, tx, sinfo.EntryId_, parentid, &dname)
 	}
-	if dinfo.FileKind == defaultFileKindDir { //不允许直接覆盖dir
+	if dinfo.FileKind_ == defaultFileKindDir { //不允许直接覆盖dir
 		return fmt.Errorf("not allow to overwrite dir")
 	}
 	if !overwrite { //文件存在, 但是又没又overwrite选项, 直接返回
@@ -503,7 +503,7 @@ func (e *dbDirectory) txDoMove(ctx context.Context, tx database.IQueryExecer, sr
 	if err := e.txRemove(ctx, tx, parentid, dname); err != nil {
 		return fmt.Errorf("overwrite but remove origin failed, err:%w", err)
 	}
-	return e.txChangeParent(ctx, tx, sinfo.EntryId, parentid, &dname)
+	return e.txChangeParent(ctx, tx, sinfo.EntryId_, parentid, &dname)
 }
 
 func (e *dbDirectory) Move(ctx context.Context, src string, dst string, overwrite bool) error {
@@ -524,13 +524,13 @@ func (e *dbDirectory) txDoRemove(ctx context.Context, tx database.IQueryExecer, 
 	if !ok { //已经被删了
 		return nil
 	}
-	if ent.FileKind == defaultFileKindDir {
-		items, err := e.txListAllDir(ctx, tx, ent.EntryId)
+	if ent.FileKind_ == defaultFileKindDir {
+		items, err := e.txListAllDir(ctx, tx, ent.EntryId_)
 		if err != nil {
 			return fmt.Errorf("scan entry from pid:%d failed, err:%w", parentid, err)
 		}
 		for _, item := range items {
-			if err := e.txDoRemove(ctx, tx, item.ParentEntryId, item.FileName); err != nil {
+			if err := e.txDoRemove(ctx, tx, item.ParentEntryId_, item.FileName_); err != nil {
 				return err
 			}
 		}
@@ -570,13 +570,13 @@ func (e *dbDirectory) Create(ctx context.Context, filename string, size int64, r
 		}
 		now := time.Now().UnixMilli()
 		if _, err := e.txCreateFile(ctx, tx, parentid, &directoryEntryTab{
-			RefData:  refdata,
-			FileKind: 2,
-			Ctime:    now,
-			Mtime:    now,
-			FileSize: size,
-			FileMode: defaultEntryFileMode,
-			FileName: name,
+			RefData_:  refdata,
+			FileKind_: 2,
+			Ctime_:    now,
+			Mtime_:    now,
+			FileSize_: size,
+			FileMode_: defaultEntryFileMode,
+			FileName_: name,
 		}); err != nil {
 			return err
 		}
@@ -672,7 +672,7 @@ func (e *dbDirectory) innerScan(ctx context.Context, lastid uint64, batch int64)
 	for _, item := range rs {
 		out = append(out, item.ToDirectoyEntry())
 	}
-	nextid := rs[len(rs)-1].Id
+	nextid := rs[len(rs)-1].Id_
 	return out, nextid, nil
 }
 
