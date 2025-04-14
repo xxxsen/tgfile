@@ -7,11 +7,12 @@ import (
 )
 
 type fileSystemWrap struct {
-	ctx context.Context
+	ctx  context.Context
+	fmgr IFileManager
 }
 
-func AsFileSystem(ctx context.Context) fs.FS {
-	return &fileSystemWrap{ctx: ctx}
+func ToFileSystem(ctx context.Context, fmgr IFileManager) fs.FS {
+	return &fileSystemWrap{ctx: ctx, fmgr: fmgr}
 }
 
 func (f *fileSystemWrap) Open(name string) (fs.File, error) {
@@ -22,13 +23,13 @@ func (f *fileSystemWrap) Open(name string) (fs.File, error) {
 	if !strings.HasPrefix(name, "/") {
 		name = "/" + name
 	}
-	item, err := ResolveFileLink(f.ctx, name)
+	item, err := f.fmgr.ResolveFileLink(f.ctx, name)
 	if err != nil {
 		return nil, err
 	}
-	return newFileSystemEntry(f.ctx, name, item), nil
+	return newFileSystemEntry(f.ctx, f.fmgr, name, item), nil
 }
 
 func (f *fileSystemWrap) ReadDir(name string) ([]fs.DirEntry, error) {
-	return internalReadDir(f.ctx, name)
+	return internalReadDir(f.ctx, f.fmgr, name)
 }

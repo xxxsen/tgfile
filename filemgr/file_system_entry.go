@@ -15,6 +15,7 @@ import (
 )
 
 type fileSystemFileEntry struct {
+	fmgr           IFileManager
 	stream         io.ReadSeekCloser
 	initErr        error
 	streamInitOnce sync.Once
@@ -23,8 +24,9 @@ type fileSystemFileEntry struct {
 	fullName       string
 }
 
-func newFileSystemEntry(ctx context.Context, fullName string, ent *entity.FileMappingItem) *fileSystemFileEntry {
+func newFileSystemEntry(ctx context.Context, fmgr IFileManager, fullName string, ent *entity.FileMappingItem) *fileSystemFileEntry {
 	return &fileSystemFileEntry{
+		fmgr:     fmgr,
 		ctx:      ctx,
 		fullName: fullName,
 		ent:      ent,
@@ -37,7 +39,7 @@ func (f *fileSystemFileEntry) Stat() (fs.FileInfo, error) {
 
 func (f *fileSystemFileEntry) tryInitStream() {
 	f.streamInitOnce.Do(func() {
-		f.stream, f.initErr = OpenFile(f.ctx, f.ent.FileId)
+		f.stream, f.initErr = f.fmgr.OpenFile(f.ctx, f.ent.FileId)
 	})
 }
 
@@ -90,7 +92,7 @@ func (f *fileSystemFileEntry) ReadDir(n int) ([]fs.DirEntry, error) {
 	if !f.ent.IsDir {
 		return nil, fmt.Errorf("unable to read dir on file")
 	}
-	ents, err := internalReadDir(f.ctx, f.fullName)
+	ents, err := internalReadDir(f.ctx, f.fmgr, f.fullName)
 	if err != nil {
 		return nil, err
 	}
@@ -100,7 +102,7 @@ func (f *fileSystemFileEntry) ReadDir(n int) ([]fs.DirEntry, error) {
 	return ents[:n], nil
 }
 
-func internalReadDir(ctx context.Context, root string) ([]os.DirEntry, error) {
+func internalReadDir(ctx context.Context, fmgr IFileManager, root string) ([]os.DirEntry, error) {
 	if !strings.HasPrefix(root, "/") {
 		root = "/" + root
 	}
@@ -109,8 +111,8 @@ func internalReadDir(ctx context.Context, root string) ([]os.DirEntry, error) {
 	}
 	ents := make([]os.DirEntry, 0, 16)
 
-	err := defaultFileMgr.WalkFileLink(ctx, root, func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
-		ents = append(ents, newFileSystemEntry(ctx, link, ent))
+	err := fmgr.WalkFileLink(ctx, root, func(ctx context.Context, link string, ent *entity.FileMappingItem) (bool, error) {
+		ents = append(ents, newFileSystemEntry(ctx, fmgr, link, ent))
 		return true, nil
 	})
 	if err != nil {

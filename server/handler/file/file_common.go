@@ -21,11 +21,11 @@ var (
 	defaultFileNameCleaner = regexp.MustCompile(`[\\/:*?"<>|+#%{}'&$@!~\(\)\[\]^` + "`" + ` ]`)
 )
 
-func removeInvalidChar(name string) string {
+func (h *FileHandler) removeInvalidChar(name string) string {
 	return defaultFileNameCleaner.ReplaceAllString(name, "")
 }
 
-func tryCutBaseName(base string) string {
+func (h *FileHandler) tryCutBaseName(base string) string {
 	//尽可能地保持extname
 	if len(base) <= defaultMaxAllowFileNameLength {
 		return base
@@ -39,18 +39,18 @@ func tryCutBaseName(base string) string {
 	return name + ext
 }
 
-func buildFileKeyLink(filename string, fileid uint64) (string, string) {
+func (h *FileHandler) buildFileKeyLink(filename string, fileid uint64) (string, string) {
 	fkey := hex.EncodeToString(utils.FileIdToHash(fileid))
 	p1 := fkey[:2]
 	base := path.Base(filename)
-	base = tryCutBaseName(removeInvalidChar(base))
+	base = h.tryCutBaseName(h.removeInvalidChar(base))
 	fkey = fkey + "-" + base
 	link := path.Join(defaultUploadPrefix, p1, fkey)
 	return link, fkey
 }
 
-func extractLinkFromFileKey(fkey string) (string, error) {
-	fkey = removeInvalidChar(fkey)
+func (h *FileHandler) extractLinkFromFileKey(fkey string) (string, error) {
+	fkey = h.removeInvalidChar(fkey)
 	idx := strings.Index(fkey, "-")
 	if idx < 0 {
 		return "", fmt.Errorf("no seperator found")

@@ -7,22 +7,21 @@ import (
 	"os"
 
 	"github.com/xxxsen/common/webapi/proxyutil"
-	"github.com/xxxsen/tgfile/filemgr"
 
 	"github.com/xxxsen/tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
 )
 
-func GetMetaInfo(c *gin.Context) {
+func (h *FileHandler) GetMetaInfo(c *gin.Context) {
 	ctx := c.Request.Context()
 	key := c.Param("key")
-	link, err := extractLinkFromFileKey(key)
+	link, err := h.extractLinkFromFileKey(key)
 	if err != nil {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("invalid fkey, err:%w", err))
 		return
 	}
-	info, err := filemgr.ResolveFileLink(ctx, link)
+	info, err := h.m.ResolveFileLink(ctx, link)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			proxyutil.SuccessJson(c, model.GetFileInfoResponse{

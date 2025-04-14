@@ -7,15 +7,14 @@ import (
 	"time"
 
 	"github.com/xxxsen/common/webapi/proxyutil"
-	"github.com/xxxsen/tgfile/filemgr"
 
 	"github.com/gin-gonic/gin"
 )
 
-func (h *webdavHandler) handleHead(c *gin.Context) {
+func (h *WebdavHandler) handleHead(c *gin.Context) {
 	ctx := c.Request.Context()
 	file := h.buildSrcPath(c)
-	item, err := filemgr.ResolveFileLink(ctx, file)
+	item, err := h.fmgr.ResolveFileLink(ctx, file)
 	if err != nil {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("decode link info failed, link:%s, err:%w", file, err))
 		return

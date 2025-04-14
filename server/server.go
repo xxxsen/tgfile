@@ -41,43 +41,51 @@ func New(bind string, opts ...Option) (*Server, error) {
 
 func (s *Server) initAPI(router *gin.RouterGroup) {
 	mustAuthMiddleware := middleware.MustAuthMiddleware()
+
+	// handler here
+	fileHandler := file.NewFileHandler(s.c.fmgr)
+
 	fileRouter := router.Group("/file")
 	{
-		fileRouter.POST("/upload", mustAuthMiddleware, proxyutil.WrapBizFunc(file.FileUpload, &model.UploadFileRequest{}))
-		fileRouter.GET("/download/:key", file.FileDownload)
-		fileRouter.GET("/meta/:key", file.GetMetaInfo)
-		fileRouter.POST("/purge", mustAuthMiddleware, file.FilePurge)
+
+		fileRouter.POST("/upload", mustAuthMiddleware, proxyutil.WrapBizFunc(fileHandler.FileUpload, &model.UploadFileRequest{}))
+		fileRouter.GET("/download/:key", fileHandler.FileDownload)
+		fileRouter.GET("/meta/:key", fileHandler.GetMetaInfo)
+		fileRouter.POST("/purge", mustAuthMiddleware, fileHandler.FilePurge)
 	}
 	multiPartRouter := fileRouter.Group("/multipart")
 	{
-		multiPartRouter.POST("/begin", mustAuthMiddleware, proxyutil.WrapBizFunc(file.BeginUpload, &model.BeginUploadRequest{}))
-		multiPartRouter.POST("/part", mustAuthMiddleware, proxyutil.WrapBizFunc(file.PartUpload, &model.PartUploadRequest{}))
-		multiPartRouter.POST("/end", mustAuthMiddleware, proxyutil.WrapBizFunc(file.FinishUpload, &model.FinishUploadRequest{}))
+		multiPartRouter.POST("/begin", mustAuthMiddleware, proxyutil.WrapBizFunc(fileHandler.BeginUpload, &model.BeginUploadRequest{}))
+		multiPartRouter.POST("/part", mustAuthMiddleware, proxyutil.WrapBizFunc(fileHandler.PartUpload, &model.PartUploadRequest{}))
+		multiPartRouter.POST("/end", mustAuthMiddleware, proxyutil.WrapBizFunc(fileHandler.FinishUpload, &model.FinishUploadRequest{}))
 	}
 	staticRouter := router.Group("/static", mustAuthMiddleware)
 	{
-		staticRouter.StaticFS("", http.FS(filemgr.AsFileSystem(context.Background())))
+		staticRouter.StaticFS("", http.FS(filemgr.ToFileSystem(context.Background(), s.c.fmgr)))
 	}
 
 	backupRouter := router.Group("/backup", mustAuthMiddleware)
 	{
-		backupRouter.GET("/export", backup.Export)
-		backupRouter.POST("/import", proxyutil.WrapBizFunc(backup.Import, &model.ImportRequest{}))
+		backupHandler := backup.NewBackupHandler(s.c.fmgr)
+		backupRouter.GET("/export", backupHandler.Export)
+		backupRouter.POST("/import", proxyutil.WrapBizFunc(backupHandler.Import, &model.ImportRequest{}))
 	}
 	if s.c.s3Enable {
+		s3Handler := s3.NewS3Handler(s.c.fmgr)
 		for _, bk := range s.c.s3Buckets {
 			bucketRouter := router.Group(fmt.Sprintf("/%s", bk))
-			bucketRouter.GET("", s3.GetBucket)
-			bucketRouter.GET("/*object", s3.DownloadObject)
-			bucketRouter.PUT("/*object", mustAuthMiddleware, s3.UploadObject)
+			bucketRouter.GET("", s3Handler.GetBucket)
+			bucketRouter.GET("/*object", s3Handler.DownloadObject)
+			bucketRouter.PUT("/*object", mustAuthMiddleware, s3Handler.UploadObject)
 		}
 
 	}
 	if s.c.webdavEnable {
 		webdavRouter := router.Group("/webdav", mustAuthMiddleware)
 		{
+			webdavHandler := webdav.NewWebdavHandler(s.c.fmgr, s.c.webdavRoot, webdavRouter.BasePath())
 			for _, method := range webdav.AllowMethods {
-				webdavRouter.Handle(method, "/*all", webdav.Handler(s.c.webdavRoot, webdavRouter.BasePath()))
+				webdavRouter.Handle(method, "/*all", webdavHandler.Handler)
 			}
 		}
 	}

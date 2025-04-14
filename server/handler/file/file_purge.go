@@ -7,13 +7,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/logutil"
 	"github.com/xxxsen/common/webapi/proxyutil"
-	"github.com/xxxsen/tgfile/filemgr"
 	"go.uber.org/zap"
 )
 
-func FilePurge(c *gin.Context) {
+func (h *FileHandler) FilePurge(c *gin.Context) {
 	ctx := c.Request.Context()
-	cnt, err := filemgr.PurgeFile(ctx, nil)
+	cnt, err := h.m.PurgeFile(ctx, nil)
 	if err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("purge file failed, err:%w", err))
 		return

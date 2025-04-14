@@ -84,7 +84,7 @@ func (d *defaultFileManager) lowlevelIOStream(bkio blockio.IBlockIO, fileid uint
 	}
 }
 
-func (d *defaultFileManager) OpenOpen(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {
+func (d *defaultFileManager) OpenFile(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {
 	finfo, ok, err := d.internalGetFileInfo(ctx, fileid)
 	if err != nil {
 		return nil, err

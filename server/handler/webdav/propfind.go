@@ -13,7 +13,6 @@ import (
 
 	"github.com/xxxsen/common/webapi/proxyutil"
 	"github.com/xxxsen/tgfile/entity"
-	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/server/httpkit"
 	"github.com/xxxsen/tgfile/server/model"
 
@@ -24,7 +23,7 @@ import (
 
 // 部分代码参考: https://github.com/emersion/go-webdav
 
-func (h *webdavHandler) handlePropfind(c *gin.Context) {
+func (h *WebdavHandler) handlePropfind(c *gin.Context) {
 	ctx := c.Request.Context()
 	location := h.buildSrcPath(c)
 	var depth int = 0
@@ -51,8 +50,8 @@ func (h *webdavHandler) handlePropfind(c *gin.Context) {
 	}
 }
 
-func (h *webdavHandler) propFindEntries(ctx context.Context, location string, depth int) (*entity.FileMappingItem, []*entity.FileMappingItem, error) {
-	base, err := filemgr.ResolveFileLink(ctx, location)
+func (h *WebdavHandler) propFindEntries(ctx context.Context, location string, depth int) (*entity.FileMappingItem, []*entity.FileMappingItem, error) {
+	base, err := h.fmgr.ResolveFileLink(ctx, location)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -61,7 +60,7 @@ func (h *webdavHandler) propFindEntries(ctx context.Context, location string, de
 		return base, []*entity.FileMappingItem{}, nil
 	}
 	rs := make([]*entity.FileMappingItem, 0, 32)
-	if err := filemgr.WalkFileLink(ctx, location, func(ctx context.Context, link string, item *entity.FileMappingItem) (bool, error) {
+	if err := h.fmgr.WalkFileLink(ctx, location, func(ctx context.Context, link string, item *entity.FileMappingItem) (bool, error) {
 		rs = append(rs, item)
 		return true, nil
 	}); err != nil {
@@ -81,7 +80,7 @@ func (h *webdavHandler) propFindEntries(ctx context.Context, location string, de
 	return base, rs, nil
 }
 
-func (h *webdavHandler) generatePropfindResponse(location string, base *entity.FileMappingItem, ents []*entity.FileMappingItem) *model.Multistatus {
+func (h *WebdavHandler) generatePropfindResponse(location string, base *entity.FileMappingItem, ents []*entity.FileMappingItem) *model.Multistatus {
 	ms := &model.Multistatus{
 		XMLNS: "DAV:",
 	}
@@ -94,11 +93,11 @@ func (h *webdavHandler) generatePropfindResponse(location string, base *entity.F
 	return ms
 }
 
-func (h *webdavHandler) generatePropfindFileResponse(ms *model.Multistatus, location string, base *entity.FileMappingItem) {
+func (h *WebdavHandler) generatePropfindFileResponse(ms *model.Multistatus, location string, base *entity.FileMappingItem) {
 	ms.Responses = append(ms.Responses, h.convertFileMappingItemToResponse(path.Dir(location), base))
 }
 
-func (h *webdavHandler) generatePropfindDirResponse(ms *model.Multistatus, location string, base *entity.FileMappingItem, ents []*entity.FileMappingItem) {
+func (h *WebdavHandler) generatePropfindDirResponse(ms *model.Multistatus, location string, base *entity.FileMappingItem, ents []*entity.FileMappingItem) {
 	{ //处理父目录
 		ms.Responses = append(ms.Responses, h.convertLastDirFileMappingItemToResponse(location, base))
 	}
@@ -108,7 +107,7 @@ func (h *webdavHandler) generatePropfindDirResponse(ms *model.Multistatus, locat
 	}
 }
 
-func (h *webdavHandler) convertLastDirFileMappingItemToResponse(root string, file *entity.FileMappingItem) *model.Response {
+func (h *WebdavHandler) convertLastDirFileMappingItemToResponse(root string, file *entity.FileMappingItem) *model.Response {
 	if !strings.HasSuffix(root, "/") {
 		root += "/"
 	}
@@ -127,7 +126,7 @@ func (h *webdavHandler) convertLastDirFileMappingItemToResponse(root string, fil
 	}
 }
 
-func (h *webdavHandler) convertFileMappingItemToResponse(root string, file *entity.FileMappingItem) *model.Response {
+func (h *WebdavHandler) convertFileMappingItemToResponse(root string, file *entity.FileMappingItem) *model.Response {
 	filename := path.Join(root, file.FileName)
 	if file.IsDir && !strings.HasSuffix(filename, "/") {
 		filename += "/"

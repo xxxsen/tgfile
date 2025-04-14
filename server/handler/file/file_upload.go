@@ -6,14 +6,13 @@ import (
 	"net/http"
 
 	"github.com/xxxsen/common/webapi/proxyutil"
-	"github.com/xxxsen/tgfile/filemgr"
 
 	"github.com/xxxsen/tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
 )
 
-func FileUpload(c *gin.Context, ctx context.Context, request interface{}) {
+func (h *FileHandler) FileUpload(c *gin.Context, ctx context.Context, request interface{}) {
 	req := request.(*model.UploadFileRequest)
 	header := req.File
 	file, err := header.Open()
@@ -22,13 +21,13 @@ func FileUpload(c *gin.Context, ctx context.Context, request interface{}) {
 		return
 	}
 	defer file.Close()
-	fileid, err := filemgr.CreateFile(ctx, header.Size, file)
+	fileid, err := h.m.CreateFile(ctx, header.Size, file)
 	if err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("upload file fail, err:%w", err))
 		return
 	}
-	path, key := buildFileKeyLink(header.Filename, fileid)
-	if err := filemgr.CreateFileLink(ctx, path, fileid, header.Size, false); err != nil {
+	path, key := h.buildFileKeyLink(header.Filename, fileid)
+	if err := h.m.CreateFileLink(ctx, path, fileid, header.Size, false); err != nil {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
 		return
 	}

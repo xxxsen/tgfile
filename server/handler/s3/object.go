@@ -5,22 +5,21 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/server/handler/s3/s3base"
 	"github.com/xxxsen/tgfile/server/httpkit"
 
 	"github.com/gin-gonic/gin"
 )
 
-func DownloadObject(c *gin.Context) {
+func (h *S3Handler) DownloadObject(c *gin.Context) {
 	ctx := c.Request.Context()
 	filename := c.Request.URL.Path
-	finfo, err := filemgr.ResolveFileLink(ctx, filename)
+	finfo, err := h.fmgr.ResolveFileLink(ctx, filename)
 	if err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("get mapping info fail, err:%w", err))
 		return
 	}
-	file, err := filemgr.OpenFile(ctx, finfo.FileId)
+	file, err := h.fmgr.OpenFile(ctx, finfo.FileId)
 	if err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("open file fail, err:%w", err))
 		return
@@ -30,15 +29,15 @@ func DownloadObject(c *gin.Context) {
 	http.ServeContent(c.Writer, c.Request, finfo.FileName, time.UnixMilli(finfo.Mtime), file)
 }
 
-func UploadObject(c *gin.Context) {
+func (h *S3Handler) UploadObject(c *gin.Context) {
 	ctx := c.Request.Context()
 	filename := c.Request.URL.Path
-	fileid, err := filemgr.CreateFile(ctx, c.Request.ContentLength, c.Request.Body)
+	fileid, err := h.fmgr.CreateFile(ctx, c.Request.ContentLength, c.Request.Body)
 	if err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("do file upload fail, err:%w", err))
 		return
 	}
-	if err := filemgr.CreateFileLink(ctx, filename, fileid, c.Request.ContentLength, false); err != nil {
+	if err := h.fmgr.CreateFileLink(ctx, filename, fileid, c.Request.ContentLength, false); err != nil {
 		s3base.WriteError(c, http.StatusInternalServerError, fmt.Errorf("create mapping fail, err:%w", err))
 		return
 	}
