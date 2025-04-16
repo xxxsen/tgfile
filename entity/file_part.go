@@ -23,3 +23,13 @@ type DeleteFilePartRequest struct {
 
 type DeleteFilePartResponse struct {
 }
+
+type ListFilePartRequest struct {
+	FileId uint64
+	//Offset int32
+	//Limit  int32
+}
+
+type ListFilePartResponse struct {
+	List []*FilePartInfoItem
+}

@@ -5,13 +5,13 @@ import "context"
 type DirectoryScanCallbackFunc func(ctx context.Context, res []IDirectoryEntry) (bool, error)
 
 type IDirectoryEntry interface {
-	GetRefData() string
-	GetName() string
-	GetCtime() int64
-	GetMtime() int64
-	GetMode() uint32
-	GetSize() int64
-	GetIsDir() bool
+	RefData() string
+	Name() string
+	Ctime() int64
+	Mtime() int64
+	Mode() uint32
+	Size() int64
+	IsDir() bool
 }
 
 type IDirectory interface {

@@ -1,11 +1,14 @@
 package server
 
+import "github.com/xxxsen/tgfile/filemgr"
+
 type config struct {
 	s3Enable     bool
 	s3Buckets    []string
 	userMap      map[string]string
 	webdavEnable bool
 	webdavRoot   string
+	fmgr         filemgr.IFileManager
 }
 
 type Option func(c *config)
@@ -35,5 +38,11 @@ func WithEnableWebdav(v bool, root string) Option {
 	return func(c *config) {
 		c.webdavEnable = v
 		c.webdavRoot = root
+	}
+}
+
+func WithFileManager(mgr filemgr.IFileManager) Option {
+	return func(c *config) {
+		c.fmgr = mgr
 	}
 }

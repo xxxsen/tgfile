@@ -55,11 +55,11 @@ func TestMkdir(t *testing.T) {
 	ents, err := dav.List(ctx, "/")
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(ents))
-	assert.Equal(t, "a", ents[0].GetName())
+	assert.Equal(t, "a", ents[0].Name())
 	ents, err = dav.List(ctx, "/a/b/c/d/e/f/")
 	assert.NoError(t, err)
 	assert.Equal(t, 1, len(ents))
-	assert.Equal(t, "g", ents[0].GetName())
+	assert.Equal(t, "g", ents[0].Name())
 	info, err := dav.Stat(ctx, "/a/b/c/d/e/f")
 	assert.NoError(t, err)
 	t.Logf("info:%+v", info)
@@ -431,7 +431,7 @@ func TestMove(t *testing.T) {
 			assert.NoError(t, err)
 			ent, err := dav.Stat(ctx, link)
 			assert.NoError(t, err)
-			assert.Equal(t, item.isDir, ent.GetIsDir())
+			assert.Equal(t, item.isDir, ent.IsDir())
 		}
 		err := dav.Move(ctx, fmt.Sprintf("%s%s", testPath, item.move.src), fmt.Sprintf("%s%s", testPath, item.move.dst), item.move.overwrite)
 		assert.Equal(t, item.move.hasErr, err != nil)
@@ -446,7 +446,7 @@ func TestMove(t *testing.T) {
 			if !tt.exist {
 				continue
 			}
-			assert.Equal(t, tt.isDir, ent.GetIsDir())
+			assert.Equal(t, tt.isDir, ent.IsDir())
 		}
 	}
 }
@@ -723,7 +723,7 @@ func TestCopy(t *testing.T) {
 			assert.NoError(t, err)
 			ent, err := dav.Stat(ctx, link)
 			assert.NoError(t, err)
-			assert.Equal(t, item.isDir, ent.GetIsDir())
+			assert.Equal(t, item.isDir, ent.IsDir())
 		}
 		err := dav.Copy(ctx, fmt.Sprintf("%s%s", testPath, item.copy.src), fmt.Sprintf("%s%s", testPath, item.copy.dst), item.copy.overwrite)
 		assert.Equal(t, item.copy.hasErr, err != nil)
@@ -738,7 +738,7 @@ func TestCopy(t *testing.T) {
 			if !tt.exist {
 				continue
 			}
-			assert.Equal(t, tt.isDir, ent.GetIsDir())
+			assert.Equal(t, tt.isDir, ent.IsDir())
 		}
 	}
 }

@@ -14,17 +14,17 @@ import (
 	"github.com/xxxsen/common/idgen"
 )
 
-type IterFileMappingFunc func(ctx context.Context, name string, ent *entity.FileMappingItem) (bool, error)
-type ScanFileMappingFunc func(ctx context.Context, res []*entity.FileMappingItem) (bool, error)
+type IterFileLinkFunc func(ctx context.Context, name string, ent *entity.FileLinkMeta) (bool, error)
+type ScanFileLinkFunc func(ctx context.Context, res []*entity.FileLinkMeta) (bool, error)
 
 type IFileMappingDao interface {
-	GetFileMapping(ctx context.Context, req *entity.GetFileMappingRequest) (*entity.GetFileMappingResponse, bool, error)
-	CreateFileMapping(ctx context.Context, req *entity.CreateFileMappingRequest) (*entity.CreateFileMappingResponse, error)
-	IterFileMapping(ctx context.Context, prefix string, cb IterFileMappingFunc) error
-	RemoveFileMapping(ctx context.Context, link string) error
-	RenameFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error
-	CopyFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error
-	ScanFileMapping(ctx context.Context, batch int64, cb ScanFileMappingFunc) error
+	GetFileLinkMeta(ctx context.Context, req *entity.GetFileLinkMetaRequest) (*entity.GetFileLinkMetaResponse, bool, error)
+	CreateFileLink(ctx context.Context, req *entity.CreateFileLinkRequest) (*entity.CreateFileLinkResponse, error)
+	IterFileLink(ctx context.Context, prefix string, cb IterFileLinkFunc) error
+	RemoveFileLink(ctx context.Context, link string) error
+	RenameFileLink(ctx context.Context, src, dst string, isOverwrite bool) error
+	CopyFileLink(ctx context.Context, src, dst string, isOverwrite bool) error
+	ScanFileLink(ctx context.Context, batch int64, cb ScanFileLinkFunc) error
 }
 
 type fileMappingDaoImpl struct {
@@ -48,7 +48,7 @@ func (f *fileMappingDaoImpl) table() string {
 	return "tg_file_mapping_tab"
 }
 
-func (f *fileMappingDaoImpl) GetFileMapping(ctx context.Context, req *entity.GetFileMappingRequest) (*entity.GetFileMappingResponse, bool, error) {
+func (f *fileMappingDaoImpl) GetFileLinkMeta(ctx context.Context, req *entity.GetFileLinkMetaRequest) (*entity.GetFileLinkMetaResponse, bool, error) {
 	ent, err := f.dir.Stat(ctx, req.FileName)
 	if err != nil {
 		return nil, false, err
@@ -57,35 +57,35 @@ func (f *fileMappingDaoImpl) GetFileMapping(ctx context.Context, req *entity.Get
 	if err != nil {
 		return nil, false, err
 	}
-	return &entity.GetFileMappingResponse{Item: item}, true, nil
+	return &entity.GetFileLinkMetaResponse{Item: item}, true, nil
 }
 
-func (f *fileMappingDaoImpl) CreateFileMapping(ctx context.Context, req *entity.CreateFileMappingRequest) (*entity.CreateFileMappingResponse, error) {
+func (f *fileMappingDaoImpl) CreateFileLink(ctx context.Context, req *entity.CreateFileLinkRequest) (*entity.CreateFileLinkResponse, error) {
 	if req.IsDir {
 		if err := f.dir.Mkdir(ctx, req.FileName); err != nil {
 			return nil, err
 		}
-		return &entity.CreateFileMappingResponse{}, nil
+		return &entity.CreateFileLinkResponse{}, nil
 	}
 	if err := f.dir.Create(ctx, req.FileName, req.FileSize, fmt.Sprintf("%d", req.FileId)); err != nil {
 		return nil, err
 	}
-	return &entity.CreateFileMappingResponse{}, nil
+	return &entity.CreateFileLinkResponse{}, nil
 }
 
-func (f *fileMappingDaoImpl) RemoveFileMapping(ctx context.Context, link string) error {
+func (f *fileMappingDaoImpl) RemoveFileLink(ctx context.Context, link string) error {
 	return f.dir.Remove(ctx, link)
 }
 
-func (f *fileMappingDaoImpl) RenameFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error {
+func (f *fileMappingDaoImpl) RenameFileLink(ctx context.Context, src, dst string, isOverwrite bool) error {
 	return f.dir.Move(ctx, src, dst, isOverwrite)
 }
 
-func (f *fileMappingDaoImpl) CopyFileMapping(ctx context.Context, src, dst string, isOverwrite bool) error {
+func (f *fileMappingDaoImpl) CopyFileLink(ctx context.Context, src, dst string, isOverwrite bool) error {
 	return f.dir.Copy(ctx, src, dst, isOverwrite)
 }
 
-func (f *fileMappingDaoImpl) IterFileMapping(ctx context.Context, prefix string, cb IterFileMappingFunc) error {
+func (f *fileMappingDaoImpl) IterFileLink(ctx context.Context, prefix string, cb IterFileLinkFunc) error {
 	ents, err := f.dir.List(ctx, prefix)
 	if err != nil {
 		return err
@@ -95,7 +95,7 @@ func (f *fileMappingDaoImpl) IterFileMapping(ctx context.Context, prefix string,
 		if err != nil {
 			return err
 		}
-		next, err := cb(ctx, path.Join(prefix, item.GetName()), cbitem)
+		next, err := cb(ctx, path.Join(prefix, item.Name()), cbitem)
 		if err != nil {
 			return err
 		}
@@ -106,18 +106,18 @@ func (f *fileMappingDaoImpl) IterFileMapping(ctx context.Context, prefix string,
 	return nil
 }
 
-func (f *fileMappingDaoImpl) directoryEntryToFileMappingItem(item directory.IDirectoryEntry) (*entity.FileMappingItem, error) {
-	rs := &entity.FileMappingItem{
-		FileName: item.GetName(),
+func (f *fileMappingDaoImpl) directoryEntryToFileMappingItem(item directory.IDirectoryEntry) (*entity.FileLinkMeta, error) {
+	rs := &entity.FileLinkMeta{
+		FileName: item.Name(),
 		FileId:   0,
-		FileSize: item.GetSize(),
-		Mode:     item.GetMode(),
-		Ctime:    item.GetCtime(),
-		Mtime:    item.GetMtime(),
-		IsDir:    item.GetIsDir(),
+		FileSize: item.Size(),
+		Mode:     item.Mode(),
+		Ctime:    item.Ctime(),
+		Mtime:    item.Mtime(),
+		IsDir:    item.IsDir(),
 	}
 	if !rs.IsDir {
-		fid, err := strconv.ParseUint(item.GetRefData(), 10, 64)
+		fid, err := strconv.ParseUint(item.RefData(), 10, 64)
 		if err != nil {
 			return nil, err
 		}
@@ -126,9 +126,9 @@ func (f *fileMappingDaoImpl) directoryEntryToFileMappingItem(item directory.IDir
 	return rs, nil
 }
 
-func (f *fileMappingDaoImpl) ScanFileMapping(ctx context.Context, batch int64, cb ScanFileMappingFunc) error {
+func (f *fileMappingDaoImpl) ScanFileLink(ctx context.Context, batch int64, cb ScanFileLinkFunc) error {
 	return f.dir.Scan(ctx, batch, func(ctx context.Context, res []directory.IDirectoryEntry) (bool, error) {
-		cbitems := make([]*entity.FileMappingItem, 0, len(res))
+		cbitems := make([]*entity.FileLinkMeta, 0, len(res))
 		for _, item := range res {
 			cbitem, err := f.directoryEntryToFileMappingItem(item)
 			if err != nil {

@@ -38,7 +38,8 @@ func main() {
 	if err := db.InitDB(c.DBFile); err != nil {
 		logger.Fatal("init media db fail", zap.Error(err))
 	}
-	if err := initStorage(c); err != nil {
+	fmgr, err := buildFileManager(c)
+	if err != nil {
 		logger.Fatal("init storage fail", zap.Error(err))
 	}
 	logger.Info("current file protocol feature")
@@ -51,6 +52,7 @@ func main() {
 		server.WithEnableS3(c.S3.Enable, c.S3.Bucket),
 		server.WithUser(c.UserInfo),
 		server.WithEnableWebdav(c.Webdav.Enable, c.Webdav.Root),
+		server.WithFileManager(fmgr),
 	)
 	if err != nil {
 		logger.Fatal("init server fail", zap.Error(err))
@@ -61,10 +63,10 @@ func main() {
 	}
 }
 
-func initStorage(c *config.Config) error {
+func buildFileManager(c *config.Config) (filemgr.IFileManager, error) {
 	blkio, err := blockio.Create(c.BotKind, c.BotInfo)
 	if err != nil {
-		return fmt.Errorf("init block io failed, kind:%s, err:%w", c.BotKind, err)
+		return nil, fmt.Errorf("init block io failed, kind:%s, err:%w", c.BotKind, err)
 	}
 	blkio = blockio.NewRotateIO(blkio, int(c.RotateStream))
 	cc := &filemgr.FileIOCacheConfig{
@@ -78,9 +80,8 @@ func initStorage(c *config.Config) error {
 	}
 	ioc, err := filemgr.NewFileIOCache(cc)
 	if err != nil {
-		return fmt.Errorf("create file io cache failed, err:%w", err)
+		return nil, fmt.Errorf("create file io cache failed, err:%w", err)
 	}
 	fmgr := filemgr.NewFileManager(db.GetClient(), blkio, ioc)
-	filemgr.SetFileManagerImpl(fmgr)
-	return nil
+	return fmgr, nil
 }

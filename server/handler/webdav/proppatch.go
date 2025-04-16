@@ -9,6 +9,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func (h *webdavHandler) handlePropPatch(c *gin.Context) {
+func (h *WebdavHandler) handlePropPatch(c *gin.Context) {
 	proxyutil.FailStatus(c, http.StatusForbidden, fmt.Errorf("no impl"))
 }

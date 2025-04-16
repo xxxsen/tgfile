@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/xxxsen/common/webapi/proxyutil"
-	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
@@ -17,7 +16,7 @@ import (
 	"go.uber.org/zap"
 )
 
-func Import(c *gin.Context, ctx context.Context, request interface{}) {
+func (h *BackupHandler) Import(c *gin.Context, ctx context.Context, request interface{}) {
 	req := request.(*model.ImportRequest)
 	header := req.File
 	file, err := header.Open()
@@ -37,7 +36,7 @@ func Import(c *gin.Context, ctx context.Context, request interface{}) {
 	var containStatisticFile bool
 	for {
 		// 读取下一个文件头
-		h, err := tarReader.Next()
+		hdr, err := tarReader.Next()
 		if err == io.EOF {
 			break // 读取完毕
 		}
@@ -46,19 +45,19 @@ func Import(c *gin.Context, ctx context.Context, request interface{}) {
 			break
 		}
 		// 仅处理普通文件
-		if h.Typeflag != tar.TypeReg {
+		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-		if h.Name == defaultStatisticFileName {
+		if hdr.Name == defaultStatisticFileName {
 			containStatisticFile = true
 			continue
 		}
 
-		if err := importOneFile(ctx, h, tarReader); err != nil {
-			retErr = fmt.Errorf("import failed, name:%s, size:%d, err:%w", h.Name, h.Size, err)
+		if err := h.importOneFile(ctx, hdr, tarReader); err != nil {
+			retErr = fmt.Errorf("import failed, name:%s, size:%d, err:%w", hdr.Name, hdr.Size, err)
 			break
 		}
-		logutil.GetLogger(ctx).Info("import one file succ", zap.String("name", h.Name), zap.Int64("size", h.Size))
+		logutil.GetLogger(ctx).Info("import one file succ", zap.String("name", hdr.Name), zap.Int64("size", hdr.Size))
 	}
 	if retErr != nil {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("import file failed, err:%w", retErr))
@@ -71,13 +70,13 @@ func Import(c *gin.Context, ctx context.Context, request interface{}) {
 	proxyutil.SuccessJson(c, map[string]interface{}{})
 }
 
-func importOneFile(ctx context.Context, h *tar.Header, r *tar.Reader) error {
-	limitR := io.LimitReader(r, h.Size)
-	fileid, err := filemgr.Create(ctx, h.Size, limitR)
+func (h *BackupHandler) importOneFile(ctx context.Context, hdr *tar.Header, r *tar.Reader) error {
+	limitR := io.LimitReader(r, hdr.Size)
+	fileid, err := h.fmgr.CreateFile(ctx, hdr.Size, limitR)
 	if err != nil {
 		return fmt.Errorf("create file failed, err:%w", err)
 	}
-	if err := filemgr.CreateLink(ctx, h.Name, fileid, h.Size, false); err != nil {
+	if err := h.fmgr.CreateFileLink(ctx, hdr.Name, fileid, hdr.Size, false); err != nil {
 		return fmt.Errorf("create link failed, err:%w", err)
 	}
 	return nil

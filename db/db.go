@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS tg_file_tab (
     file_state INTEGER NOT NULL,
     ctime       INTEGER NOT NULL,
     mtime       INTEGER NOT NULL,
+	extinfo     TEXT NOT NULL,
     UNIQUE (file_id)
 );
 		`,

@@ -18,7 +18,7 @@ import (
 )
 
 // Export 将s3数据导出
-func Export(c *gin.Context) {
+func (h *BackupHandler) Export(c *gin.Context) {
 	ctx := c.Request.Context()
 	// mdzz, 加了文件头了, 火狐直接给解压了...
 	// c.Writer.Header().Set("Content-Encoding", "gzip")
@@ -30,18 +30,18 @@ func Export(c *gin.Context) {
 	defer tw.Close()
 	st := &model.StatisticInfo{}
 	start := time.Now()
-	if err := fs.WalkDir(filemgr.AsFileSystem(ctx), "/", func(path string, d fs.DirEntry, err error) error {
+	if err := fs.WalkDir(filemgr.ToFileSystem(ctx, h.fmgr), "/", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		ent, err := filemgr.ResolveLink(ctx, path)
+		ent, err := h.fmgr.StatFileLink(ctx, path)
 		if err != nil {
 			return err
 		}
-		stream, err := filemgr.Open(ctx, ent.FileId)
+		stream, err := h.fmgr.OpenFile(ctx, ent.FileId)
 		if err != nil {
 			return err
 		}
@@ -68,14 +68,14 @@ func Export(c *gin.Context) {
 	}
 	cost := time.Since(start)
 	st.TimeCost = cost.Milliseconds()
-	if err := writeStatistic(tw, st); err != nil {
+	if err := h.writeStatistic(tw, st); err != nil {
 		logutil.GetLogger(ctx).Error("write export statistic info failed", zap.Error(err))
 		return
 	}
 	logutil.GetLogger(ctx).Info("iter link and export succ")
 }
 
-func writeStatistic(w *tar.Writer, st *model.StatisticInfo) error {
+func (h *BackupHandler) writeStatistic(w *tar.Writer, st *model.StatisticInfo) error {
 	raw, err := json.Marshal(st)
 	if err != nil {
 		return err

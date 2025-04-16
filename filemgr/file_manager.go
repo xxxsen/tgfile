@@ -7,73 +7,30 @@ import (
 	"github.com/xxxsen/tgfile/entity"
 )
 
-type IterLinkFunc func(ctx context.Context, link string, item *entity.FileMappingItem) (bool, error)
+type WalkLinkFunc func(ctx context.Context, link string, item *entity.FileLinkMeta) (bool, error)
 
-var defaultFileMgr IFileManager
+type IFileStorage interface {
+	//TODO: 增加一个StatFile 方法, 用于返回文件信息
+	//TODO: 对于CreateFile接口, 增加FileMeta返回
+	StatFile(ctx context.Context, fileid uint64) (*entity.FileMeta, error)
+	OpenFile(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error)
+	CreateFile(ctx context.Context, size int64, r io.Reader) (uint64, error)
+	CreateFileDraft(ctx context.Context, size int64) (uint64, int64, error)
+	CreateFilePart(ctx context.Context, fileid uint64, partid int64, r io.Reader) error
+	FinishFileCreate(ctx context.Context, fileid uint64) error
+	PurgeFile(ctx context.Context, before *int64) (int64, error)
+}
+
+type ILinkManager interface {
+	CreateFileLink(ctx context.Context, link string, fileid uint64, size int64, isDir bool) error
+	StatFileLink(ctx context.Context, link string) (*entity.FileLinkMeta, error)
+	WalkFileLink(ctx context.Context, prefix string, cb WalkLinkFunc) error
+	RemoveFileLink(ctx context.Context, link string) error
+	RenameFileLink(ctx context.Context, src, dst string, isOverwrite bool) error
+	CopyFileLink(ctx context.Context, src, dst string, isOverwrite bool) error
+}
 
 type IFileManager interface {
-	Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error)
-	Create(ctx context.Context, size int64, r io.Reader) (uint64, error)
-	CreateDraft(ctx context.Context, size int64) (uint64, int64, error)
-	CreatePart(ctx context.Context, fileid uint64, partid int64, r io.Reader) error
-	FinishCreate(ctx context.Context, fileid uint64) error
-	CreateLink(ctx context.Context, link string, fileid uint64, size int64, isDir bool) error
-	ResolveLink(ctx context.Context, link string) (*entity.FileMappingItem, error)
-	IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error
-	RemoveLink(ctx context.Context, link string) error
-	RenameLink(ctx context.Context, src, dst string, isOverwrite bool) error
-	CopyLink(ctx context.Context, src, dst string, isOverwrite bool) error
-	Purge(ctx context.Context, before *int64) (int64, error)
-}
-
-func SetFileManagerImpl(mgr IFileManager) {
-	defaultFileMgr = mgr
-}
-
-func Open(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {
-	return defaultFileMgr.Open(ctx, fileid)
-}
-
-func Create(ctx context.Context, size int64, r io.Reader) (uint64, error) {
-	return defaultFileMgr.Create(ctx, size, r)
-}
-
-func CreateDraft(ctx context.Context, size int64) (uint64, int64, error) {
-	return defaultFileMgr.CreateDraft(ctx, size)
-}
-
-func CreatePart(ctx context.Context, fileid uint64, partid int64, r io.Reader) error {
-	return defaultFileMgr.CreatePart(ctx, fileid, partid, r)
-}
-
-func FinishCreate(ctx context.Context, fileid uint64) error {
-	return defaultFileMgr.FinishCreate(ctx, fileid)
-}
-
-func CreateLink(ctx context.Context, link string, fileid uint64, size int64, isDir bool) error {
-	return defaultFileMgr.CreateLink(ctx, link, fileid, size, isDir)
-}
-
-func ResolveLink(ctx context.Context, link string) (*entity.FileMappingItem, error) {
-	return defaultFileMgr.ResolveLink(ctx, link)
-}
-
-func RenameLink(ctx context.Context, src string, dst string, isOverwrite bool) error {
-	return defaultFileMgr.RenameLink(ctx, src, dst, isOverwrite)
-}
-
-func RemoveLink(ctx context.Context, link string) error {
-	return defaultFileMgr.RemoveLink(ctx, link)
-}
-
-func CopyLink(ctx context.Context, src, dst string, isOverwrite bool) error {
-	return defaultFileMgr.CopyLink(ctx, src, dst, isOverwrite)
-}
-
-func IterLink(ctx context.Context, prefix string, cb IterLinkFunc) error {
-	return defaultFileMgr.IterLink(ctx, prefix, cb)
-}
-
-func Purge(ctx context.Context, before *int64) (int64, error) {
-	return defaultFileMgr.Purge(ctx, before)
+	IFileStorage
+	ILinkManager
 }

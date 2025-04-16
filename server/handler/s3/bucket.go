@@ -6,6 +6,6 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func GetBucket(c *gin.Context) {
+func (h *S3Handler) GetBucket(c *gin.Context) {
 	s3base.SimpleReply(c)
 }
