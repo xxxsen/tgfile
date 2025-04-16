@@ -2,6 +2,9 @@ package filemgr
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -124,7 +127,19 @@ func (d *defaultFileManager) CreateFilePart(ctx context.Context, fileid uint64, 
 }
 
 func (d *defaultFileManager) FinishFileCreate(ctx context.Context, fileid uint64) error {
-	if err := d.internalFinishCreateFile(ctx, fileid); err != nil {
+	//从filepart list中抽取所有的filekey, 基于filekey构建md5
+	fps, err := d.filePartDao.ListFilePart(ctx, &entity.ListFilePartRequest{
+		FileId: fileid,
+	})
+	if err != nil {
+		return err
+	}
+	h := md5.New()
+	for _, item := range fps.List {
+		_, _ = h.Write([]byte(item.FileKey))
+	}
+	md5v := hex.EncodeToString(h.Sum(nil))
+	if err := d.internalFinishCreateFile(ctx, fileid, md5v); err != nil {
 		return fmt.Errorf("finish create file failed, err:%w", err)
 	}
 	return nil
@@ -136,6 +151,8 @@ func (d *defaultFileManager) CreateFile(ctx context.Context, size int64, reader 
 	if err != nil {
 		return 0, fmt.Errorf("create file draft failed, err:%w", err)
 	}
+	hashWriter := md5.New()
+	reader = io.TeeReader(reader, hashWriter)
 	for i := 0; i < blkcnt; i++ {
 		r := io.LimitReader(reader, d.bkio.MaxFileSize())
 		fileKey, err := d.bkio.Upload(ctx, r)
@@ -146,8 +163,8 @@ func (d *defaultFileManager) CreateFile(ctx context.Context, size int64, reader 
 			return 0, fmt.Errorf("create part record failed, err:%w", err)
 		}
 	}
-
-	if err := d.internalFinishCreateFile(ctx, fileid); err != nil {
+	md5s := hex.EncodeToString(hashWriter.Sum(nil))
+	if err := d.internalFinishCreateFile(ctx, fileid, md5s); err != nil {
 		return 0, fmt.Errorf("finish create file failed, err:%w", err)
 	}
 	return fileid, nil
@@ -175,9 +192,18 @@ func (d *defaultFileManager) internalCreateFilePart(ctx context.Context, fileid 
 	return nil
 }
 
-func (d *defaultFileManager) internalFinishCreateFile(ctx context.Context, fileid uint64) error {
+func (d *defaultFileManager) internalFinishCreateFile(ctx context.Context, fileid uint64, md5s string) error {
+	ext := &entity.FileExtInfo{
+		Md5: md5s,
+	}
+	raw, err := json.Marshal(ext)
+	if err != nil {
+		return err
+	}
+
 	if _, err := d.fileDao.MarkFileReady(ctx, &entity.MarkFileReadyRequest{
-		FileID: fileid,
+		FileID:  fileid,
+		Extinfo: string(raw),
 	}); err != nil {
 		return err
 	}

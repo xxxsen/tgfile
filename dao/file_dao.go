@@ -48,6 +48,7 @@ func (f *fileDaoImpl) CreateFileDraft(ctx context.Context, req *entity.CreateFil
 			"ctime":           now,
 			"mtime":           now,
 			"file_state":      constant.FileStateInit,
+			"extinfo":         "{}",
 		},
 	}
 	sql, args, err := builder.BuildInsert(f.table(), data)
@@ -69,6 +70,7 @@ func (f *fileDaoImpl) MarkFileReady(ctx context.Context, req *entity.MarkFileRea
 	update := map[string]interface{}{
 		"file_state": constant.FileStateReady,
 		"mtime":      time.Now().UnixMilli(),
+		"extinfo":    req.Extinfo,
 	}
 	sql, args, err := builder.BuildUpdate(f.table(), where, update)
 	if err != nil {

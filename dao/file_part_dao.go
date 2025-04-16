@@ -16,6 +16,7 @@ type IFilePartDao interface {
 	CreateFilePart(ctx context.Context, req *entity.CreateFilePartRequest) (*entity.CreateFilePartResponse, error)
 	GetFilePartInfo(ctx context.Context, req *entity.GetFilePartInfoRequest) (*entity.GetFilePartInfoResponse, error)
 	DeleteFilePart(ctx context.Context, req *entity.DeleteFilePartRequest) (*entity.DeleteFilePartResponse, error)
+	ListFilePart(ctx context.Context, req *entity.ListFilePartRequest) (*entity.ListFilePartResponse, error)
 }
 
 type filePartDaoImpl struct {
@@ -103,4 +104,17 @@ func (f *filePartDaoImpl) DeleteFilePart(ctx context.Context, req *entity.Delete
 		return nil, err
 	}
 	return &entity.DeleteFilePartResponse{}, nil
+}
+
+func (f *filePartDaoImpl) ListFilePart(ctx context.Context, req *entity.ListFilePartRequest) (*entity.ListFilePartResponse, error) {
+	where := map[string]interface{}{
+		"file_id": req.FileId,
+		//"_limit":   []uint{uint(req.Offset), uint(req.Limit)}, //不折腾, 简单做, 正常来说都不会有性能问题
+		"_orderby": "file_part_id asc",
+	}
+	rs := make([]*entity.FilePartInfoItem, 0, 32)
+	if err := dbkit.SimpleQuery(ctx, f.dbc, f.table(), where, &rs, dbkit.ScanWithTagName("json")); err != nil {
+		return nil, err
+	}
+	return &entity.ListFilePartResponse{List: rs}, nil
 }
