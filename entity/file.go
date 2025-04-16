@@ -49,11 +49,12 @@ type FileExtInfo struct {
 
 func (f *FileInfoItem) ToFileMeta() *FileMeta {
 	fm := &FileMeta{
-		FileId:    f.FileId,
-		FileSize:  f.FileSize,
-		Ctime:     f.Ctime,
-		Mtime:     f.Mtime,
-		FileState: f.FileState,
+		FileId:        f.FileId,
+		FileSize:      f.FileSize,
+		Ctime:         f.Ctime,
+		Mtime:         f.Mtime,
+		FileState:     f.FileState,
+		FilePartCount: f.FilePartCount,
 	}
 	if len(f.Extinfo) == 0 || f.Extinfo == "{}" {
 		return fm
@@ -79,10 +80,11 @@ type DeleteFileResponse struct {
 }
 
 type FileMeta struct {
-	FileId    uint64
-	FileSize  int64
-	Ctime     int64
-	Mtime     int64
-	FileState uint32
-	Md5Sum    string
+	FileId        uint64
+	FileSize      int64
+	Ctime         int64
+	Mtime         int64
+	FileState     uint32
+	Md5Sum        string
+	FilePartCount int32
 }

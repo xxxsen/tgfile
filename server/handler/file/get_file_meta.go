@@ -35,13 +35,20 @@ func (h *FileHandler) GetMetaInfo(c *gin.Context) {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("read file info fail, err:%w", err))
 		return
 	}
+	fidinfo, err := h.m.StatFile(ctx, info.FileId)
+	if err != nil {
+		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("read file info fail, err:%w", err))
+		return
+	}
 	proxyutil.SuccessJson(c, &model.GetFileInfoResponse{
 		Item: &model.FileInfoItem{
-			Key:      key,
-			Exist:    true,
-			FileSize: info.FileSize,
-			Ctime:    info.Ctime,
-			Mtime:    info.Mtime,
+			Key:           key,
+			Exist:         true,
+			FileSize:      info.FileSize,
+			Ctime:         info.Ctime,
+			Mtime:         info.Mtime,
+			Md5:           fidinfo.Md5Sum,
+			FilePartCount: int32(fidinfo.FilePartCount),
 		},
 	})
 }

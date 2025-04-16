@@ -87,6 +87,17 @@ func (d *defaultFileManager) lowlevelIOStream(bkio blockio.IBlockIO, fileid uint
 	}
 }
 
+func (d *defaultFileManager) StatFile(ctx context.Context, fileid uint64) (*entity.FileMeta, error) {
+	finfo, ok, err := d.internalGetFileInfo(ctx, fileid)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, os.ErrNotExist
+	}
+	return finfo.ToFileMeta(), nil
+}
+
 func (d *defaultFileManager) OpenFile(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {
 	finfo, ok, err := d.internalGetFileInfo(ctx, fileid)
 	if err != nil {

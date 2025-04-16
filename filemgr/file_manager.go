@@ -12,6 +12,7 @@ type WalkLinkFunc func(ctx context.Context, link string, item *entity.FileLinkMe
 type IFileStorage interface {
 	//TODO: 增加一个StatFile 方法, 用于返回文件信息
 	//TODO: 对于CreateFile接口, 增加FileMeta返回
+	StatFile(ctx context.Context, fileid uint64) (*entity.FileMeta, error)
 	OpenFile(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error)
 	CreateFile(ctx context.Context, size int64, r io.Reader) (uint64, error)
 	CreateFileDraft(ctx context.Context, size int64) (uint64, int64, error)
