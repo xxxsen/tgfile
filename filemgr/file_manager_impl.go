@@ -205,17 +205,6 @@ func (d *defaultFileManager) CreateFile(ctx context.Context, size int64, reader 
 	return fileid, nil
 }
 
-func (d *defaultFileManager) internalCreateFileDraft(ctx context.Context, filesize int64, filepartcount int32) (uint64, error) {
-	rs, err := d.fileDao.CreateFileDraft(ctx, &entity.CreateFileDraftRequest{
-		FileSize:      filesize,
-		FilePartCount: filepartcount,
-	})
-	if err != nil {
-		return 0, err
-	}
-	return rs.FileId, nil
-}
-
 func (d *defaultFileManager) internalGetFileInfo(ctx context.Context, fileid uint64) (*entity.FileInfoItem, bool, error) {
 	rs, err := d.fileDao.GetFileInfo(ctx, &entity.GetFileInfoRequest{
 		FileIds: []uint64{fileid},
