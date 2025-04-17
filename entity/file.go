@@ -20,9 +20,10 @@ type MarkFileReadyResponse struct {
 }
 
 type CreateFilePartRequest struct {
-	FileId     uint64
-	FilePartId int32
-	FileKey    string //真实的, 用于换取文件信息的key
+	FileId      uint64
+	FilePartId  int32
+	FileKey     string //真实的, 用于换取文件信息的key
+	FilePartMd5 string
 }
 
 type CreateFilePartResponse struct {

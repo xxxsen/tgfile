@@ -119,20 +119,31 @@ func (d *defaultFileManager) internalCalcFileBlockCount(sz uint64, blksz uint64)
 
 func (d *defaultFileManager) CreateFileDraft(ctx context.Context, size int64) (uint64, int64, error) {
 	blkcnt := d.internalCalcFileBlockCount(uint64(size), uint64(d.bkio.MaxFileSize()))
-	fileid, err := d.internalCreateFileDraft(ctx, size, int32(blkcnt))
+
+	rs, err := d.fileDao.CreateFileDraft(ctx, &entity.CreateFileDraftRequest{
+		FileSize:      size,
+		FilePartCount: int32(blkcnt),
+	})
 	if err != nil {
-		return 0, 0, fmt.Errorf("create file draft failed, err:%w", err)
+		return 0, 0, err
 	}
-	return fileid, d.bkio.MaxFileSize(), nil
+	return rs.FileId, d.bkio.MaxFileSize(), nil
 }
 
 func (d *defaultFileManager) CreateFilePart(ctx context.Context, fileid uint64, partid int64, r io.Reader) error {
+	md5v := md5.New()
+	r = io.TeeReader(r, md5v)
 	fileKey, err := d.bkio.Upload(ctx, r)
 	if err != nil {
 		return fmt.Errorf("upload part failed, err:%w", err)
 	}
-	if err := d.internalCreateFilePart(ctx, fileid, int32(partid), fileKey); err != nil {
-		return fmt.Errorf("create part record failed, err:%w", err)
+	if _, err := d.filePartDao.CreateFilePart(ctx, &entity.CreateFilePartRequest{
+		FileId:      fileid,
+		FilePartId:  int32(partid),
+		FileKey:     fileKey,
+		FilePartMd5: hex.EncodeToString(md5v.Sum(nil)),
+	}); err != nil {
+		return err
 	}
 	return nil
 }
@@ -145,37 +156,50 @@ func (d *defaultFileManager) FinishFileCreate(ctx context.Context, fileid uint64
 	if err != nil {
 		return err
 	}
-	h := md5.New()
-	for _, item := range fps.List {
-		_, _ = h.Write([]byte(item.FileKey))
+	var md5v = ""
+	if len(fps.List) == 1 {
+		md5v = fps.List[0].FilePartMd5
 	}
-	md5v := hex.EncodeToString(h.Sum(nil))
-	if err := d.internalFinishCreateFile(ctx, fileid, md5v); err != nil {
-		return fmt.Errorf("finish create file failed, err:%w", err)
+	if len(fps.List) > 1 {
+		h := md5.New()
+		for _, item := range fps.List {
+			_, _ = h.Write([]byte(item.FilePartMd5))
+		}
+		md5v = hex.EncodeToString(h.Sum(nil))
+	}
+	ext := &entity.FileExtInfo{
+		Md5: md5v,
+	}
+	raw, err := json.Marshal(ext)
+	if err != nil {
+		return err
+	}
+
+	if _, err := d.fileDao.MarkFileReady(ctx, &entity.MarkFileReadyRequest{
+		FileID:  fileid,
+		Extinfo: string(raw),
+	}); err != nil {
+		return err
 	}
 	return nil
 }
 
 func (d *defaultFileManager) CreateFile(ctx context.Context, size int64, reader io.Reader) (uint64, error) {
-	blkcnt := d.internalCalcFileBlockCount(uint64(size), uint64(d.bkio.MaxFileSize()))
-	fileid, err := d.internalCreateFileDraft(ctx, size, int32(blkcnt))
+	fileid, blksize, err := d.CreateFileDraft(ctx, size)
 	if err != nil {
-		return 0, fmt.Errorf("create file draft failed, err:%w", err)
+		return 0, err
 	}
-	hashWriter := md5.New()
-	reader = io.TeeReader(reader, hashWriter)
+	if blksize == 0 {
+		return 0, fmt.Errorf("invalid block size:0")
+	}
+	blkcnt := d.internalCalcFileBlockCount(uint64(size), uint64(blksize))
 	for i := 0; i < blkcnt; i++ {
 		r := io.LimitReader(reader, d.bkio.MaxFileSize())
-		fileKey, err := d.bkio.Upload(ctx, r)
-		if err != nil {
-			return 0, fmt.Errorf("upload part failed, err:%w", err)
-		}
-		if err := d.internalCreateFilePart(ctx, fileid, int32(i), fileKey); err != nil {
+		if err := d.CreateFilePart(ctx, fileid, int64(i), r); err != nil {
 			return 0, fmt.Errorf("create part record failed, err:%w", err)
 		}
 	}
-	md5s := hex.EncodeToString(hashWriter.Sum(nil))
-	if err := d.internalFinishCreateFile(ctx, fileid, md5s); err != nil {
+	if err := d.FinishFileCreate(ctx, fileid); err != nil {
 		return 0, fmt.Errorf("finish create file failed, err:%w", err)
 	}
 	return fileid, nil
@@ -190,35 +214,6 @@ func (d *defaultFileManager) internalCreateFileDraft(ctx context.Context, filesi
 		return 0, err
 	}
 	return rs.FileId, nil
-}
-
-func (d *defaultFileManager) internalCreateFilePart(ctx context.Context, fileid uint64, pidx int32, filekey string) error {
-	if _, err := d.filePartDao.CreateFilePart(ctx, &entity.CreateFilePartRequest{
-		FileId:     fileid,
-		FilePartId: pidx,
-		FileKey:    filekey,
-	}); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (d *defaultFileManager) internalFinishCreateFile(ctx context.Context, fileid uint64, md5s string) error {
-	ext := &entity.FileExtInfo{
-		Md5: md5s,
-	}
-	raw, err := json.Marshal(ext)
-	if err != nil {
-		return err
-	}
-
-	if _, err := d.fileDao.MarkFileReady(ctx, &entity.MarkFileReadyRequest{
-		FileID:  fileid,
-		Extinfo: string(raw),
-	}); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (d *defaultFileManager) internalGetFileInfo(ctx context.Context, fileid uint64) (*entity.FileInfoItem, bool, error) {

@@ -37,11 +37,12 @@ func (f *filePartDaoImpl) CreateFilePart(ctx context.Context, req *entity.Create
 	now := time.Now().UnixMilli()
 	data := []map[string]interface{}{
 		{
-			"file_id":      req.FileId,
-			"file_part_id": req.FilePartId,
-			"ctime":        now,
-			"mtime":        now,
-			"file_key":     req.FileKey,
+			"file_id":       req.FileId,
+			"file_part_id":  req.FilePartId,
+			"ctime":         now,
+			"mtime":         now,
+			"file_key":      req.FileKey,
+			"file_part_md5": req.FilePartMd5,
 		},
 	}
 	sql, args, err := builder.BuildInsert(f.table(), data)
