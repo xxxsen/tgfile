@@ -32,7 +32,7 @@ tgfile
 			"hackmd"
 		]
 	},
-	"webdav": { //启用webdav支持, 实验性, 不一定ok
+	"webdav": { //启用webdav支持
 		"enable": true,
 		"root": "/"    //指定映射到底层存储的路径, 与接口上的'/webdav'不是一个东西
 	}
