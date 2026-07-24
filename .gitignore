@@ -1,3 +1,5 @@
 .vscode
 __debug_bin*
 *.tar.gz
+/.dev-data
+/tgfile

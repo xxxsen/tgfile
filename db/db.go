@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/xxxsen/common/database"
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS tg_file_part_tab (
     file_id       INTEGER NOT NULL,
     file_part_id  INTEGER NOT NULL,
     file_key TEXT NOT NULL,
+    file_part_md5 TEXT NOT NULL DEFAULT '',
     ctime         INTEGER NOT NULL,
     mtime         INTEGER NOT NULL,
     UNIQUE (file_id, file_part_id)
@@ -76,6 +78,44 @@ CREATE TABLE IF NOT EXISTS tg_file_mapping_tab (
 	},
 }
 
+func ensureFilePartMD5Column(ctx context.Context, db database.IDatabase) error {
+	rows, err := db.QueryContext(ctx, "PRAGMA table_info(tg_file_part_tab);")
+	if err != nil {
+		return fmt.Errorf("inspect tg_file_part_tab failed: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			columnID     int
+			name         string
+			columnType   string
+			notNull      int
+			defaultValue sql.NullString
+			primaryKey   int
+		)
+		if err := rows.Scan(
+			&columnID, &name, &columnType, &notNull, &defaultValue, &primaryKey,
+		); err != nil {
+			return fmt.Errorf("scan tg_file_part_tab schema failed: %w", err)
+		}
+		if name == "file_part_md5" {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read tg_file_part_tab schema failed: %w", err)
+	}
+
+	if _, err := db.ExecContext(
+		ctx,
+		"ALTER TABLE tg_file_part_tab ADD COLUMN file_part_md5 TEXT NOT NULL DEFAULT '';",
+	); err != nil {
+		return fmt.Errorf("add tg_file_part_tab.file_part_md5 failed: %w", err)
+	}
+	return nil
+}
+
 func InitDB(file string) error {
 	ctx := context.Background()
 	db, err := sqlite.New(file, func(db database.IDatabase) error {
@@ -84,7 +124,7 @@ func InitDB(file string) error {
 				return fmt.Errorf("init sql failed, sql:%s, err:%w", item.name, err)
 			}
 		}
-		return nil
+		return ensureFilePartMD5Column(ctx, db)
 	})
 	if err != nil {
 		return err

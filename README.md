@@ -111,6 +111,23 @@ tgc upload --file=./README.md
 
 上传完成后, 会返回一个链接, 通过链接即可下载刚刚上传的文件。
 
+### 本地开发
+
+安装 Go 1.25 后，可通过下面的命令快速启动本地测试服务器：
+
+```shell
+make dev
+```
+
+默认服务地址为 `http://127.0.0.1:9901`，S3 bucket 为 `hackmd`，开发账号为
+`dev / dev-secret`。开发服务使用 `.dev-data/` 下独立的 SQLite 数据库和本地文件块，
+不会连接 Telegram，也不会读取或修改正式配置。按 `Ctrl+C` 会停止服务，开发数据会保留。
+
+可以通过 `TGFILE_DEV_HOST`、`TGFILE_DEV_PORT`、`TGFILE_DEV_DATA_DIR`、`TGFILE_DEV_BUCKET`、
+`TGFILE_DEV_USERNAME` 和 `TGFILE_DEV_PASSWORD` 覆盖默认值。也可以执行
+`make dev CONFIG=path/to/config.json` 使用自定义配置；此时若配置使用了其他端口，需要同时
+设置 `TGFILE_DEV_PORT`，以便启动脚本进行就绪检测。
+
 ## 接口信息
 
 **基础接口**
