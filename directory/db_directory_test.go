@@ -79,6 +79,15 @@ func TestCreateFile(t *testing.T) {
 	}
 }
 
+func TestStatMissingDoesNotCreateParentDirectories(t *testing.T) {
+	ctx := context.Background()
+	_, err := dav.Stat(ctx, "/stat_read_only/nested/missing.pdf")
+	assert.ErrorIs(t, err, os.ErrNotExist)
+
+	_, err = dav.Stat(ctx, "/stat_read_only")
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
 func TestListDir(t *testing.T) {
 	ctx := context.Background()
 	for i := 0; i < 1000; i++ {

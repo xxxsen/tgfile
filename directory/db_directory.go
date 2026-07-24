@@ -617,7 +617,7 @@ func (e *dbDirectory) Stat(ctx context.Context, filename string) (IDirectoryEntr
 		return ent.ToDirectoyEntry(), nil
 	}
 	var rs IDirectoryEntry
-	if err := e.onSelectDir(ctx, dir, true, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
+	if err := e.onSelectDir(ctx, dir, false, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
 		t, ok, err := e.txSearchEntry(ctx, tx, parentid, name)
 		if err != nil {
 			return err

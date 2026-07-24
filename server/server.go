@@ -76,6 +76,7 @@ func (s *Server) initAPI(router *gin.RouterGroup) {
 			bucketRouter := router.Group(fmt.Sprintf("/%s", bk))
 			bucketRouter.GET("", s3Handler.GetBucket)
 			bucketRouter.GET("/*object", s3Handler.DownloadObject)
+			bucketRouter.HEAD("/*object", s3Handler.HeadObject)
 			bucketRouter.PUT("/*object", mustAuthMiddleware, s3Handler.UploadObject)
 		}
 

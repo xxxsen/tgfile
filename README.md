@@ -136,13 +136,14 @@ tgc upload --file=./README.md
 
 **S3接口**
 
-目前S3接口只实现了基本的GetObject/PutObject接口。
+目前S3接口实现了基本的GetObject/HeadObject/PutObject接口。
 
 |API|Method|鉴权|备注|
 |---|---|---|---|
 |/:bucket|GET|false|获取bucket信息, 没实际作用|
 |/:bucket/:object|PUT|true|文件上传|
 |/:bucket/:object|GET|false|文件下载|
+|/:bucket/:object|HEAD|false|获取文件元数据，不读取文件内容|
 
 **Webdav接口**
 

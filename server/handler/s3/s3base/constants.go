@@ -1,6 +1,6 @@
 package s3base
 
 const (
-	ErrFileNotFound    = "FileNotFoundError"
-	ErrInternalService = "InternalServiceError"
+	ErrFileNotFound    = "NoSuchKey"
+	ErrInternalService = "InternalError"
 )
