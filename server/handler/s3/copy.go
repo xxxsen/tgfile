@@ -11,16 +11,19 @@ import (
 
 	"github.com/xxxsen/tgfile/entity"
 	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/s3checksum"
 	"github.com/xxxsen/tgfile/server/handler/s3/s3base"
 
 	"github.com/gin-gonic/gin"
 )
 
 type copyObjectResult struct {
-	XMLName      xml.Name `xml:"CopyObjectResult"`
-	XMLNS        string   `xml:"xmlns,attr"`
-	LastModified string   `xml:"LastModified"`
-	ETag         string   `xml:"ETag"`
+	XMLName xml.Name `xml:"CopyObjectResult"`
+	XMLNS   string   `xml:"xmlns,attr"`
+	checksumXMLFields
+	LastModified string `xml:"LastModified"`
+	ETag         string `xml:"ETag"`
+	ChecksumType string `xml:"ChecksumType,omitempty"`
 }
 
 func (h *S3Handler) CopyObject(c *gin.Context) {
@@ -56,11 +59,18 @@ func (h *S3Handler) CopyObject(c *gin.Context) {
 		s3base.WriteError(c, mutationError(err))
 		return
 	}
-	c.XML(http.StatusOK, &copyObjectResult{
+	response := &copyObjectResult{
 		XMLNS:        s3XMLNamespace,
 		LastModified: time.UnixMilli(result.Link.Mtime).UTC().Format("2006-01-02T15:04:05.000Z"),
 		ETag:         result.Metadata.ETag,
-	})
+		ChecksumType: result.Metadata.ChecksumType,
+	}
+	setChecksumXML(
+		&response.checksumXMLFields,
+		s3checksum.Algorithm(result.Metadata.RequestChecksumAlgorithm),
+		result.Metadata.RequestChecksumValue,
+	)
+	c.XML(http.StatusOK, response)
 }
 
 type copyPreparation struct {
@@ -162,6 +172,7 @@ func copyReplacementMetadata(
 	replacement.ChecksumSHA256 = sourceInfo.Metadata.ChecksumSHA256
 	replacement.RequestChecksumAlgorithm = sourceInfo.Metadata.RequestChecksumAlgorithm
 	replacement.RequestChecksumValue = sourceInfo.Metadata.RequestChecksumValue
+	replacement.ChecksumType = sourceInfo.Metadata.ChecksumType
 	return replacement, nil
 }
 

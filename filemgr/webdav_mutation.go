@@ -169,11 +169,11 @@ func copyMappingMetadata(
 	sourceEntryID, destinationEntryID uint64,
 ) error {
 	const statement = `INSERT INTO tg_s3_object_metadata_tab (
-entry_id, etag, checksum_sha256, request_checksum_algorithm, request_checksum_value,
+entry_id, etag, checksum_sha256, request_checksum_algorithm, request_checksum_value, checksum_type,
 content_type, cache_control, content_disposition, content_encoding, content_language,
 expires, user_metadata, ctime, mtime
 )
-SELECT ?, etag, checksum_sha256, request_checksum_algorithm, request_checksum_value,
+SELECT ?, etag, checksum_sha256, request_checksum_algorithm, request_checksum_value, checksum_type,
 content_type, cache_control, content_disposition, content_encoding, content_language,
 expires, user_metadata, ctime, mtime
 FROM tg_s3_object_metadata_tab WHERE entry_id = ?`

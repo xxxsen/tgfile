@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/s3checksum"
 	"github.com/xxxsen/tgfile/server/handler/s3/s3base"
 
 	"github.com/gin-gonic/gin"
@@ -53,6 +54,8 @@ type listPartsResult struct {
 	NextPartNumberMarker int              `xml:"NextPartNumberMarker,omitempty"`
 	MaxParts             int              `xml:"MaxParts"`
 	IsTruncated          bool             `xml:"IsTruncated"`
+	ChecksumAlgorithm    string           `xml:"ChecksumAlgorithm,omitempty"`
+	ChecksumType         string           `xml:"ChecksumType,omitempty"`
 	Parts                []listedPartItem `xml:"Part,omitempty"`
 }
 
@@ -61,15 +64,26 @@ type listedPartItem struct {
 	LastModified string `xml:"LastModified"`
 	ETag         string `xml:"ETag"`
 	Size         int64  `xml:"Size"`
+	checksumXMLFields
 }
 
 type completeMultipartUploadResult struct {
-	XMLName  xml.Name `xml:"CompleteMultipartUploadResult"`
-	XMLNS    string   `xml:"xmlns,attr"`
-	Location string   `xml:"Location"`
-	Bucket   string   `xml:"Bucket"`
-	Key      string   `xml:"Key"`
-	ETag     string   `xml:"ETag"`
+	XMLName      xml.Name `xml:"CompleteMultipartUploadResult"`
+	XMLNS        string   `xml:"xmlns,attr"`
+	Location     string   `xml:"Location"`
+	Bucket       string   `xml:"Bucket"`
+	Key          string   `xml:"Key"`
+	ETag         string   `xml:"ETag"`
+	ChecksumType string   `xml:"ChecksumType,omitempty"`
+	checksumXMLFields
+}
+
+type checksumXMLFields struct {
+	ChecksumCRC32     string `xml:"ChecksumCRC32,omitempty"`
+	ChecksumCRC32C    string `xml:"ChecksumCRC32C,omitempty"`
+	ChecksumCRC64NVME string `xml:"ChecksumCRC64NVME,omitempty"`
+	ChecksumSHA1      string `xml:"ChecksumSHA1,omitempty"`
+	ChecksumSHA256    string `xml:"ChecksumSHA256,omitempty"`
 }
 
 type listMultipartUploadsResult struct {
@@ -90,12 +104,14 @@ type listMultipartUploadsResult struct {
 }
 
 type listedMultipartUploadItem struct {
-	Key          string    `xml:"Key"`
-	UploadID     string    `xml:"UploadId"`
-	Initiator    listOwner `xml:"Initiator"`
-	Owner        listOwner `xml:"Owner"`
-	StorageClass string    `xml:"StorageClass"`
-	Initiated    string    `xml:"Initiated"`
+	Key               string    `xml:"Key"`
+	UploadID          string    `xml:"UploadId"`
+	Initiator         listOwner `xml:"Initiator"`
+	Owner             listOwner `xml:"Owner"`
+	StorageClass      string    `xml:"StorageClass"`
+	Initiated         string    `xml:"Initiated"`
+	ChecksumAlgorithm string    `xml:"ChecksumAlgorithm,omitempty"`
+	ChecksumType      string    `xml:"ChecksumType,omitempty"`
 }
 
 type uploadPartPreparation struct {
@@ -128,6 +144,11 @@ func (h *S3Handler) CreateMultipartUpload(c *gin.Context) {
 		s3base.WriteError(c, apiError)
 		return
 	}
+	algorithm, checksumType, apiError := parseCreateMultipartChecksum(c.Request)
+	if apiError != nil {
+		s3base.WriteError(c, apiError)
+		return
+	}
 	storageClass := c.GetHeader("x-amz-storage-class")
 	if storageClass != "" && storageClass != "STANDARD" {
 		s3base.WriteError(c, s3base.NewError(
@@ -144,15 +165,19 @@ func (h *S3Handler) CreateMultipartUpload(c *gin.Context) {
 		return
 	}
 	upload, err := h.fmgr.CreateMultipartUpload(c.Request.Context(), &filemgr.CreateMultipartRequest{
-		Bucket:      bucket.Name,
-		Key:         key,
-		Metadata:    metadata,
-		ExpireAfter: h.multipartExpiry,
+		Bucket:       bucket.Name,
+		Key:          key,
+		Metadata:     metadata,
+		ExpireAfter:  h.multipartExpiry,
+		Algorithm:    algorithm,
+		ChecksumType: checksumType,
 	})
 	if err != nil {
 		s3base.WriteError(c, multipartError(err))
 		return
 	}
+	c.Header("x-amz-checksum-algorithm", string(upload.Algorithm))
+	c.Header("x-amz-checksum-type", string(upload.ChecksumType))
 	c.XML(http.StatusOK, &initiateMultipartUploadResult{
 		XMLNS:    s3XMLNamespace,
 		Bucket:   bucket.Name,
@@ -169,13 +194,25 @@ func (h *S3Handler) UploadPart(c *gin.Context) {
 	}
 	unlock := h.multipartLocks.lock(preparation.uploadID)
 	defer unlock()
-	fileID, hashes, apiError := h.receiveUpload(c, preparation.size)
+	spec, err := h.fmgr.PrepareMultipartPart(
+		c.Request.Context(),
+		&filemgr.PrepareMultipartPartRequest{
+			UploadID: preparation.uploadID,
+			Bucket:   preparation.bucket.Name,
+			Key:      preparation.key,
+		},
+	)
+	if err != nil {
+		s3base.WriteError(c, multipartError(err))
+		return
+	}
+	fileID, hashes, apiError := h.receiveMultipartUpload(c, preparation.size, spec)
 	if apiError != nil {
 		s3base.WriteError(c, apiError)
 		return
 	}
 	etag := hex.EncodeToString(hashes.md5.Sum(nil))
-	_, err := h.fmgr.PutMultipartPart(c.Request.Context(), &filemgr.PutMultipartPartRequest{
+	_, err = h.fmgr.PutMultipartPart(c.Request.Context(), &filemgr.PutMultipartPartRequest{
 		UploadID:      preparation.uploadID,
 		Bucket:        preparation.bucket.Name,
 		Key:           preparation.key,
@@ -183,6 +220,7 @@ func (h *S3Handler) UploadPart(c *gin.Context) {
 		FileID:        fileID,
 		Size:          preparation.size,
 		ETag:          etag,
+		ChecksumValue: hashes.checksumValue(),
 		MaxObjectSize: h.maxObjectSize,
 	})
 	if err != nil {
@@ -191,6 +229,14 @@ func (h *S3Handler) UploadPart(c *gin.Context) {
 		return
 	}
 	c.Header("ETag", `"`+etag+`"`)
+	if !spec.Legacy {
+		header, headerErr := s3checksum.HeaderName(spec.Algorithm)
+		if headerErr != nil {
+			s3base.WriteError(c, s3base.InternalError(headerErr))
+			return
+		}
+		c.Header(header, hashes.checksumValue())
+	}
 	c.Status(http.StatusOK)
 }
 
@@ -305,9 +351,17 @@ func (h *S3Handler) ListParts(c *gin.Context) {
 		s3base.WriteError(c, multipartError(err))
 		return
 	}
+	c.XML(http.StatusOK, buildListPartsResult(bucket.Name, key, uploadID, marker, maxParts, page))
+}
+
+func buildListPartsResult(
+	bucket, key, uploadID string,
+	marker, maxParts int,
+	page *filemgr.MultipartPartPage,
+) *listPartsResult {
 	result := &listPartsResult{
 		XMLNS:                s3XMLNamespace,
-		Bucket:               bucket.Name,
+		Bucket:               bucket,
 		Key:                  key,
 		UploadID:             uploadID,
 		PartNumberMarker:     marker,
@@ -316,15 +370,23 @@ func (h *S3Handler) ListParts(c *gin.Context) {
 		IsTruncated:          page.IsTruncated,
 		Parts:                make([]listedPartItem, 0, len(page.Parts)),
 	}
+	if !page.Legacy {
+		result.ChecksumAlgorithm = string(page.Algorithm)
+		result.ChecksumType = string(page.ChecksumType)
+	}
 	for _, part := range page.Parts {
-		result.Parts = append(result.Parts, listedPartItem{
+		item := listedPartItem{
 			PartNumber:   part.PartNumber,
 			LastModified: formatS3Timestamp(part.LastModified),
 			ETag:         `"` + part.ETag + `"`,
 			Size:         part.Size,
-		})
+		}
+		if !page.Legacy {
+			setChecksumXML(&item.checksumXMLFields, page.Algorithm, part.ChecksumValue)
+		}
+		result.Parts = append(result.Parts, item)
 	}
-	c.XML(http.StatusOK, result)
+	return result
 }
 
 func (h *S3Handler) CompleteMultipartUpload(c *gin.Context) {
@@ -351,6 +413,11 @@ func (h *S3Handler) CompleteMultipartUpload(c *gin.Context) {
 		s3base.WriteError(c, apiError)
 		return
 	}
+	checksumHeaders, apiError := parseCompleteChecksumHeaders(c.Request)
+	if apiError != nil {
+		s3base.WriteError(c, apiError)
+		return
+	}
 	condition, apiError := parseDestinationCondition(c.Request)
 	if apiError != nil {
 		s3base.WriteError(c, apiError)
@@ -374,12 +441,16 @@ func (h *S3Handler) CompleteMultipartUpload(c *gin.Context) {
 	result, err := h.fmgr.CompleteMultipartUpload(
 		c.Request.Context(),
 		&filemgr.CompleteMultipartRequest{
-			UploadID:      uploadID,
-			Bucket:        bucket.Name,
-			Key:           key,
-			Parts:         parts,
-			MaxObjectSize: h.maxObjectSize,
-			Condition:     condition,
+			UploadID:               uploadID,
+			Bucket:                 bucket.Name,
+			Key:                    key,
+			Parts:                  parts,
+			MaxObjectSize:          h.maxObjectSize,
+			Condition:              condition,
+			FinalChecksumAlgorithm: checksumHeaders.algorithm,
+			FinalChecksum:          checksumHeaders.value,
+			ChecksumType:           checksumHeaders.checksumType,
+			ExpectedSize:           checksumHeaders.expectedSize,
 		},
 	)
 	if err != nil {
@@ -387,13 +458,16 @@ func (h *S3Handler) CompleteMultipartUpload(c *gin.Context) {
 		return
 	}
 	c.Header("ETag", result.ETag)
-	c.XML(http.StatusOK, &completeMultipartUploadResult{
-		XMLNS:    s3XMLNamespace,
-		Location: c.Request.URL.EscapedPath(),
-		Bucket:   bucket.Name,
-		Key:      key,
-		ETag:     result.ETag,
-	})
+	response := &completeMultipartUploadResult{
+		XMLNS:        s3XMLNamespace,
+		Location:     c.Request.URL.EscapedPath(),
+		Bucket:       bucket.Name,
+		Key:          key,
+		ETag:         result.ETag,
+		ChecksumType: string(result.ChecksumType),
+	}
+	setChecksumXML(&response.checksumXMLFields, result.Algorithm, result.ChecksumValue)
+	c.XML(http.StatusOK, response)
 }
 
 func (h *S3Handler) AbortMultipartUpload(c *gin.Context) {
@@ -534,12 +608,14 @@ func buildMultipartUploadListResult(
 	owner := listOwner{ID: "tgfile", DisplayName: "tgfile"}
 	for _, upload := range page.Uploads {
 		result.Uploads = append(result.Uploads, listedMultipartUploadItem{
-			Key:          encodeListValue(upload.Key, encodingType),
-			UploadID:     upload.UploadID,
-			Initiator:    owner,
-			Owner:        owner,
-			StorageClass: "STANDARD",
-			Initiated:    formatS3Timestamp(upload.Initiated),
+			Key:               encodeListValue(upload.Key, encodingType),
+			UploadID:          upload.UploadID,
+			Initiator:         owner,
+			Owner:             owner,
+			StorageClass:      "STANDARD",
+			Initiated:         formatS3Timestamp(upload.Initiated),
+			ChecksumAlgorithm: string(upload.Algorithm),
+			ChecksumType:      string(upload.ChecksumType),
 		})
 	}
 	for _, prefix := range page.CommonPrefixes {
@@ -645,10 +721,7 @@ func rejectUnsupportedMultipartHeaders(request *http.Request) *s3base.APIError {
 	}
 	for name := range request.Header {
 		lower := strings.ToLower(name)
-		if strings.HasPrefix(lower, "x-amz-checksum-") ||
-			lower == "x-amz-sdk-checksum-algorithm" ||
-			lower == "x-amz-trailer" ||
-			strings.HasPrefix(lower, "x-amz-server-side-encryption") ||
+		if strings.HasPrefix(lower, "x-amz-server-side-encryption") ||
 			lower == "x-amz-acl" ||
 			strings.HasPrefix(lower, "x-amz-grant-") {
 			return multipartNotImplemented("The requested multipart header is not implemented.")
@@ -703,10 +776,13 @@ func readMultipartCompleteBody(c *gin.Context) ([]byte, *s3base.APIError) {
 }
 
 type decodedCompletePart struct {
-	numberText string
-	etagText   string
-	hasNumber  bool
-	hasETag    bool
+	numberText        string
+	etagText          string
+	checksumText      string
+	checksumAlgorithm s3checksum.Algorithm
+	hasNumber         bool
+	hasETag           bool
+	hasChecksum       bool
 }
 
 type multipartCompleteXMLParser struct {
@@ -743,7 +819,18 @@ func decodeMultipartCompleteBody(body []byte) ([]filemgr.CompleteMultipartPart, 
 		if !ok {
 			return nil, multipartError(filemgr.ErrInvalidMultipartPart)
 		}
-		parts = append(parts, filemgr.CompleteMultipartPart{PartNumber: number, ETag: etag})
+		checksumValue := strings.TrimSpace(item.checksumText)
+		if item.hasChecksum {
+			if _, err := s3checksum.Decode(item.checksumAlgorithm, checksumValue); err != nil {
+				return nil, invalidChecksumDigest(err)
+			}
+		}
+		parts = append(parts, filemgr.CompleteMultipartPart{
+			PartNumber:        number,
+			ETag:              etag,
+			ChecksumAlgorithm: item.checksumAlgorithm,
+			ChecksumValue:     checksumValue,
+		})
 		previous = number
 	}
 	return parts, nil
@@ -851,6 +938,16 @@ func (p *multipartCompleteXMLParser) startPartField(element xml.StartElement) er
 			return errMalformedCompleteXML
 		}
 		current.hasETag = true
+	case "ChecksumCRC32", "ChecksumCRC32C", "ChecksumCRC64NVME", "ChecksumSHA1", "ChecksumSHA256":
+		if current.hasChecksum {
+			return errMalformedCompleteXML
+		}
+		algorithm, err := s3checksum.ParseAlgorithm(strings.TrimPrefix(element.Name.Local, "Checksum"))
+		if err != nil {
+			return errMalformedCompleteXML
+		}
+		current.hasChecksum = true
+		current.checksumAlgorithm = algorithm
 	default:
 		return errMalformedCompleteXML
 	}
@@ -885,6 +982,8 @@ func (p *multipartCompleteXMLParser) characterData(data xml.CharData) error {
 		p.parts[p.currentIndex].numberText += string(data)
 	case "ETag":
 		p.parts[p.currentIndex].etagText += string(data)
+	case "ChecksumCRC32", "ChecksumCRC32C", "ChecksumCRC64NVME", "ChecksumSHA1", "ChecksumSHA256":
+		p.parts[p.currentIndex].checksumText += string(data)
 	default:
 		return errMalformedCompleteXML
 	}
@@ -961,12 +1060,44 @@ func multipartError(err error) *s3base.APIError {
 		)
 	case errors.Is(err, filemgr.ErrInvalidMultipartRequest):
 		return invalidMultipartArgument("A multipart request parameter is invalid.", err)
+	case errors.Is(err, filemgr.ErrMultipartChecksum),
+		errors.Is(err, filemgr.ErrMultipartChecksumType):
+		return s3base.NewError(
+			http.StatusBadRequest,
+			"BadDigest",
+			"The multipart checksum did not match.",
+			err,
+		)
+	case errors.Is(err, filemgr.ErrMultipartObjectSize):
+		return s3base.InvalidRequest("The multipart object size did not match.", err)
 	case errors.Is(err, filemgr.ErrS3Precondition),
 		errors.Is(err, filemgr.ErrS3ObjectConflict),
 		errors.Is(err, filemgr.ErrMultipartConflict):
 		return mutationError(err)
 	default:
 		return s3base.InternalError(err)
+	}
+}
+
+func setChecksumXML(
+	fields *checksumXMLFields,
+	algorithm s3checksum.Algorithm,
+	value string,
+) {
+	if fields == nil || value == "" {
+		return
+	}
+	switch algorithm {
+	case s3checksum.AlgorithmCRC32:
+		fields.ChecksumCRC32 = value
+	case s3checksum.AlgorithmCRC32C:
+		fields.ChecksumCRC32C = value
+	case s3checksum.AlgorithmCRC64NVME:
+		fields.ChecksumCRC64NVME = value
+	case s3checksum.AlgorithmSHA1:
+		fields.ChecksumSHA1 = value
+	case s3checksum.AlgorithmSHA256:
+		fields.ChecksumSHA256 = value
 	}
 }
 

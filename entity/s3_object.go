@@ -6,6 +6,7 @@ type S3ObjectMetadata struct {
 	ChecksumSHA256           string `json:"checksum_sha256"`
 	RequestChecksumAlgorithm string `json:"request_checksum_algorithm"`
 	RequestChecksumValue     string `json:"request_checksum_value"`
+	ChecksumType             string `json:"checksum_type"`
 	ContentType              string `json:"content_type"`
 	CacheControl             string `json:"cache_control"`
 	ContentDisposition       string `json:"content_disposition"`

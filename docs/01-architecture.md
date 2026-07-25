@@ -55,6 +55,7 @@ Directory 事务完成。
 | `dao` | File、Part 和普通 Mapping 数据访问 |
 | `db` | migration 规划、账本、checksum 和 schema 指纹校验 |
 | `migrations` | 按版本嵌入二进制的业务 DDL 与精确 legacy schema 画像 |
+| `s3checksum` | S3 checksum 算法、Base64 摘要校验、CRC 合并和 Composite 聚合 |
 | `blockio` | Telegram、localfile、mem 内容后端及可逆字节旋转 |
 | `maintenance` | 不初始化在线依赖的 SQLite 只读审计 |
 | `entity`、`server/model` | 内部持久化模型和 HTTP 请求/响应模型 |
@@ -103,6 +104,11 @@ FileKey 和 DeleteRef 都是后端数据，日志和外部响应不得输出其�
 按顺序引用这些 source File，不重新下载或上传 Telegram message。所有读取入口最终都通过
 `FileManager.OpenFile`，因此 S3、直链、WebDAV、静态目录和备份可以透明读取两种 layout。
 
+S3 additional checksum 的计算边界是 S3 Part 和最终对象，不是 Telegram message。
+UploadPart 在流式写入 Telegram 的同时计算并校验 checksum；Complete 只读取 SQLite 中
+保存的 Part checksum 和 size，通过 CRC combine 或原始摘要聚合得到最终值。checksum
+算法实现不依赖 HTTP、SQLite、FileManager 或 Telegram。
+
 Telegram 消息删除不是 Mapping 事务中的同步网络调用。以下操作在失去最后有效引用后，
 只把对应 Part 的 durable outbox 状态从 `live` 改为 `pending`：
 
@@ -142,6 +148,8 @@ Telegram 消息删除不是 Mapping 事务中的同步网络调用。以下操�
 - 业务 schema 只通过不可变的 `migrations/NNNN_name.sql` 演进；
 - Mapping 与 File 分离，CopyObject 只增加引用，不复制 Telegram 内容；
 - Multipart Complete 只创建 layout v2 manifest 和最终 Mapping，不执行 Telegram I/O；
+- Multipart checksum algorithm/type 在 Create 时固化，Part 与最终 checksum 必须和对象
+  Metadata 在同一事务中持久化；
 - S3 Mapping 与对象元数据在同一个 SQLite 事务中创建、覆盖、复制或删除；
 - WebDAV DELETE/COPY/MOVE 在同一事务中递归处理 Mapping、对象元数据和删除 outbox；
 - 最后引用判断与 `live -> pending` 状态变化处于同一事务；

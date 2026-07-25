@@ -9,10 +9,12 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/xxxsen/tgfile/s3checksum"
 )
 
 func TestMultipartCompleteCreatesReadableCompositeAndDeleteMarksSources(t *testing.T) {
-	managerInterface, _, databaseClient := newCreateFileTestManager(t, 6*1024*1024)
+	managerInterface, block, databaseClient := newCreateFileTestManager(t, 6*1024*1024)
 	manager := managerInterface.(*defaultFileManager)
 	firstContent := bytes.Repeat([]byte("a"), 5*1024*1024)
 	secondContent := []byte("tail")
@@ -34,18 +36,54 @@ func TestMultipartCompleteCreatesReadableCompositeAndDeleteMarksSources(t *testi
 	})
 	require.NoError(t, err)
 	require.Equal(t, []int{1, 2}, []int{page.Parts[0].PartNumber, page.Parts[1].PartNumber})
+	require.Equal(t, s3checksum.AlgorithmCRC64NVME, page.Algorithm)
+	require.Equal(t, s3checksum.TypeFullObject, page.ChecksumType)
+	require.Equal(t, first.ChecksumValue, page.Parts[0].ChecksumValue)
+
+	allContent := append(slices.Clone(firstContent), secondContent...)
+	finalHash, err := s3checksum.NewHash(s3checksum.AlgorithmCRC64NVME)
+	require.NoError(t, err)
+	_, err = finalHash.Write(allContent)
+	require.NoError(t, err)
+	finalChecksum := s3checksum.SumBase64(finalHash)
+	expectedSize := int64(len(allContent))
+	block.mutex.Lock()
+	uploadsBeforeComplete := len(block.order)
+	downloadsBeforeComplete := block.downloadCount
+	block.mutex.Unlock()
 
 	result, err := manager.CompleteMultipartUpload(t.Context(), &CompleteMultipartRequest{
 		UploadID: upload.UploadID,
 		Bucket:   upload.Bucket,
 		Key:      upload.Key,
 		Parts: []CompleteMultipartPart{
-			{PartNumber: 1, ETag: first.ETag},
-			{PartNumber: 2, ETag: second.ETag},
+			{
+				PartNumber:        1,
+				ETag:              first.ETag,
+				ChecksumAlgorithm: upload.Algorithm,
+				ChecksumValue:     first.ChecksumValue,
+			},
+			{
+				PartNumber:        2,
+				ETag:              second.ETag,
+				ChecksumAlgorithm: upload.Algorithm,
+				ChecksumValue:     second.ChecksumValue,
+			},
 		},
+		FinalChecksumAlgorithm: upload.Algorithm,
+		FinalChecksum:          finalChecksum,
+		ChecksumType:           upload.ChecksumType,
+		ExpectedSize:           &expectedSize,
 	})
 	require.NoError(t, err)
+	block.mutex.Lock()
+	require.Equal(t, uploadsBeforeComplete, len(block.order))
+	require.Equal(t, downloadsBeforeComplete, block.downloadCount)
+	block.mutex.Unlock()
 	require.Equal(t, int64(len(firstContent)+len(secondContent)), result.Size)
+	require.Equal(t, s3checksum.AlgorithmCRC64NVME, result.Algorithm)
+	require.Equal(t, s3checksum.TypeFullObject, result.ChecksumType)
+	require.Equal(t, finalChecksum, result.ChecksumValue)
 	require.Equal(t, 2, queryCount(
 		t,
 		databaseClient,
@@ -60,16 +98,35 @@ func TestMultipartCompleteCreatesReadableCompositeAndDeleteMarksSources(t *testi
 	actual, err := io.ReadAll(reader)
 	require.NoError(t, err)
 	require.NoError(t, reader.Close())
-	require.Equal(t, append(firstContent, secondContent...), actual)
+	require.Equal(t, allContent, actual)
+	object, err := manager.StatS3Object(t.Context(), "/bucket/multipart.bin")
+	require.NoError(t, err)
+	require.Equal(t, string(result.Algorithm), object.Metadata.RequestChecksumAlgorithm)
+	require.Equal(t, string(result.ChecksumType), object.Metadata.ChecksumType)
+	require.Equal(t, result.ChecksumValue, object.Metadata.RequestChecksumValue)
 
 	retried, err := manager.CompleteMultipartUpload(t.Context(), &CompleteMultipartRequest{
 		UploadID: upload.UploadID,
 		Bucket:   upload.Bucket,
 		Key:      upload.Key,
 		Parts: []CompleteMultipartPart{
-			{PartNumber: 1, ETag: first.ETag},
-			{PartNumber: 2, ETag: second.ETag},
+			{
+				PartNumber:        1,
+				ETag:              first.ETag,
+				ChecksumAlgorithm: upload.Algorithm,
+				ChecksumValue:     first.ChecksumValue,
+			},
+			{
+				PartNumber:        2,
+				ETag:              second.ETag,
+				ChecksumAlgorithm: upload.Algorithm,
+				ChecksumValue:     second.ChecksumValue,
+			},
 		},
+		FinalChecksumAlgorithm: upload.Algorithm,
+		FinalChecksum:          finalChecksum,
+		ChecksumType:           upload.ChecksumType,
+		ExpectedSize:           &expectedSize,
 	})
 	require.NoError(t, err)
 	require.Equal(t, result, retried)
@@ -101,6 +158,130 @@ func TestMultipartCompleteCreatesReadableCompositeAndDeleteMarksSources(t *testi
 		databaseClient,
 		"SELECT COUNT(*) FROM tg_file_part_delete_state_tab WHERE delete_state = 'pending'",
 	))
+}
+
+func TestMultipartCompositeChecksumRulesAndIdempotency(t *testing.T) {
+	managerInterface, _, _ := newCreateFileTestManager(t, 1024)
+	manager := managerInterface.(*defaultFileManager)
+	upload, err := manager.CreateMultipartUpload(t.Context(), &CreateMultipartRequest{
+		Bucket:       "bucket",
+		Key:          "composite-checksum.bin",
+		Metadata:     testObjectMetadata(""),
+		ExpireAfter:  time.Hour,
+		Algorithm:    s3checksum.AlgorithmSHA256,
+		ChecksumType: s3checksum.TypeComposite,
+	})
+	require.NoError(t, err)
+	part := createAndRegisterMultipartPart(t, manager, upload, 1, []byte("composite content"))
+	finalRequest, finalStored, err := s3checksum.Composite(
+		upload.Algorithm,
+		[]string{part.ChecksumValue},
+	)
+	require.NoError(t, err)
+	size := part.Size
+	request := &CompleteMultipartRequest{
+		UploadID: upload.UploadID,
+		Bucket:   upload.Bucket,
+		Key:      upload.Key,
+		Parts: []CompleteMultipartPart{{
+			PartNumber:        part.PartNumber,
+			ETag:              part.ETag,
+			ChecksumAlgorithm: upload.Algorithm,
+			ChecksumValue:     part.ChecksumValue,
+		}},
+		FinalChecksumAlgorithm: upload.Algorithm,
+		FinalChecksum:          finalRequest,
+		ChecksumType:           upload.ChecksumType,
+		ExpectedSize:           &size,
+	}
+	result, err := manager.CompleteMultipartUpload(t.Context(), request)
+	require.NoError(t, err)
+	require.Equal(t, finalStored, result.ChecksumValue)
+
+	retried, err := manager.CompleteMultipartUpload(t.Context(), request)
+	require.NoError(t, err)
+	require.Equal(t, result, retried)
+
+	badRequest := *request
+	badRequest.FinalChecksum = part.ChecksumValue
+	_, err = manager.CompleteMultipartUpload(t.Context(), &badRequest)
+	require.ErrorIs(t, err, ErrMultipartChecksum)
+}
+
+func TestMultipartCompositeRequiresConsecutiveChecksummedParts(t *testing.T) {
+	managerInterface, _, _ := newCreateFileTestManager(t, 1024)
+	manager := managerInterface.(*defaultFileManager)
+	upload, err := manager.CreateMultipartUpload(t.Context(), &CreateMultipartRequest{
+		Bucket:       "bucket",
+		Key:          "composite-order.bin",
+		Metadata:     testObjectMetadata(""),
+		ExpireAfter:  time.Hour,
+		Algorithm:    s3checksum.AlgorithmCRC32C,
+		ChecksumType: s3checksum.TypeComposite,
+	})
+	require.NoError(t, err)
+	part := createAndRegisterMultipartPart(t, manager, upload, 2, []byte("part two"))
+
+	_, err = manager.CompleteMultipartUpload(t.Context(), &CompleteMultipartRequest{
+		UploadID: upload.UploadID,
+		Bucket:   upload.Bucket,
+		Key:      upload.Key,
+		Parts: []CompleteMultipartPart{{
+			PartNumber:        part.PartNumber,
+			ETag:              part.ETag,
+			ChecksumAlgorithm: upload.Algorithm,
+			ChecksumValue:     part.ChecksumValue,
+		}},
+	})
+	require.ErrorIs(t, err, ErrInvalidPartOrder)
+
+	_, err = manager.CompleteMultipartUpload(t.Context(), &CompleteMultipartRequest{
+		UploadID: upload.UploadID,
+		Bucket:   upload.Bucket,
+		Key:      upload.Key,
+		Parts: []CompleteMultipartPart{{
+			PartNumber: part.PartNumber,
+			ETag:       part.ETag,
+		}},
+	})
+	require.ErrorIs(t, err, ErrInvalidPartOrder)
+}
+
+func TestLegacyMultipartRemainsChecksumFree(t *testing.T) {
+	managerInterface, _, databaseClient := newCreateFileTestManager(t, 1024)
+	manager := managerInterface.(*defaultFileManager)
+	upload, err := manager.CreateMultipartUpload(t.Context(), &CreateMultipartRequest{
+		Bucket:      "bucket",
+		Key:         "legacy.bin",
+		Metadata:    testObjectMetadata(""),
+		ExpireAfter: time.Hour,
+	})
+	require.NoError(t, err)
+	_, err = databaseClient.ExecContext(
+		t.Context(),
+		`UPDATE tg_s3_multipart_upload_tab
+SET checksum_algorithm = '', checksum_type = '' WHERE upload_id = ?`,
+		upload.UploadID,
+	)
+	require.NoError(t, err)
+	spec, err := manager.PrepareMultipartPart(t.Context(), &PrepareMultipartPartRequest{
+		UploadID: upload.UploadID,
+		Bucket:   upload.Bucket,
+		Key:      upload.Key,
+	})
+	require.NoError(t, err)
+	require.True(t, spec.Legacy)
+
+	part := createAndRegisterLegacyMultipartPart(t, manager, upload, 1, []byte("legacy"))
+	result, err := manager.CompleteMultipartUpload(t.Context(), &CompleteMultipartRequest{
+		UploadID: upload.UploadID,
+		Bucket:   upload.Bucket,
+		Key:      upload.Key,
+		Parts:    []CompleteMultipartPart{{PartNumber: 1, ETag: part.ETag}},
+	})
+	require.NoError(t, err)
+	require.Empty(t, result.Algorithm)
+	require.Empty(t, result.ChecksumValue)
 }
 
 func TestMultipartAbortAndReplacementUseDurableCleanup(t *testing.T) {
@@ -144,6 +325,59 @@ func TestMultipartAbortAndReplacementUseDurableCleanup(t *testing.T) {
 		MaxParts: 1000,
 	})
 	require.ErrorIs(t, err, ErrNoSuchUpload)
+}
+
+func TestMultipartPutRechecksUploadAfterPreparation(t *testing.T) {
+	managerInterface, _, databaseClient := newCreateFileTestManager(t, 1024)
+	manager := managerInterface.(*defaultFileManager)
+	upload, err := manager.CreateMultipartUpload(t.Context(), &CreateMultipartRequest{
+		Bucket:      "bucket",
+		Key:         "prepare-abort-race.bin",
+		Metadata:    testObjectMetadata(""),
+		ExpireAfter: time.Hour,
+	})
+	require.NoError(t, err)
+	spec, err := manager.PrepareMultipartPart(t.Context(), &PrepareMultipartPartRequest{
+		UploadID: upload.UploadID,
+		Bucket:   upload.Bucket,
+		Key:      upload.Key,
+	})
+	require.NoError(t, err)
+
+	content := []byte("uploaded after prepare")
+	fileID, err := manager.CreateFile(t.Context(), int64(len(content)), bytes.NewReader(content))
+	require.NoError(t, err)
+	etag := NewMD5CompatibilityHash()
+	_, err = etag.Write(content)
+	require.NoError(t, err)
+	checksum, err := s3checksum.NewHash(spec.Algorithm)
+	require.NoError(t, err)
+	_, err = checksum.Write(content)
+	require.NoError(t, err)
+
+	require.NoError(t, manager.AbortMultipartUpload(t.Context(), &AbortMultipartRequest{
+		UploadID: upload.UploadID,
+		Bucket:   upload.Bucket,
+		Key:      upload.Key,
+	}))
+	_, err = manager.PutMultipartPart(t.Context(), &PutMultipartPartRequest{
+		UploadID:      upload.UploadID,
+		Bucket:        upload.Bucket,
+		Key:           upload.Key,
+		PartNumber:    1,
+		FileID:        fileID,
+		Size:          int64(len(content)),
+		ETag:          hex.EncodeToString(etag.Sum(nil)),
+		ChecksumValue: s3checksum.SumBase64(checksum),
+	})
+	require.ErrorIs(t, err, ErrNoSuchUpload)
+
+	require.NoError(t, manager.DiscardUnpublishedFile(t.Context(), fileID))
+	require.Equal(t, 1, queryCount(
+		t,
+		databaseClient,
+		"SELECT COUNT(*) FROM tg_file_part_delete_state_tab WHERE delete_state = 'pending'",
+	))
 }
 
 func TestMultipartExpiryAndControlCleanupAreDurable(t *testing.T) {
@@ -359,6 +593,37 @@ func TestListMultipartUploadsBoundsDelimiterAndMarkerPagination(t *testing.T) {
 }
 
 func createAndRegisterMultipartPart(
+	t *testing.T,
+	manager *defaultFileManager,
+	upload *MultipartUpload,
+	partNumber int,
+	content []byte,
+) *MultipartPart {
+	t.Helper()
+	fileID, err := manager.CreateFile(t.Context(), int64(len(content)), bytes.NewReader(content))
+	require.NoError(t, err)
+	digest := NewMD5CompatibilityHash()
+	_, err = digest.Write(content)
+	require.NoError(t, err)
+	checksumHash, err := s3checksum.NewHash(upload.Algorithm)
+	require.NoError(t, err)
+	_, err = checksumHash.Write(content)
+	require.NoError(t, err)
+	part, err := manager.PutMultipartPart(t.Context(), &PutMultipartPartRequest{
+		UploadID:      upload.UploadID,
+		Bucket:        upload.Bucket,
+		Key:           upload.Key,
+		PartNumber:    partNumber,
+		FileID:        fileID,
+		Size:          int64(len(content)),
+		ETag:          hex.EncodeToString(digest.Sum(nil)),
+		ChecksumValue: s3checksum.SumBase64(checksumHash),
+	})
+	require.NoError(t, err)
+	return part
+}
+
+func createAndRegisterLegacyMultipartPart(
 	t *testing.T,
 	manager *defaultFileManager,
 	upload *MultipartUpload,

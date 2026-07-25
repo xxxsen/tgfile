@@ -19,10 +19,11 @@ import (
 )
 
 type captureBlockIO struct {
-	maxSize int64
-	mutex   sync.Mutex
-	parts   map[string][]byte
-	order   []string
+	maxSize       int64
+	mutex         sync.Mutex
+	parts         map[string][]byte
+	order         []string
+	downloadCount int
 }
 
 func (b *captureBlockIO) Name() string {
@@ -58,6 +59,7 @@ func (b *captureBlockIO) DeleteBlocks(_ context.Context, deleteRefs []string) er
 func (b *captureBlockIO) Download(_ context.Context, key string, position int64) (io.ReadCloser, error) {
 	b.mutex.Lock()
 	raw, ok := b.parts[key]
+	b.downloadCount++
 	b.mutex.Unlock()
 	if !ok {
 		return nil, errors.New("part not found")

@@ -17,6 +17,7 @@ import (
 	"github.com/xxxsen/tgfile/constant"
 	"github.com/xxxsen/tgfile/directory"
 	"github.com/xxxsen/tgfile/entity"
+	"github.com/xxxsen/tgfile/s3checksum"
 
 	"github.com/xxxsen/common/database"
 	"github.com/xxxsen/common/idgen"
@@ -42,21 +43,43 @@ var (
 	ErrMultipartEntityTooLarge = errors.New("multipart entity is too large")
 	ErrMultipartConflict       = errors.New("multipart upload changed concurrently")
 	ErrInvalidMultipartRequest = errors.New("invalid multipart request")
+	ErrMultipartChecksum       = errors.New("multipart checksum mismatch")
+	ErrMultipartChecksumType   = errors.New("multipart checksum type mismatch")
+	ErrMultipartObjectSize     = errors.New("multipart object size mismatch")
 )
 
 type CreateMultipartRequest struct {
-	Bucket      string
-	Key         string
-	Metadata    *entity.S3ObjectMetadata
-	ExpireAfter time.Duration
+	Bucket       string
+	Key          string
+	Metadata     *entity.S3ObjectMetadata
+	ExpireAfter  time.Duration
+	Algorithm    s3checksum.Algorithm
+	ChecksumType s3checksum.Type
 }
 
 type MultipartUpload struct {
-	UploadID  string
-	Bucket    string
-	Key       string
-	Initiated time.Time
-	ExpiresAt time.Time
+	UploadID     string
+	Bucket       string
+	Key          string
+	Initiated    time.Time
+	ExpiresAt    time.Time
+	Algorithm    s3checksum.Algorithm
+	ChecksumType s3checksum.Type
+}
+
+// PrepareMultipartPartRequest identifies the upload whose checksum policy is
+// needed before an UploadPart body is read.
+type PrepareMultipartPartRequest struct {
+	UploadID string
+	Bucket   string
+	Key      string
+}
+
+// MultipartChecksumSpec is the immutable checksum policy for an upload.
+type MultipartChecksumSpec struct {
+	Algorithm    s3checksum.Algorithm
+	ChecksumType s3checksum.Type
+	Legacy       bool
 }
 
 type PutMultipartPartRequest struct {
@@ -67,15 +90,17 @@ type PutMultipartPartRequest struct {
 	FileID        uint64
 	Size          int64
 	ETag          string
+	ChecksumValue string
 	MaxObjectSize int64
 }
 
 type MultipartPart struct {
-	PartNumber   int
-	FileID       uint64
-	Size         int64
-	ETag         string
-	LastModified time.Time
+	PartNumber    int
+	FileID        uint64
+	Size          int64
+	ETag          string
+	ChecksumValue string
+	LastModified  time.Time
 }
 
 type ListMultipartPartsRequest struct {
@@ -90,26 +115,38 @@ type MultipartPartPage struct {
 	Parts                []MultipartPart
 	IsTruncated          bool
 	NextPartNumberMarker int
+	Algorithm            s3checksum.Algorithm
+	ChecksumType         s3checksum.Type
+	Legacy               bool
 }
 
 type CompleteMultipartPart struct {
-	PartNumber int
-	ETag       string
+	PartNumber        int
+	ETag              string
+	ChecksumAlgorithm s3checksum.Algorithm
+	ChecksumValue     string
 }
 
 type CompleteMultipartRequest struct {
-	UploadID      string
-	Bucket        string
-	Key           string
-	Parts         []CompleteMultipartPart
-	MaxObjectSize int64
-	Condition     *S3Condition
+	UploadID               string
+	Bucket                 string
+	Key                    string
+	Parts                  []CompleteMultipartPart
+	MaxObjectSize          int64
+	Condition              *S3Condition
+	FinalChecksumAlgorithm s3checksum.Algorithm
+	FinalChecksum          string
+	ChecksumType           s3checksum.Type
+	ExpectedSize           *int64
 }
 
 type CompleteMultipartResult struct {
-	FileID uint64
-	Size   int64
-	ETag   string
+	FileID        uint64
+	Size          int64
+	ETag          string
+	Algorithm     s3checksum.Algorithm
+	ChecksumType  s3checksum.Type
+	ChecksumValue string
 }
 
 type AbortMultipartRequest struct {
@@ -128,9 +165,11 @@ type ListMultipartUploadsRequest struct {
 }
 
 type MultipartUploadListItem struct {
-	Key       string
-	UploadID  string
-	Initiated time.Time
+	Key          string
+	UploadID     string
+	Initiated    time.Time
+	Algorithm    s3checksum.Algorithm
+	ChecksumType s3checksum.Type
 }
 
 type MultipartUploadPage struct {
@@ -142,6 +181,7 @@ type MultipartUploadPage struct {
 }
 
 type IS3MultipartReader interface {
+	PrepareMultipartPart(context.Context, *PrepareMultipartPartRequest) (*MultipartChecksumSpec, error)
 	ListMultipartParts(context.Context, *ListMultipartPartsRequest) (*MultipartPartPage, error)
 	ListMultipartUploads(context.Context, *ListMultipartUploadsRequest) (*MultipartUploadPage, error)
 }
@@ -170,9 +210,12 @@ type storedMultipartUpload struct {
 	contentLanguage    string
 	expires            string
 	userMetadata       string
+	checksumAlgorithm  string
+	checksumType       string
 	fingerprint        string
 	resultFileID       uint64
 	resultETag         string
+	resultChecksum     string
 	initiatedAt        int64
 	expiresAt          int64
 	completedAt        int64
@@ -185,6 +228,10 @@ func (d *defaultFileManager) CreateMultipartUpload(
 ) (*MultipartUpload, error) {
 	if request == nil || request.Bucket == "" || request.Key == "" || request.Metadata == nil {
 		return nil, ErrInvalidMultipartRequest
+	}
+	algorithm, checksumType, err := resolveCreateMultipartChecksum(request)
+	if err != nil {
+		return nil, err
 	}
 	expiry := request.ExpireAfter
 	if expiry == 0 {
@@ -204,8 +251,9 @@ func (d *defaultFileManager) CreateMultipartUpload(
 			`INSERT INTO tg_s3_multipart_upload_tab (
 upload_id, bucket_name, object_key, upload_state,
 content_type, cache_control, content_disposition, content_encoding,
-content_language, expires, user_metadata, initiated_at, expires_at, ctime, mtime
-) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+content_language, expires, user_metadata, checksum_algorithm, checksum_type,
+initiated_at, expires_at, ctime, mtime
+) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			uploadID,
 			request.Bucket,
 			request.Key,
@@ -216,6 +264,8 @@ content_language, expires, user_metadata, initiated_at, expires_at, ctime, mtime
 			request.Metadata.ContentLanguage,
 			request.Metadata.Expires,
 			request.Metadata.UserMetadata,
+			algorithm,
+			checksumType,
 			now.UnixMilli(),
 			now.Add(expiry).UnixMilli(),
 			now.UnixMilli(),
@@ -223,11 +273,13 @@ content_language, expires, user_metadata, initiated_at, expires_at, ctime, mtime
 		)
 		if err == nil {
 			return &MultipartUpload{
-				UploadID:  uploadID,
-				Bucket:    request.Bucket,
-				Key:       request.Key,
-				Initiated: now,
-				ExpiresAt: now.Add(expiry),
+				UploadID:     uploadID,
+				Bucket:       request.Bucket,
+				Key:          request.Key,
+				Initiated:    now,
+				ExpiresAt:    now.Add(expiry),
+				Algorithm:    algorithm,
+				ChecksumType: checksumType,
 			}, nil
 		}
 		if !strings.Contains(err.Error(), "UNIQUE constraint failed") {
@@ -235,6 +287,16 @@ content_language, expires, user_metadata, initiated_at, expires_at, ctime, mtime
 		}
 	}
 	return nil, fmt.Errorf("generate unique multipart upload id: %w", ErrMultipartConflict)
+}
+
+func resolveCreateMultipartChecksum(request *CreateMultipartRequest) (s3checksum.Algorithm, s3checksum.Type, error) {
+	algorithmValue := string(request.Algorithm)
+	typeValue := string(request.ChecksumType)
+	algorithm, checksumType, err := s3checksum.ResolveMultipart(algorithmValue, typeValue)
+	if err != nil {
+		return "", "", fmt.Errorf("%w: %w", ErrInvalidMultipartRequest, err)
+	}
+	return algorithm, checksumType, nil
 }
 
 func generateMultipartUploadID(now time.Time) (string, error) {
@@ -253,8 +315,9 @@ func readMultipartUpload(
 ) (storedMultipartUpload, bool, error) {
 	const query = `SELECT upload_id, bucket_name, object_key, upload_state,
 content_type, cache_control, content_disposition, content_encoding,
-content_language, expires, user_metadata, completion_fingerprint,
-result_file_id, result_etag, initiated_at, expires_at, completed_at, cleanup_at
+content_language, expires, user_metadata, checksum_algorithm, checksum_type,
+completion_fingerprint, result_file_id, result_etag, result_checksum_value,
+initiated_at, expires_at, completed_at, cleanup_at
 FROM tg_s3_multipart_upload_tab WHERE upload_id = ?`
 	var upload storedMultipartUpload
 	err := queryRow(ctx, queryer, query, uploadID).Scan(
@@ -269,9 +332,12 @@ FROM tg_s3_multipart_upload_tab WHERE upload_id = ?`
 		&upload.contentLanguage,
 		&upload.expires,
 		&upload.userMetadata,
+		&upload.checksumAlgorithm,
+		&upload.checksumType,
 		&upload.fingerprint,
 		&upload.resultFileID,
 		&upload.resultETag,
+		&upload.resultChecksum,
 		&upload.initiatedAt,
 		&upload.expiresAt,
 		&upload.completedAt,
@@ -292,6 +358,56 @@ func matchingMultipartUpload(
 	bucket, key string,
 ) bool {
 	return exists && upload.bucket == bucket && upload.key == key
+}
+
+func (d *defaultFileManager) PrepareMultipartPart(
+	ctx context.Context,
+	request *PrepareMultipartPartRequest,
+) (*MultipartChecksumSpec, error) {
+	if request == nil || request.UploadID == "" || request.Bucket == "" || request.Key == "" {
+		return nil, ErrInvalidMultipartRequest
+	}
+	var (
+		upload  storedMultipartUpload
+		expired bool
+	)
+	err := d.dbc.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
+		var err error
+		upload, expired, err = ensureActiveMultipartUpload(
+			ctx,
+			tx,
+			request.UploadID,
+			request.Bucket,
+			request.Key,
+			time.Now(),
+		)
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("prepare multipart part transaction: %w", err)
+	}
+	if expired {
+		return nil, ErrNoSuchUpload
+	}
+	return multipartChecksumSpec(upload)
+}
+
+func multipartChecksumSpec(upload storedMultipartUpload) (*MultipartChecksumSpec, error) {
+	if upload.checksumAlgorithm == "" && upload.checksumType == "" {
+		return &MultipartChecksumSpec{Legacy: true}, nil
+	}
+	algorithm, err := s3checksum.ParseAlgorithm(upload.checksumAlgorithm)
+	if err != nil {
+		return nil, fmt.Errorf("%w: stored algorithm: %w", ErrMultipartConflict, err)
+	}
+	checksumType, err := s3checksum.ParseType(upload.checksumType)
+	if err != nil {
+		return nil, fmt.Errorf("%w: stored checksum type: %w", ErrMultipartConflict, err)
+	}
+	if err := s3checksum.ValidateCombination(algorithm, checksumType); err != nil {
+		return nil, fmt.Errorf("%w: stored checksum combination: %w", ErrMultipartConflict, err)
+	}
+	return &MultipartChecksumSpec{Algorithm: algorithm, ChecksumType: checksumType}, nil
 }
 
 func (d *defaultFileManager) PutMultipartPart(
@@ -315,11 +431,12 @@ func (d *defaultFileManager) PutMultipartPart(
 		return nil, ErrNoSuchUpload
 	}
 	return &MultipartPart{
-		PartNumber:   request.PartNumber,
-		FileID:       request.FileID,
-		Size:         request.Size,
-		ETag:         request.ETag,
-		LastModified: now,
+		PartNumber:    request.PartNumber,
+		FileID:        request.FileID,
+		Size:          request.Size,
+		ETag:          request.ETag,
+		ChecksumValue: request.ChecksumValue,
+		LastModified:  now,
 	}, nil
 }
 
@@ -335,9 +452,19 @@ func (d *defaultFileManager) putMultipartPartTx(
 	request *PutMultipartPartRequest,
 	now time.Time,
 ) (bool, error) {
-	expired, err := ensureActiveMultipartUpload(ctx, tx, request.UploadID, request.Bucket, request.Key, now)
+	upload, expired, err := ensureActiveMultipartUpload(
+		ctx,
+		tx,
+		request.UploadID,
+		request.Bucket,
+		request.Key,
+		now,
+	)
 	if err != nil || expired {
 		return expired, err
+	}
+	if err := validateStoredMultipartPartChecksum(upload, request.ChecksumValue); err != nil {
+		return false, err
 	}
 	file, err := validateMultipartStagingFile(ctx, tx, request.FileID, request.Size)
 	if err != nil {
@@ -366,21 +493,41 @@ func ensureActiveMultipartUpload(
 	tx database.IQueryExecer,
 	uploadID, bucket, key string,
 	now time.Time,
-) (bool, error) {
+) (storedMultipartUpload, bool, error) {
 	upload, exists, err := readMultipartUpload(ctx, tx, uploadID)
 	if err != nil {
-		return false, err
+		return storedMultipartUpload{}, false, err
 	}
 	if !matchingMultipartUpload(upload, exists, bucket, key) || upload.state != "active" {
-		return false, ErrNoSuchUpload
+		return storedMultipartUpload{}, false, ErrNoSuchUpload
 	}
 	if upload.expiresAt > now.UnixMilli() {
-		return false, nil
+		return upload, false, nil
 	}
 	if err := abortMultipartUploadTx(ctx, tx, upload, now); err != nil {
-		return false, err
+		return storedMultipartUpload{}, false, err
 	}
-	return true, nil
+	return upload, true, nil
+}
+
+func validateStoredMultipartPartChecksum(upload storedMultipartUpload, value string) error {
+	spec, err := multipartChecksumSpec(upload)
+	if err != nil {
+		return err
+	}
+	if spec.Legacy {
+		if value != "" {
+			return ErrInvalidMultipartRequest
+		}
+		return nil
+	}
+	if value == "" {
+		return ErrInvalidMultipartRequest
+	}
+	if _, err := s3checksum.Decode(spec.Algorithm, value); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidMultipartRequest, err)
+	}
+	return nil
 }
 
 func validateMultipartStagingFile(
@@ -508,11 +655,12 @@ func upsertMultipartPart(
 	result, err := tx.ExecContext(
 		ctx,
 		`UPDATE tg_s3_multipart_part_tab
-SET file_id = ?, part_size = ?, part_etag = ?, uploaded_at = ?, mtime = ?
+SET file_id = ?, part_size = ?, part_etag = ?, checksum_value = ?, uploaded_at = ?, mtime = ?
 WHERE upload_id = ? AND part_number = ? AND part_state = 'active'`,
 		request.FileID,
 		request.Size,
 		request.ETag,
+		request.ChecksumValue,
 		now.UnixMilli(),
 		now.UnixMilli(),
 		request.UploadID,
@@ -538,13 +686,14 @@ func insertMultipartPart(
 		ctx,
 		`INSERT INTO tg_s3_multipart_part_tab (
 upload_id, part_number, part_state, file_id, part_size, part_etag,
-uploaded_at, ctime, mtime
-) VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+checksum_value, uploaded_at, ctime, mtime
+) VALUES (?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
 		request.UploadID,
 		request.PartNumber,
 		request.FileID,
 		request.Size,
 		request.ETag,
+		request.ChecksumValue,
 		now.UnixMilli(),
 		now.UnixMilli(),
 		now.UnixMilli(),
@@ -587,11 +736,14 @@ func (d *defaultFileManager) ListMultipartParts(
 		return nil, ErrInvalidMultipartRequest
 	}
 	page := &MultipartPartPage{Parts: make([]MultipartPart, 0, request.MaxParts)}
-	var expired bool
+	var (
+		upload  storedMultipartUpload
+		expired bool
+	)
 	err := d.dbc.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
 		now := time.Now()
 		var err error
-		expired, err = ensureActiveMultipartUpload(
+		upload, expired, err = ensureActiveMultipartUpload(
 			ctx,
 			tx,
 			request.UploadID,
@@ -611,6 +763,13 @@ func (d *defaultFileManager) ListMultipartParts(
 	if expired {
 		return nil, ErrNoSuchUpload
 	}
+	spec, err := multipartChecksumSpec(upload)
+	if err != nil {
+		return nil, err
+	}
+	page.Algorithm = spec.Algorithm
+	page.ChecksumType = spec.ChecksumType
+	page.Legacy = spec.Legacy
 	return page, nil
 }
 
@@ -621,7 +780,7 @@ func readMultipartPartPage(
 ) (*MultipartPartPage, error) {
 	rows, err := queryer.QueryContext(
 		ctx,
-		`SELECT part_number, file_id, part_size, part_etag, uploaded_at
+		`SELECT part_number, file_id, part_size, part_etag, checksum_value, uploaded_at
 FROM tg_s3_multipart_part_tab
 WHERE upload_id = ? AND part_state = 'active' AND part_number > ?
 ORDER BY part_number LIMIT ?`,
@@ -644,6 +803,7 @@ ORDER BY part_number LIMIT ?`,
 			&part.FileID,
 			&part.Size,
 			&part.ETag,
+			&part.ChecksumValue,
 			&uploadedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan multipart part: %w", err)
@@ -704,7 +864,7 @@ func (d *defaultFileManager) completeMultipartUploadTx(
 		return nil, false, ErrNoSuchUpload
 	}
 	if upload.state == "completed" {
-		result, err := readCompletedMultipartResult(ctx, tx.QueryExecer(), upload, fingerprint)
+		result, err := readCompletedMultipartResult(ctx, tx.QueryExecer(), upload, request, fingerprint)
 		return result, false, err
 	}
 	if upload.state != "active" {
@@ -717,6 +877,9 @@ func (d *defaultFileManager) completeMultipartUploadTx(
 		}
 		return nil, true, nil
 	}
+	if err := validateCompleteChecksumRequest(upload, request); err != nil {
+		return nil, false, err
+	}
 	if err := claimMultipartCompletion(ctx, tx.QueryExecer(), request.UploadID, now); err != nil {
 		return nil, false, err
 	}
@@ -728,6 +891,7 @@ func readCompletedMultipartResult(
 	ctx context.Context,
 	queryer database.IQueryer,
 	upload storedMultipartUpload,
+	request *CompleteMultipartRequest,
 	fingerprint string,
 ) (*CompleteMultipartResult, error) {
 	if upload.fingerprint != fingerprint {
@@ -740,11 +904,170 @@ func readCompletedMultipartResult(
 	if !exists {
 		return nil, ErrMultipartConflict
 	}
+	if err := validateCompleteChecksumRequest(upload, request); err != nil {
+		return nil, err
+	}
+	if request.ExpectedSize != nil && *request.ExpectedSize != file.size {
+		return nil, ErrMultipartObjectSize
+	}
+	if err := validateCompletedPartChecksums(ctx, queryer, upload, request); err != nil {
+		return nil, err
+	}
+	if err := validateFinalChecksum(upload, request, upload.resultChecksum); err != nil {
+		return nil, err
+	}
+	spec, err := multipartChecksumSpec(upload)
+	if err != nil {
+		return nil, err
+	}
 	return &CompleteMultipartResult{
-		FileID: upload.resultFileID,
-		Size:   file.size,
-		ETag:   upload.resultETag,
+		FileID:        upload.resultFileID,
+		Size:          file.size,
+		ETag:          upload.resultETag,
+		Algorithm:     spec.Algorithm,
+		ChecksumType:  spec.ChecksumType,
+		ChecksumValue: upload.resultChecksum,
 	}, nil
+}
+
+func validateCompleteChecksumRequest(
+	upload storedMultipartUpload,
+	request *CompleteMultipartRequest,
+) error {
+	spec, err := multipartChecksumSpec(upload)
+	if err != nil {
+		return err
+	}
+	if spec.Legacy {
+		return validateLegacyCompleteChecksumRequest(request)
+	}
+	if err := validateCompleteChecksumHeaders(spec, request); err != nil {
+		return err
+	}
+	return validateCompletePartChecksums(spec, request.Parts)
+}
+
+func validateLegacyCompleteChecksumRequest(request *CompleteMultipartRequest) error {
+	if request.FinalChecksumAlgorithm != "" ||
+		request.FinalChecksum != "" ||
+		request.ChecksumType != "" ||
+		request.ExpectedSize != nil {
+		return ErrInvalidMultipartRequest
+	}
+	for _, part := range request.Parts {
+		if part.ChecksumAlgorithm != "" || part.ChecksumValue != "" {
+			return ErrInvalidMultipartRequest
+		}
+	}
+	return nil
+}
+
+func validateCompleteChecksumHeaders(
+	spec *MultipartChecksumSpec,
+	request *CompleteMultipartRequest,
+) error {
+	if request.FinalChecksumAlgorithm != "" && request.FinalChecksumAlgorithm != spec.Algorithm {
+		return ErrInvalidMultipartRequest
+	}
+	if request.ChecksumType != "" && request.ChecksumType != spec.ChecksumType {
+		return ErrMultipartChecksumType
+	}
+	if request.FinalChecksum != "" {
+		if _, err := s3checksum.Decode(spec.Algorithm, request.FinalChecksum); err != nil {
+			return fmt.Errorf("%w: final checksum: %w", ErrInvalidMultipartRequest, err)
+		}
+	}
+	if request.ExpectedSize != nil && *request.ExpectedSize < 0 {
+		return ErrInvalidMultipartRequest
+	}
+	return nil
+}
+
+func validateCompletePartChecksums(
+	spec *MultipartChecksumSpec,
+	parts []CompleteMultipartPart,
+) error {
+	for index, part := range parts {
+		if part.ChecksumAlgorithm != "" && part.ChecksumAlgorithm != spec.Algorithm {
+			return ErrInvalidMultipartPart
+		}
+		if spec.ChecksumType == s3checksum.TypeComposite && part.PartNumber != index+1 {
+			return ErrInvalidPartOrder
+		}
+		if spec.ChecksumType == s3checksum.TypeComposite && part.ChecksumValue == "" {
+			return ErrInvalidMultipartPart
+		}
+		if part.ChecksumValue != "" {
+			if _, err := s3checksum.Decode(spec.Algorithm, part.ChecksumValue); err != nil {
+				return fmt.Errorf("%w: part checksum: %w", ErrInvalidMultipartPart, err)
+			}
+		}
+	}
+	return nil
+}
+
+func validateCompletedPartChecksums(
+	ctx context.Context,
+	queryer database.IQueryer,
+	upload storedMultipartUpload,
+	request *CompleteMultipartRequest,
+) error {
+	spec, err := multipartChecksumSpec(upload)
+	if err != nil || spec.Legacy {
+		return err
+	}
+	for _, requested := range request.Parts {
+		var etag, checksumValue string
+		err := queryRow(
+			ctx,
+			queryer,
+			`SELECT part_etag, checksum_value
+FROM tg_s3_multipart_part_tab
+WHERE upload_id = ? AND part_number = ? AND part_state = 'selected'`,
+			request.UploadID,
+			requested.PartNumber,
+		).Scan(&etag, &checksumValue)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrMultipartConflict
+		}
+		if err != nil {
+			return fmt.Errorf("read completed multipart part checksum: %w", err)
+		}
+		if etag != requested.ETag ||
+			requested.ChecksumValue != "" && requested.ChecksumValue != checksumValue {
+			return ErrInvalidMultipartPart
+		}
+	}
+	return nil
+}
+
+func validateFinalChecksum(
+	upload storedMultipartUpload,
+	request *CompleteMultipartRequest,
+	storedValue string,
+) error {
+	if request.FinalChecksum == "" {
+		return nil
+	}
+	spec, err := multipartChecksumSpec(upload)
+	if err != nil {
+		return err
+	}
+	expected := storedValue
+	if spec.ChecksumType == s3checksum.TypeComposite {
+		expected, err = s3checksum.ParseCompositeStored(
+			spec.Algorithm,
+			storedValue,
+			len(request.Parts),
+		)
+		if err != nil {
+			return fmt.Errorf("%w: stored final checksum: %w", ErrMultipartConflict, err)
+		}
+	}
+	if request.FinalChecksum != expected {
+		return ErrMultipartChecksum
+	}
+	return nil
 }
 
 func claimMultipartCompletion(
@@ -780,9 +1103,17 @@ func (d *defaultFileManager) completeActiveMultipart(
 	fingerprint string,
 	now time.Time,
 ) (*CompleteMultipartResult, error) {
-	selected, totalSize, totalPartCount, err := loadCompletionParts(ctx, tx.QueryExecer(), request)
+	selected, totalSize, totalPartCount, err := loadCompletionParts(
+		ctx,
+		tx.QueryExecer(),
+		request,
+		upload,
+	)
 	if err != nil {
 		return nil, err
+	}
+	if request.ExpectedSize != nil && *request.ExpectedSize != totalSize {
+		return nil, ErrMultipartObjectSize
 	}
 	if totalSize > multipartObjectSizeLimit(request.MaxObjectSize, d.bkio.MaxFileSize()) {
 		return nil, ErrMultipartEntityTooLarge
@@ -806,32 +1137,77 @@ func (d *defaultFileManager) completeActiveMultipart(
 	if err != nil {
 		return nil, err
 	}
+	checksumValue, err := calculateMultipartChecksum(upload, selected)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateFinalChecksum(upload, request, checksumValue); err != nil {
+		return nil, err
+	}
+	if err := persistCompletedMultipart(
+		ctx,
+		tx,
+		request,
+		upload,
+		selected,
+		finalFileID,
+		totalSize,
+		etag,
+		checksumValue,
+		fingerprint,
+		now,
+	); err != nil {
+		return nil, err
+	}
+	spec, err := multipartChecksumSpec(upload)
+	if err != nil {
+		return nil, err
+	}
+	return &CompleteMultipartResult{
+		FileID:        finalFileID,
+		Size:          totalSize,
+		ETag:          etag,
+		Algorithm:     spec.Algorithm,
+		ChecksumType:  spec.ChecksumType,
+		ChecksumValue: checksumValue,
+	}, nil
+}
+
+func persistCompletedMultipart(
+	ctx context.Context,
+	tx directory.ITransaction,
+	request *CompleteMultipartRequest,
+	upload storedMultipartUpload,
+	selected []MultipartPart,
+	finalFileID uint64,
+	totalSize int64,
+	etag, checksumValue, fingerprint string,
+	now time.Time,
+) error {
 	if _, err := publishS3ObjectTx(
 		ctx,
 		tx,
 		"/"+request.Bucket+"/"+request.Key,
 		finalFileID,
 		totalSize,
-		multipartObjectMetadata(upload, etag),
+		multipartObjectMetadata(upload, etag, checksumValue),
 		request.Condition,
 	); err != nil {
-		return nil, err
+		return err
 	}
 	if err := finalizeMultipartParts(ctx, tx.QueryExecer(), request.UploadID, selected, now); err != nil {
-		return nil, err
+		return err
 	}
-	if err := finishMultipartControl(
+	return finishMultipartControl(
 		ctx,
 		tx.QueryExecer(),
 		request.UploadID,
 		fingerprint,
 		finalFileID,
 		etag,
+		checksumValue,
 		now,
-	); err != nil {
-		return nil, err
-	}
-	return &CompleteMultipartResult{FileID: finalFileID, Size: totalSize, ETag: etag}, nil
+	)
 }
 
 func insertCompositeFile(
@@ -875,16 +1251,23 @@ file_id, segment_index, source_file_id, segment_size, ctime, mtime
 	return nil
 }
 
-func multipartObjectMetadata(upload storedMultipartUpload, etag string) *entity.S3ObjectMetadata {
+func multipartObjectMetadata(
+	upload storedMultipartUpload,
+	etag string,
+	checksumValue string,
+) *entity.S3ObjectMetadata {
 	return &entity.S3ObjectMetadata{
-		ETag:               etag,
-		ContentType:        upload.contentType,
-		CacheControl:       upload.cacheControl,
-		ContentDisposition: upload.contentDisposition,
-		ContentEncoding:    upload.contentEncoding,
-		ContentLanguage:    upload.contentLanguage,
-		Expires:            upload.expires,
-		UserMetadata:       upload.userMetadata,
+		ETag:                     etag,
+		RequestChecksumAlgorithm: upload.checksumAlgorithm,
+		RequestChecksumValue:     checksumValue,
+		ChecksumType:             upload.checksumType,
+		ContentType:              upload.contentType,
+		CacheControl:             upload.cacheControl,
+		ContentDisposition:       upload.contentDisposition,
+		ContentEncoding:          upload.contentEncoding,
+		ContentLanguage:          upload.contentLanguage,
+		Expires:                  upload.expires,
+		UserMetadata:             upload.userMetadata,
 	}
 }
 
@@ -961,17 +1344,20 @@ func finishMultipartControl(
 	uploadID, fingerprint string,
 	finalFileID uint64,
 	etag string,
+	checksumValue string,
 	now time.Time,
 ) error {
 	result, err := exec.ExecContext(
 		ctx,
 		`UPDATE tg_s3_multipart_upload_tab
 SET upload_state = 'completed', completion_fingerprint = ?,
-result_file_id = ?, result_etag = ?, completed_at = ?, cleanup_at = ?, mtime = ?
+result_file_id = ?, result_etag = ?, result_checksum_value = ?,
+completed_at = ?, cleanup_at = ?, mtime = ?
 WHERE upload_id = ? AND upload_state = 'completing'`,
 		fingerprint,
 		finalFileID,
 		etag,
+		checksumValue,
 		now.UnixMilli(),
 		now.Add(multipartControlRetention).UnixMilli(),
 		now.UnixMilli(),
@@ -1022,71 +1408,163 @@ func loadCompletionParts(
 	ctx context.Context,
 	queryer database.IQueryer,
 	request *CompleteMultipartRequest,
+	upload storedMultipartUpload,
 ) ([]MultipartPart, int64, int64, error) {
+	spec, err := multipartChecksumSpec(upload)
+	if err != nil {
+		return nil, 0, 0, err
+	}
 	selected := make([]MultipartPart, 0, len(request.Parts))
 	var totalSize int64
 	var totalPartCount int64
 	for index, requested := range request.Parts {
-		var part MultipartPart
-		var fileState, fileLayout int
-		var filePartCount int64
-		err := queryRow(
+		record, err := readCompletionPart(ctx, queryer, request.UploadID, requested.PartNumber)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		if err := validateCompletionPart(
 			ctx,
 			queryer,
-			`SELECT part.part_number, part.file_id, part.part_size, part.part_etag,
+			spec,
+			requested,
+			record,
+			index == len(request.Parts)-1,
+		); err != nil {
+			return nil, 0, 0, err
+		}
+		if totalSize > maxS3MultipartPartSize*maxS3MultipartParts-record.part.Size {
+			return nil, 0, 0, ErrInvalidMultipartPart
+		}
+		totalSize += record.part.Size
+		totalPartCount += record.filePartCount
+		selected = append(selected, record.part)
+	}
+	return selected, totalSize, totalPartCount, nil
+}
+
+type completionPartRecord struct {
+	part          MultipartPart
+	fileState     int
+	fileLayout    int
+	filePartCount int64
+}
+
+func readCompletionPart(
+	ctx context.Context,
+	queryer database.IQueryer,
+	uploadID string,
+	partNumber int,
+) (completionPartRecord, error) {
+	var record completionPartRecord
+	err := queryRow(
+		ctx,
+		queryer,
+		`SELECT part.part_number, part.file_id, part.part_size, part.part_etag, part.checksum_value,
 file.file_state, file.file_layout_version, file.file_part_count
 FROM tg_s3_multipart_part_tab part
 JOIN tg_file_tab file ON file.file_id = part.file_id
 WHERE part.upload_id = ? AND part.part_number = ? AND part.part_state = 'active'`,
-			request.UploadID,
-			requested.PartNumber,
-		).Scan(
-			&part.PartNumber,
-			&part.FileID,
-			&part.Size,
-			&part.ETag,
-			&fileState,
-			&fileLayout,
-			&filePartCount,
-		)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, 0, 0, ErrInvalidMultipartPart
-		}
-		if err != nil {
-			return nil, 0, 0, fmt.Errorf("scan completion part: %w", err)
-		}
-		if part.ETag != requested.ETag {
-			return nil, 0, 0, ErrInvalidMultipartPart
-		}
-		if fileState != constant.FileStateReady || fileLayout != 1 {
-			return nil, 0, 0, ErrInvalidMultipartPart
-		}
-		if index != len(request.Parts)-1 && part.Size < minS3MultipartPartSize {
-			return nil, 0, 0, ErrMultipartPartTooSmall
-		}
-		if err := ensureMultipartStagingFileLive(ctx, queryer, storedFileRecord{
-			fileID:    part.FileID,
-			partCount: filePartCount,
-		}); err != nil {
-			return nil, 0, 0, err
-		}
-		var mappingCount int64
-		if err := queryRow(
-			ctx,
-			queryer,
-			"SELECT COUNT(*) FROM tg_file_mapping_tab WHERE ref_data = ?",
-			strconv.FormatUint(part.FileID, 10),
-		).Scan(&mappingCount); err != nil {
-			return nil, 0, 0, fmt.Errorf("count completion source mappings: %w", err)
-		}
-		if mappingCount != 0 || totalSize > maxS3MultipartPartSize*maxS3MultipartParts-part.Size {
-			return nil, 0, 0, ErrInvalidMultipartPart
-		}
-		totalSize += part.Size
-		totalPartCount += filePartCount
-		selected = append(selected, part)
+		uploadID,
+		partNumber,
+	).Scan(
+		&record.part.PartNumber,
+		&record.part.FileID,
+		&record.part.Size,
+		&record.part.ETag,
+		&record.part.ChecksumValue,
+		&record.fileState,
+		&record.fileLayout,
+		&record.filePartCount,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return completionPartRecord{}, ErrInvalidMultipartPart
 	}
-	return selected, totalSize, totalPartCount, nil
+	if err != nil {
+		return completionPartRecord{}, fmt.Errorf("scan completion part: %w", err)
+	}
+	return record, nil
+}
+
+func validateCompletionPart(
+	ctx context.Context,
+	queryer database.IQueryer,
+	spec *MultipartChecksumSpec,
+	requested CompleteMultipartPart,
+	record completionPartRecord,
+	isLast bool,
+) error {
+	if record.part.ETag != requested.ETag {
+		return ErrInvalidMultipartPart
+	}
+	if !spec.Legacy && record.part.ChecksumValue == "" {
+		return ErrMultipartConflict
+	}
+	if !spec.Legacy &&
+		requested.ChecksumValue != "" &&
+		requested.ChecksumValue != record.part.ChecksumValue {
+		return ErrInvalidMultipartPart
+	}
+	if record.fileState != constant.FileStateReady || record.fileLayout != 1 {
+		return ErrInvalidMultipartPart
+	}
+	if !isLast && record.part.Size < minS3MultipartPartSize {
+		return ErrMultipartPartTooSmall
+	}
+	if err := ensureMultipartStagingFileLive(ctx, queryer, storedFileRecord{
+		fileID:    record.part.FileID,
+		partCount: record.filePartCount,
+	}); err != nil {
+		return err
+	}
+	var mappingCount int64
+	if err := queryRow(
+		ctx,
+		queryer,
+		"SELECT COUNT(*) FROM tg_file_mapping_tab WHERE ref_data = ?",
+		strconv.FormatUint(record.part.FileID, 10),
+	).Scan(&mappingCount); err != nil {
+		return fmt.Errorf("count completion source mappings: %w", err)
+	}
+	if mappingCount != 0 {
+		return ErrInvalidMultipartPart
+	}
+	return nil
+}
+
+func calculateMultipartChecksum(
+	upload storedMultipartUpload,
+	parts []MultipartPart,
+) (string, error) {
+	spec, err := multipartChecksumSpec(upload)
+	if err != nil {
+		return "", err
+	}
+	if spec.Legacy {
+		return "", nil
+	}
+	if spec.ChecksumType == s3checksum.TypeFullObject {
+		checksums := make([]s3checksum.PartChecksum, 0, len(parts))
+		for _, part := range parts {
+			checksums = append(checksums, s3checksum.PartChecksum{
+				Value: part.ChecksumValue,
+				Size:  part.Size,
+			})
+		}
+		value, err := s3checksum.FullObject(spec.Algorithm, checksums)
+		if err != nil {
+			return "", fmt.Errorf("calculate full-object multipart checksum: %w", err)
+		}
+		return value, nil
+	}
+	values := make([]string, 0, len(parts))
+	for _, part := range parts {
+		values = append(values, part.ChecksumValue)
+	}
+	_, storedValue, err := s3checksum.Composite(spec.Algorithm, values)
+	if err != nil {
+		return "", fmt.Errorf("calculate composite multipart checksum: %w", err)
+	}
+	return storedValue, nil
 }
 
 func multipartETag(parts []MultipartPart) (string, error) {
@@ -1195,10 +1673,12 @@ WHERE upload_id = ? AND part_state = 'active'`,
 }
 
 type multipartListProjection struct {
-	key       string
-	uploadID  string
-	initiated int64
-	common    bool
+	key               string
+	uploadID          string
+	checksumAlgorithm string
+	checksumType      string
+	initiated         int64
+	common            bool
 }
 
 const multipartUploadProjectionSQL = `WITH parameters AS (
@@ -1207,6 +1687,7 @@ const multipartUploadProjectionSQL = `WITH parameters AS (
 ),
 matching AS (
     SELECT upload.object_key, upload.upload_id, upload.initiated_at,
+           upload.checksum_algorithm, upload.checksum_type,
            parameters.prefix, parameters.delimiter,
            substr(upload.object_key, length(parameters.prefix) + 1) AS remainder
     FROM tg_s3_multipart_upload_tab upload
@@ -1235,6 +1716,16 @@ projected AS (
         END AS projected_initiated_at,
         CASE
             WHEN delimiter = '/' AND instr(remainder, '/') > 0
+            THEN ''
+            ELSE checksum_algorithm
+        END AS projected_checksum_algorithm,
+        CASE
+            WHEN delimiter = '/' AND instr(remainder, '/') > 0
+            THEN ''
+            ELSE checksum_type
+        END AS projected_checksum_type,
+        CASE
+            WHEN delimiter = '/' AND instr(remainder, '/') > 0
             THEN 1
             ELSE 0
         END AS is_common_prefix
@@ -1243,11 +1734,14 @@ projected AS (
 deduplicated AS (
     SELECT projected_key, projected_upload_id,
            MAX(projected_initiated_at) AS projected_initiated_at,
+           MAX(projected_checksum_algorithm) AS projected_checksum_algorithm,
+           MAX(projected_checksum_type) AS projected_checksum_type,
            is_common_prefix
     FROM projected
     GROUP BY projected_key, projected_upload_id, is_common_prefix
 )
-SELECT projected_key, projected_upload_id, projected_initiated_at, is_common_prefix
+SELECT projected_key, projected_upload_id, projected_initiated_at,
+       projected_checksum_algorithm, projected_checksum_type, is_common_prefix
 FROM deduplicated
 CROSS JOIN parameters
 WHERE projected_key > parameters.key_marker
@@ -1313,6 +1807,8 @@ func readMultipartUploadProjections(
 			&projection.key,
 			&projection.uploadID,
 			&projection.initiated,
+			&projection.checksumAlgorithm,
+			&projection.checksumType,
 			&projection.common,
 		); err != nil {
 			return nil, fmt.Errorf("scan multipart upload list: %w", err)
@@ -1342,9 +1838,11 @@ func buildMultipartUploadPage(
 			continue
 		}
 		page.Uploads = append(page.Uploads, MultipartUploadListItem{
-			Key:       projection.key,
-			UploadID:  projection.uploadID,
-			Initiated: time.UnixMilli(projection.initiated),
+			Key:          projection.key,
+			UploadID:     projection.uploadID,
+			Initiated:    time.UnixMilli(projection.initiated),
+			Algorithm:    s3checksum.Algorithm(projection.checksumAlgorithm),
+			ChecksumType: s3checksum.Type(projection.checksumType),
 		})
 	}
 	if !page.IsTruncated {

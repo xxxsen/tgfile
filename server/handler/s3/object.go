@@ -2,7 +2,6 @@ package s3
 
 import (
 	"context"
-	"crypto/sha1" //nolint:gosec // S3 checksum-sha1 compatibility is not used for security.
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -10,8 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"hash"
-	"hash/crc32"
-	"hash/crc64"
 	"io"
 	"net/http"
 	"net/url"
@@ -24,6 +21,7 @@ import (
 
 	"github.com/xxxsen/tgfile/entity"
 	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/s3checksum"
 	"github.com/xxxsen/tgfile/server/handler/s3/s3base"
 
 	"github.com/gin-gonic/gin"
@@ -41,11 +39,12 @@ const (
 )
 
 var (
-	errContentLengthMissing = errors.New("content length is required")
-	errInvalidObjectName    = errors.New("invalid object name")
-	errChecksumMismatch     = errors.New("request checksum mismatch")
-	errVerifiedTrailerType  = errors.New("invalid verified trailer context")
-	errInvalidObjectRange   = errors.New("invalid object range")
+	errContentLengthMissing            = errors.New("content length is required")
+	errInvalidObjectName               = errors.New("invalid object name")
+	errChecksumMismatch                = errors.New("request checksum mismatch")
+	errVerifiedTrailerType             = errors.New("invalid verified trailer context")
+	errInvalidObjectRange              = errors.New("invalid object range")
+	errEmptyMultipartChecksumAlgorithm = errors.New("multipart checksum algorithm is empty")
 )
 
 func (h *S3Handler) DownloadObject(c *gin.Context) {
@@ -54,6 +53,10 @@ func (h *S3Handler) DownloadObject(c *gin.Context) {
 	}
 	bucket, key, apiError := h.authorizeObject(c)
 	if apiError != nil {
+		s3base.WriteError(c, apiError)
+		return
+	}
+	if apiError := validateChecksumMode(c.Request); apiError != nil {
 		s3base.WriteError(c, apiError)
 		return
 	}
@@ -84,7 +87,8 @@ func (h *S3Handler) DownloadObject(c *gin.Context) {
 		return
 	}
 	defer logCloseError(c.Request.Context(), file, "close S3 download")
-	setObjectHeaders(c, info)
+	includeChecksum := c.GetHeader("Range") == "" || !objectRangeApplies(c.Request, info)
+	setObjectHeaders(c, info, includeChecksum)
 	http.ServeContent(
 		c.Writer,
 		c.Request,
@@ -103,6 +107,10 @@ func (h *S3Handler) HeadObject(c *gin.Context) {
 		s3base.WriteError(c, apiError)
 		return
 	}
+	if apiError := validateChecksumMode(c.Request); apiError != nil {
+		s3base.WriteError(c, apiError)
+		return
+	}
 	if err := validateHistoricalObjectKeyBoundary(bucket.Name, key); err != nil {
 		s3base.WriteError(c, objectNameError(err))
 		return
@@ -117,7 +125,7 @@ func (h *S3Handler) HeadObject(c *gin.Context) {
 		s3base.WriteError(c, apiError)
 		return
 	}
-	setObjectHeaders(c, info)
+	setObjectHeaders(c, info, true)
 	c.Header("Accept-Ranges", "bytes")
 	c.Header("Content-Length", strconv.FormatInt(info.Link.FileSize, 10))
 	c.Status(http.StatusOK)
@@ -169,8 +177,9 @@ func (h *S3Handler) UploadObject(c *gin.Context) {
 	preparation.metadata.ETag = `"` + hex.EncodeToString(hashes.md5.Sum(nil)) + `"`
 	preparation.metadata.ChecksumSHA256 = base64.StdEncoding.EncodeToString(hashes.sha256.Sum(nil))
 	if hashes.request != nil {
-		preparation.metadata.RequestChecksumAlgorithm = hashes.algorithm
+		preparation.metadata.RequestChecksumAlgorithm = string(hashes.algorithm)
 		preparation.metadata.RequestChecksumValue = hashes.expected
+		preparation.metadata.ChecksumType = "FULL_OBJECT"
 	}
 	info, err := h.fmgr.PublishS3Object(
 		c.Request.Context(),
@@ -335,6 +344,34 @@ func (h *S3Handler) receiveUpload(
 	return fileID, hashes, nil
 }
 
+func (h *S3Handler) receiveMultipartUpload(
+	c *gin.Context,
+	size int64,
+	spec *filemgr.MultipartChecksumSpec,
+) (uint64, *uploadHashes, *s3base.APIError) {
+	hashes, reader, apiError := newMultipartUploadHashes(c.Request, spec)
+	if apiError != nil {
+		return 0, nil, apiError
+	}
+	fileID, err := h.fmgr.CreateFile(c.Request.Context(), size, reader)
+	if err != nil {
+		return 0, nil, uploadError(err)
+	}
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		discardUploadedFile(c.Request.Context(), h.fmgr, fileID)
+		return 0, nil, uploadError(err)
+	}
+	if apiError := hashes.loadTrailer(c); apiError != nil {
+		discardUploadedFile(c.Request.Context(), h.fmgr, fileID)
+		return 0, nil, apiError
+	}
+	if apiError := hashes.validate(); apiError != nil {
+		discardUploadedFile(c.Request.Context(), h.fmgr, fileID)
+		return 0, nil, apiError
+	}
+	return fileID, hashes, nil
+}
+
 func discardUploadedFile(ctx context.Context, manager filemgr.IFileManager, fileID uint64) {
 	cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 	defer cancel()
@@ -458,7 +495,7 @@ func objectError(err error, bucket, key, resource string) *s3base.APIError {
 	return apiError
 }
 
-func setObjectHeaders(c *gin.Context, info *filemgr.S3ObjectInfo) {
+func setObjectHeaders(c *gin.Context, info *filemgr.S3ObjectInfo, includeChecksum bool) {
 	metadata := info.Metadata
 	c.Header("ETag", metadata.ETag)
 	c.Header("Last-Modified", time.UnixMilli(info.Link.Mtime).UTC().Format(http.TimeFormat))
@@ -468,11 +505,14 @@ func setObjectHeaders(c *gin.Context, info *filemgr.S3ObjectInfo) {
 	setOptionalHeader(c, "Content-Encoding", metadata.ContentEncoding)
 	setOptionalHeader(c, "Content-Language", metadata.ContentLanguage)
 	setOptionalHeader(c, "Expires", metadata.Expires)
-	if metadata.ChecksumSHA256 != "" {
+	if includeChecksum && metadata.ChecksumSHA256 != "" {
 		c.Header("x-amz-checksum-sha256", metadata.ChecksumSHA256)
 	}
-	if metadata.RequestChecksumAlgorithm != "" {
+	if includeChecksum && metadata.RequestChecksumAlgorithm != "" {
 		c.Header(checksumHeader(metadata.RequestChecksumAlgorithm), metadata.RequestChecksumValue)
+	}
+	if includeChecksum && metadata.ChecksumType != "" {
+		c.Header("x-amz-checksum-type", metadata.ChecksumType)
 	}
 	var userMetadata map[string]string
 	if err := json.Unmarshal([]byte(metadata.UserMetadata), &userMetadata); err == nil {
@@ -760,29 +800,81 @@ func containsContentEncoding(value, wanted string) bool {
 }
 
 type uploadHashes struct {
-	md5        hash.Hash
-	sha256     hash.Hash
-	request    hash.Hash
-	algorithm  string
-	expected   string
-	contentMD5 string
-	trailer    string
+	md5            hash.Hash
+	sha256         hash.Hash
+	request        hash.Hash
+	algorithm      s3checksum.Algorithm
+	headerExpected string
+	expected       string
+	contentMD5     string
+	trailer        string
 }
 
 func newUploadHashes(request *http.Request) (*uploadHashes, io.Reader, *s3base.APIError) {
-	hashes := &uploadHashes{md5: filemgr.NewMD5CompatibilityHash(), sha256: sha256.New()}
-	writers := []io.Writer{hashes.md5, hashes.sha256}
-	contentMD5 := request.Header.Get("Content-MD5")
-	algorithm, expected, trailer, apiError := requestChecksum(request)
+	checksum, apiError := parseChecksumRequest(request)
 	if apiError != nil {
 		return nil, nil, apiError
 	}
-	if algorithm != "" {
-		hashes.request = checksumHash(algorithm)
-		hashes.algorithm = algorithm
-		hashes.expected = expected
-		hashes.trailer = trailer
+	return buildUploadHashes(request, checksum, false)
+}
+
+func newMultipartUploadHashes(
+	request *http.Request,
+	spec *filemgr.MultipartChecksumSpec,
+) (*uploadHashes, io.Reader, *s3base.APIError) {
+	checksum, apiError := parseChecksumRequest(request)
+	if apiError != nil {
+		return nil, nil, apiError
+	}
+	if spec.Legacy {
+		if checksum.algorithm != "" {
+			return nil, nil, multipartNotImplemented(
+				"Additional checksums are not available for this legacy multipart upload.",
+			)
+		}
+		return buildUploadHashes(request, checksum, false)
+	}
+	if checksum.algorithm != "" && checksum.algorithm != spec.Algorithm {
+		return nil, nil, s3base.InvalidRequest(
+			"The checksum algorithm must match CreateMultipartUpload.",
+			nil,
+		)
+	}
+	checksum.algorithm = spec.Algorithm
+	if spec.ChecksumType == s3checksum.TypeComposite &&
+		checksum.headerValue == "" &&
+		checksum.trailerName == "" {
+		return nil, nil, s3base.NewError(
+			http.StatusBadRequest,
+			"InvalidPart",
+			"A checksum is required for every composite multipart part.",
+			nil,
+		)
+	}
+	return buildUploadHashes(request, checksum, true)
+}
+
+func buildUploadHashes(
+	request *http.Request,
+	checksum *checksumRequest,
+	forceChecksum bool,
+) (*uploadHashes, io.Reader, *s3base.APIError) {
+	hashes := &uploadHashes{md5: filemgr.NewMD5CompatibilityHash(), sha256: sha256.New()}
+	writers := []io.Writer{hashes.md5, hashes.sha256}
+	contentMD5 := request.Header.Get("Content-MD5")
+	if checksum.algorithm != "" {
+		requestHash, err := s3checksum.NewHash(checksum.algorithm)
+		if err != nil {
+			return nil, nil, s3base.InternalError(err)
+		}
+		hashes.request = requestHash
+		hashes.algorithm = checksum.algorithm
+		hashes.headerExpected = checksum.headerValue
+		hashes.expected = checksum.headerValue
+		hashes.trailer = checksum.trailerName
 		writers = append(writers, hashes.request)
+	} else if forceChecksum {
+		return nil, nil, s3base.InternalError(errEmptyMultipartChecksumAlgorithm)
 	}
 	reader := io.TeeReader(request.Body, io.MultiWriter(writers...))
 	if contentMD5 != "" {
@@ -800,110 +892,12 @@ func newUploadHashes(request *http.Request) (*uploadHashes, io.Reader, *s3base.A
 	return hashes, reader, nil
 }
 
-func requestChecksum(request *http.Request) (string, string, string, *s3base.APIError) {
-	algorithms := []string{"CRC32", "CRC32C", "CRC64NVME", "SHA1", "SHA256"}
-	foundAlgorithm := ""
-	foundValue := ""
-	for _, algorithm := range algorithms {
-		value := request.Header.Get(checksumHeader(algorithm))
-		if value == "" {
-			continue
-		}
-		if foundAlgorithm != "" {
-			return "", "", "", s3base.InvalidRequest(
-				"Only one x-amz-checksum header is supported.",
-				nil,
-			)
-		}
-		expectedLength := checksumHash(algorithm).Size()
-		decoded, err := base64.StdEncoding.DecodeString(value)
-		if err != nil || len(decoded) != expectedLength {
-			return "", "", "", s3base.NewError(
-				http.StatusBadRequest,
-				"InvalidDigest",
-				"The request checksum is invalid.",
-				err,
-			)
-		}
-		foundAlgorithm = algorithm
-		foundValue = value
-	}
-	trailerAlgorithm, trailerHeader, apiError := requestTrailerChecksum(request, algorithms)
-	if apiError != nil {
-		return "", "", "", apiError
-	}
-	if trailerAlgorithm != "" {
-		if foundAlgorithm != "" {
-			return "", "", "", s3base.InvalidRequest(
-				"A checksum cannot be supplied in both a header and trailer.",
-				nil,
-			)
-		}
-		foundAlgorithm = trailerAlgorithm
-	}
-	sdkAlgorithm := strings.ToUpper(request.Header.Get("X-Amz-Sdk-Checksum-Algorithm"))
-	if sdkAlgorithm != "" && (sdkAlgorithm != foundAlgorithm || !slicesContains(algorithms, sdkAlgorithm)) {
-		return "", "", "", s3base.InvalidRequest(
-			"x-amz-sdk-checksum-algorithm must match the checksum header.",
-			nil,
-		)
-	}
-	return foundAlgorithm, foundValue, trailerHeader, nil
-}
-
-func requestTrailerChecksum(
-	request *http.Request,
-	algorithms []string,
-) (string, string, *s3base.APIError) {
-	declared := request.Header.Get("X-Amz-Trailer")
-	if declared == "" {
-		return "", "", nil
-	}
-	parts := strings.Split(declared, ",")
-	if len(parts) != 1 {
-		return "", "", s3base.InvalidRequest(
-			"x-amz-trailer must declare exactly one supported checksum.",
-			nil,
-		)
-	}
-	trailerHeader := strings.ToLower(strings.TrimSpace(parts[0]))
-	for _, algorithm := range algorithms {
-		if trailerHeader == checksumHeader(algorithm) {
-			return algorithm, trailerHeader, nil
-		}
-	}
-	return "", "", s3base.InvalidRequest(
-		"x-amz-trailer must declare a supported checksum.",
-		nil,
-	)
-}
-
-func slicesContains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
-}
-
-func checksumHash(algorithm string) hash.Hash {
-	switch algorithm {
-	case "CRC32":
-		return crc32.NewIEEE()
-	case "CRC32C":
-		return crc32.New(crc32.MakeTable(crc32.Castagnoli))
-	case "CRC64NVME":
-		return crc64.New(crc64.MakeTable(0x9a6c9329ac4bc9b5))
-	case "SHA1":
-		return sha1.New() //nolint:gosec // S3 checksum-sha1 compatibility is not used for security.
-	default:
-		return sha256.New()
-	}
-}
-
 func checksumHeader(algorithm string) string {
-	return "x-amz-checksum-" + strings.ToLower(algorithm)
+	name, err := s3checksum.HeaderName(s3checksum.Algorithm(algorithm))
+	if err != nil {
+		return ""
+	}
+	return name
 }
 
 func (h *uploadHashes) validate() *s3base.APIError {
@@ -914,8 +908,8 @@ func (h *uploadHashes) validate() *s3base.APIError {
 		}
 	}
 	if h.request != nil {
-		actual := base64.StdEncoding.EncodeToString(h.request.Sum(nil))
-		if actual != h.expected {
+		actual := s3checksum.SumBase64(h.request)
+		if h.expected != "" && actual != h.expected {
 			return s3base.NewError(
 				http.StatusBadRequest,
 				"BadDigest",
@@ -940,17 +934,26 @@ func (h *uploadHashes) loadTrailer(c *gin.Context) *s3base.APIError {
 		return s3base.InternalError(errVerifiedTrailerType)
 	}
 	expected := trailers.Get(h.trailer)
-	decoded, err := base64.StdEncoding.DecodeString(expected)
-	if err != nil || len(decoded) != h.request.Size() {
+	if _, err := s3checksum.Decode(h.algorithm, expected); err != nil {
+		return invalidChecksumDigest(err)
+	}
+	if h.headerExpected != "" && h.headerExpected != expected {
 		return s3base.NewError(
 			http.StatusBadRequest,
-			"InvalidDigest",
-			"The request checksum trailer is invalid.",
-			err,
+			"BadDigest",
+			"The checksum header and trailer did not match.",
+			errChecksumMismatch,
 		)
 	}
 	h.expected = expected
 	return nil
+}
+
+func (h *uploadHashes) checksumValue() string {
+	if h.request == nil {
+		return ""
+	}
+	return s3checksum.SumBase64(h.request)
 }
 
 func uploadError(err error) *s3base.APIError {

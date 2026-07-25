@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/xxxsen/tgfile/constant"
+	"github.com/xxxsen/tgfile/s3checksum"
 )
 
 type MappingIssue struct {
@@ -60,6 +63,13 @@ type AuditReport struct {
 	CompletingUploadCount            int64            `json:"multipart_completing_upload_count"`
 	ExpiredActiveUploadCount         int64            `json:"multipart_expired_active_upload_count"`
 	OldestExpiredUploadAgeMillis     int64            `json:"multipart_oldest_expired_upload_age_ms"`
+	InvalidMultipartChecksumPolicy   int64            `json:"invalid_multipart_checksum_policy_count"`
+	LegacyMultipartChecksumData      int64            `json:"legacy_multipart_checksum_data_count"`
+	InvalidActivePartChecksum        int64            `json:"invalid_active_multipart_part_checksum_count"`
+	InvalidCompositeResultChecksum   int64            `json:"invalid_composite_result_checksum_count"`
+	MissingCompletedResultChecksum   int64            `json:"missing_completed_result_checksum_count"`
+	MultipartResultMetadataMismatch  int64            `json:"multipart_result_metadata_mismatch_count"`
+	InvalidObjectChecksumMetadata    int64            `json:"invalid_object_checksum_metadata_count"`
 }
 
 type AuditOptions struct {
@@ -355,7 +365,243 @@ func readMultipartAudit(
 			return err
 		}
 	}
+	if err := readChecksumAudit(ctx, database, report); err != nil {
+		return err
+	}
 	return readExpiredMultipartAudit(ctx, database, report)
+}
+
+func readChecksumAudit(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	if err := runMultipartAuditCountQueries(ctx, database, []multipartAuditCountQuery{
+		{
+			destination: &report.InvalidMultipartChecksumPolicy,
+			name:        "invalid multipart checksum policies",
+			query: `SELECT COUNT(*) FROM tg_s3_multipart_upload_tab
+WHERE checksum_algorithm NOT IN ('', 'CRC32', 'CRC32C', 'CRC64NVME', 'SHA1', 'SHA256')
+   OR checksum_type NOT IN ('', 'FULL_OBJECT', 'COMPOSITE')
+   OR (checksum_algorithm = '') != (checksum_type = '')
+   OR checksum_algorithm = 'CRC64NVME' AND checksum_type != 'FULL_OBJECT'
+   OR checksum_algorithm IN ('SHA1', 'SHA256') AND checksum_type != 'COMPOSITE'
+   OR checksum_algorithm IN ('CRC32', 'CRC32C')
+      AND checksum_type NOT IN ('FULL_OBJECT', 'COMPOSITE')`,
+		},
+		{
+			destination: &report.LegacyMultipartChecksumData,
+			name:        "legacy multipart checksum data",
+			query: `SELECT COUNT(*) FROM tg_s3_multipart_upload_tab upload
+WHERE upload.checksum_algorithm = '' AND upload.checksum_type = ''
+  AND (
+      upload.result_checksum_value != ''
+      OR EXISTS (
+          SELECT 1 FROM tg_s3_multipart_part_tab part
+          WHERE part.upload_id = upload.upload_id AND part.checksum_value != ''
+      )
+  )`,
+		},
+		{
+			destination: &report.MissingCompletedResultChecksum,
+			name:        "missing completed multipart result checksums",
+			query: `SELECT COUNT(*) FROM tg_s3_multipart_upload_tab
+WHERE upload_state = 'completed'
+  AND checksum_algorithm != ''
+  AND result_checksum_value = ''`,
+		},
+		{
+			destination: &report.MultipartResultMetadataMismatch,
+			name:        "multipart result metadata mismatches",
+			query: `SELECT COUNT(*) FROM tg_s3_multipart_upload_tab upload
+WHERE upload.upload_state = 'completed'
+  AND upload.checksum_algorithm != ''
+  AND EXISTS (
+      SELECT 1
+      FROM tg_file_mapping_tab mapping
+      JOIN tg_s3_object_metadata_tab metadata ON metadata.entry_id = mapping.entry_id
+      WHERE mapping.file_kind = 2
+        AND mapping.ref_data = CAST(upload.result_file_id AS TEXT)
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM tg_file_mapping_tab mapping
+      JOIN tg_s3_object_metadata_tab metadata ON metadata.entry_id = mapping.entry_id
+      WHERE mapping.file_kind = 2
+        AND mapping.ref_data = CAST(upload.result_file_id AS TEXT)
+        AND metadata.request_checksum_algorithm = upload.checksum_algorithm
+        AND metadata.checksum_type = upload.checksum_type
+        AND metadata.request_checksum_value = upload.result_checksum_value
+  )`,
+		},
+	}); err != nil {
+		return err
+	}
+	if err := readActivePartChecksumAudit(ctx, database, report); err != nil {
+		return err
+	}
+	if err := readCompositeResultChecksumAudit(ctx, database, report); err != nil {
+		return err
+	}
+	return readObjectChecksumMetadataAudit(ctx, database, report)
+}
+
+func readActivePartChecksumAudit(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	rows, err := database.QueryContext(ctx, `
+SELECT upload.checksum_algorithm, part.checksum_value
+FROM tg_s3_multipart_part_tab part
+JOIN tg_s3_multipart_upload_tab upload ON upload.upload_id = part.upload_id
+WHERE upload.upload_state = 'active'
+  AND part.part_state = 'active'
+  AND upload.checksum_algorithm != ''`)
+	if err != nil {
+		return fmt.Errorf("query active multipart part checksums: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	for rows.Next() {
+		var algorithmValue, checksumValue string
+		if err := rows.Scan(&algorithmValue, &checksumValue); err != nil {
+			return fmt.Errorf("scan active multipart part checksum: %w", err)
+		}
+		algorithm, parseErr := s3checksum.ParseAlgorithm(algorithmValue)
+		if parseErr != nil {
+			report.InvalidActivePartChecksum++
+			continue
+		}
+		if _, decodeErr := s3checksum.Decode(algorithm, checksumValue); decodeErr != nil {
+			report.InvalidActivePartChecksum++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate active multipart part checksums: %w", err)
+	}
+	return nil
+}
+
+func readCompositeResultChecksumAudit(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	rows, err := database.QueryContext(ctx, `
+SELECT upload.checksum_algorithm, upload.result_checksum_value, COUNT(part.part_number)
+FROM tg_s3_multipart_upload_tab upload
+LEFT JOIN tg_s3_multipart_part_tab part
+  ON part.upload_id = upload.upload_id AND part.part_state = 'selected'
+WHERE upload.upload_state = 'completed' AND upload.checksum_type = 'COMPOSITE'
+GROUP BY upload.upload_id, upload.checksum_algorithm, upload.result_checksum_value`)
+	if err != nil {
+		return fmt.Errorf("query composite multipart result checksums: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	for rows.Next() {
+		var algorithmValue, checksumValue string
+		var partCount int
+		if err := rows.Scan(&algorithmValue, &checksumValue, &partCount); err != nil {
+			return fmt.Errorf("scan composite multipart result checksum: %w", err)
+		}
+		algorithm, parseErr := s3checksum.ParseAlgorithm(algorithmValue)
+		if parseErr != nil {
+			report.InvalidCompositeResultChecksum++
+			continue
+		}
+		if _, parseErr = s3checksum.ParseCompositeStored(
+			algorithm,
+			checksumValue,
+			partCount,
+		); parseErr != nil {
+			report.InvalidCompositeResultChecksum++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate composite multipart result checksums: %w", err)
+	}
+	return nil
+}
+
+func readObjectChecksumMetadataAudit(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	rows, err := database.QueryContext(ctx, `
+SELECT request_checksum_algorithm, checksum_type, request_checksum_value
+FROM tg_s3_object_metadata_tab`)
+	if err != nil {
+		return fmt.Errorf("query object checksum metadata: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	for rows.Next() {
+		var algorithmValue, typeValue, checksumValue string
+		if err := rows.Scan(&algorithmValue, &typeValue, &checksumValue); err != nil {
+			return fmt.Errorf("scan object checksum metadata: %w", err)
+		}
+		if !validObjectChecksumMetadata(algorithmValue, typeValue, checksumValue) {
+			report.InvalidObjectChecksumMetadata++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate object checksum metadata: %w", err)
+	}
+	return nil
+}
+
+func validObjectChecksumMetadata(algorithmValue, typeValue, checksumValue string) bool {
+	presentFields := 0
+	for _, value := range []string{algorithmValue, typeValue, checksumValue} {
+		if value != "" {
+			presentFields++
+		}
+	}
+	if presentFields == 0 {
+		return true
+	}
+	if presentFields != 3 {
+		return false
+	}
+	algorithm, algorithmErr := s3checksum.ParseAlgorithm(algorithmValue)
+	checksumType, typeErr := s3checksum.ParseType(typeValue)
+	if algorithmErr != nil || typeErr != nil {
+		return false
+	}
+	value, valid := objectChecksumDigestValue(algorithm, checksumType, checksumValue)
+	if !valid {
+		return false
+	}
+	_, err := s3checksum.Decode(algorithm, value)
+	return err == nil
+}
+
+func objectChecksumDigestValue(
+	algorithm s3checksum.Algorithm,
+	checksumType s3checksum.Type,
+	value string,
+) (string, bool) {
+	if checksumType != s3checksum.TypeComposite {
+		return value, true
+	}
+	if s3checksum.ValidateCombination(algorithm, checksumType) != nil {
+		return "", false
+	}
+	separator := strings.LastIndexByte(value, '-')
+	if separator <= 0 || separator == len(value)-1 {
+		return "", false
+	}
+	partCount, err := strconv.Atoi(value[separator+1:])
+	if err != nil || partCount <= 0 {
+		return "", false
+	}
+	return value[:separator], true
 }
 
 type multipartAuditCountQuery struct {

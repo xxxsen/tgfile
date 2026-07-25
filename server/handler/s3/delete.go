@@ -3,8 +3,6 @@ package s3
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
-	"encoding/base64"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -202,18 +200,19 @@ func validDeleteSubresource(query map[string][]string) bool {
 }
 
 func readDeleteBody(c *gin.Context) ([]byte, *s3base.APIError) {
-	expectedRaw := c.GetHeader("Content-MD5")
-	expected, err := base64.StdEncoding.DecodeString(expectedRaw)
-	if err != nil || len(expected) != filemgr.MD5CompatibilitySize {
+	hashes, reader, apiError := newUploadHashes(c.Request)
+	if apiError != nil {
+		return nil, apiError
+	}
+	if hashes.contentMD5 == "" && hashes.request == nil {
 		return nil, s3base.NewError(
 			http.StatusBadRequest,
 			"InvalidDigest",
-			"The Content-MD5 value is invalid.",
-			err,
+			"Content-MD5 or an additional checksum is required.",
+			nil,
 		)
 	}
-	reader := http.MaxBytesReader(c.Writer, c.Request.Body, maxDeleteRequestBody)
-	body, err := io.ReadAll(reader)
+	body, err := io.ReadAll(io.LimitReader(reader, maxDeleteRequestBody+1))
 	if err != nil {
 		var verifyError *s3verify.VerifyError
 		if errors.As(err, &verifyError) {
@@ -221,15 +220,19 @@ func readDeleteBody(c *gin.Context) ([]byte, *s3base.APIError) {
 		}
 		return nil, s3base.NewError(http.StatusBadRequest, "MalformedXML", "The XML body is invalid.", err)
 	}
-	digest := filemgr.NewMD5CompatibilityHash()
-	_, _ = digest.Write(body)
-	if subtle.ConstantTimeCompare(digest.Sum(nil), expected) != 1 {
+	if len(body) > maxDeleteRequestBody {
 		return nil, s3base.NewError(
 			http.StatusBadRequest,
-			"BadDigest",
-			"The Content-MD5 did not match.",
-			errChecksumMismatch,
+			"MalformedXML",
+			"The XML request body is too large.",
+			nil,
 		)
+	}
+	if apiError := hashes.loadTrailer(c); apiError != nil {
+		return nil, apiError
+	}
+	if apiError := hashes.validate(); apiError != nil {
+		return nil, apiError
 	}
 	return body, nil
 }

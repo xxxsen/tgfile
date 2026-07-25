@@ -14,6 +14,7 @@ import (
 
 	"github.com/xxxsen/tgfile/entity"
 	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/s3checksum"
 )
 
 func TestValidateNewObjectKey(t *testing.T) {
@@ -58,8 +59,9 @@ func TestRequestMetadataNormalizesUserMetadata(t *testing.T) {
 }
 
 func TestCRC64NVMEVector(t *testing.T) {
-	checksum := checksumHash("CRC64NVME")
-	_, err := checksum.Write([]byte("hello world"))
+	checksum, err := s3checksum.NewHash(s3checksum.AlgorithmCRC64NVME)
+	require.NoError(t, err)
+	_, err = checksum.Write([]byte("hello world"))
 	require.NoError(t, err)
 	require.Equal(t, "jSnVw/bqjr4=", base64.StdEncoding.EncodeToString(checksum.Sum(nil)))
 }
@@ -111,6 +113,53 @@ func TestUploadChecksumTrailerRejectsMismatchedObject(t *testing.T) {
 	apiError = hashes.validate()
 	require.NotNil(t, apiError)
 	require.Equal(t, "BadDigest", apiError.Code)
+}
+
+func TestUploadChecksumHeaderAndTrailerMustMatch(t *testing.T) {
+	const payloadChecksum = "I59Z7VXnN8dxR89VrQwbAwttfudIp0JpUvm4UtWpNeU="
+	for _, test := range []struct {
+		name         string
+		trailerValue string
+		wantCode     string
+	}{
+		{name: "matching", trailerValue: payloadChecksum},
+		{
+			name:         "mismatching",
+			trailerValue: base64.StdEncoding.EncodeToString(make([]byte, 32)),
+			wantCode:     "BadDigest",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequestWithContext(
+				t.Context(),
+				http.MethodPut,
+				"/private/object",
+				bytes.NewBufferString("payload"),
+			)
+			request.Header.Set("X-Amz-Checksum-Sha256", payloadChecksum)
+			request.Header.Set("X-Amz-Trailer", "x-amz-checksum-sha256")
+			request.Header.Set("X-Amz-Sdk-Checksum-Algorithm", "SHA256")
+			hashes, reader, apiError := newUploadHashes(request)
+			require.Nil(t, apiError)
+			_, err := io.Copy(io.Discard, reader)
+			require.NoError(t, err)
+
+			gin.SetMode(gin.TestMode)
+			context, _ := gin.CreateTestContext(httptest.NewRecorder())
+			context.Set("s3-verified-trailers", http.Header{
+				"X-Amz-Checksum-Sha256": []string{test.trailerValue},
+			})
+
+			apiError = hashes.loadTrailer(context)
+			if test.wantCode != "" {
+				require.NotNil(t, apiError)
+				require.Equal(t, test.wantCode, apiError.Code)
+				return
+			}
+			require.Nil(t, apiError)
+			require.Nil(t, hashes.validate())
+		})
+	}
 }
 
 func TestAWSChunkedEncodingRequiresVerifiedStreamingPayload(t *testing.T) {
