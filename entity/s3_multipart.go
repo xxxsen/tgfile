@@ -50,3 +50,18 @@ type S3MultipartPart struct {
 	Ctime         int64
 	Mtime         int64
 }
+
+// S3CompletedPart is one immutable final S3 multipart part. SourceFileID and
+// StartOffset are derived from the composite segment manifest.
+type S3CompletedPart struct {
+	FileID            uint64
+	PartNumber        int
+	PartSize          int64
+	StartOffset       int64
+	PartsCount        int
+	SourceFileID      uint64
+	IsMultipart       bool
+	ChecksumState     string
+	ChecksumAlgorithm string
+	ChecksumValue     string
+}

@@ -70,6 +70,17 @@ type AuditReport struct {
 	MissingCompletedResultChecksum   int64            `json:"missing_completed_result_checksum_count"`
 	MultipartResultMetadataMismatch  int64            `json:"multipart_result_metadata_mismatch_count"`
 	InvalidObjectChecksumMetadata    int64            `json:"invalid_object_checksum_metadata_count"`
+	CompletedPartCount               int64            `json:"completed_part_count"`
+	CompletedPartCountByState        map[string]int64 `json:"completed_part_checksum_state_count"`
+	LayoutV2MissingCompletedPart     int64            `json:"layout_v2_missing_completed_part_count"`
+	LayoutV1WithCompletedPart        int64            `json:"layout_v1_with_completed_part_count"`
+	CompletedPartWithoutSegment      int64            `json:"completed_part_without_segment_count"`
+	CompletedPartNumberMismatch      int64            `json:"completed_part_number_mismatch_count"`
+	CompletedPartSizeMismatch        int64            `json:"completed_part_size_mismatch_count"`
+	CompletedPartFinalSizeMismatch   int64            `json:"completed_part_final_size_mismatch_count"`
+	InvalidCompletedPartChecksum     int64            `json:"invalid_completed_part_checksum_count"`
+	CompletedControlManifestMismatch int64            `json:"completed_control_manifest_mismatch_count"`
+	ObjectManifestAlgorithmMismatch  int64            `json:"object_manifest_algorithm_mismatch_count"`
 }
 
 type AuditOptions struct {
@@ -246,6 +257,7 @@ func AuditWithOptions(
 		BlockDeleteCountByState:          make(map[string]int64),
 		MultipartUploadCountByState:      make(map[string]int64),
 		MultipartPartCountByState:        make(map[string]int64),
+		CompletedPartCountByState:        make(map[string]int64),
 	}
 	if err := readCoreAudit(ctx, database, report); err != nil {
 		return nil, err
@@ -368,7 +380,210 @@ func readMultipartAudit(
 	if err := readChecksumAudit(ctx, database, report); err != nil {
 		return err
 	}
+	if err := readCompletedPartAudit(ctx, database, report); err != nil {
+		return err
+	}
 	return readExpiredMultipartAudit(ctx, database, report)
+}
+
+func readCompletedPartAudit(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	if err := database.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM tg_s3_completed_part_tab",
+	).Scan(&report.CompletedPartCount); err != nil {
+		return fmt.Errorf("count completed S3 parts: %w", err)
+	}
+	if err := readStateCounts(
+		ctx,
+		database,
+		`SELECT checksum_state, COUNT(*) FROM tg_s3_completed_part_tab
+GROUP BY checksum_state ORDER BY checksum_state`,
+		report.CompletedPartCountByState,
+	); err != nil {
+		return fmt.Errorf("read completed S3 part checksum states: %w", err)
+	}
+	if err := readCompletedPartInvariantAudit(ctx, database, report); err != nil {
+		return err
+	}
+	return readCompletedPartChecksumAudit(ctx, database, report)
+}
+
+func readCompletedPartInvariantAudit(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	if err := readCompletedPartStructuralAudit(ctx, database, report); err != nil {
+		return err
+	}
+	return readCompletedPartControlAudit(ctx, database, report)
+}
+
+func readCompletedPartStructuralAudit(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	return runMultipartAuditCountQueries(ctx, database, []multipartAuditCountQuery{
+		{
+			destination: &report.LayoutV2MissingCompletedPart,
+			name:        "layout-v2 files missing completed parts",
+			query: `SELECT COUNT(*) FROM (
+    SELECT final.file_id
+    FROM tg_file_tab final
+    LEFT JOIN tg_s3_file_segment_tab segment ON segment.file_id = final.file_id
+    LEFT JOIN tg_s3_completed_part_tab part
+      ON part.file_id = final.file_id
+     AND part.part_number = segment.segment_index + 1
+    WHERE final.file_layout_version = 2
+    GROUP BY final.file_id
+    HAVING COUNT(segment.segment_index) = 0
+       OR COUNT(part.part_number) != COUNT(segment.segment_index)
+)`,
+		},
+		{
+			destination: &report.LayoutV1WithCompletedPart,
+			name:        "layout-v1 files with completed parts",
+			query: `SELECT COUNT(DISTINCT part.file_id)
+FROM tg_s3_completed_part_tab part
+JOIN tg_file_tab file ON file.file_id = part.file_id
+WHERE file.file_layout_version = 1`,
+		},
+		{
+			destination: &report.CompletedPartWithoutSegment,
+			name:        "completed parts without segments",
+			query: `SELECT COUNT(*)
+FROM tg_s3_completed_part_tab part
+LEFT JOIN tg_s3_file_segment_tab segment
+  ON segment.file_id = part.file_id
+ AND segment.segment_index + 1 = part.part_number
+WHERE segment.file_id IS NULL`,
+		},
+		{
+			destination: &report.CompletedPartNumberMismatch,
+			name:        "completed part number mismatches",
+			query: `SELECT COUNT(*) FROM (
+    SELECT file_id
+    FROM tg_s3_completed_part_tab
+    GROUP BY file_id
+    HAVING MIN(part_number) != 1
+       OR MAX(part_number) != COUNT(*)
+)`,
+		},
+		{
+			destination: &report.CompletedPartSizeMismatch,
+			name:        "completed part size mismatches",
+			query: `SELECT COUNT(*)
+FROM tg_s3_completed_part_tab part
+JOIN tg_s3_file_segment_tab segment
+  ON segment.file_id = part.file_id
+ AND segment.segment_index + 1 = part.part_number
+WHERE part.part_size != segment.segment_size`,
+		},
+		{
+			destination: &report.CompletedPartFinalSizeMismatch,
+			name:        "completed part final size mismatches",
+			query: `SELECT COUNT(*) FROM (
+    SELECT final.file_id
+    FROM tg_file_tab final
+    LEFT JOIN tg_s3_completed_part_tab part ON part.file_id = final.file_id
+    WHERE final.file_layout_version = 2
+    GROUP BY final.file_id, final.file_size
+	    HAVING COALESCE(SUM(part.part_size), 0) != final.file_size
+)`,
+		},
+	})
+}
+
+func readCompletedPartControlAudit(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	return runMultipartAuditCountQueries(ctx, database, []multipartAuditCountQuery{
+		{
+			destination: &report.CompletedControlManifestMismatch,
+			name:        "completed control and part manifest mismatches",
+			query: `WITH ranked_selected_part AS (
+    SELECT
+        upload.result_file_id AS file_id,
+        ROW_NUMBER() OVER (
+            PARTITION BY upload.upload_id ORDER BY source.part_number
+        ) AS final_part_number,
+        upload.checksum_algorithm AS checksum_algorithm,
+        source.checksum_value AS checksum_value
+    FROM tg_s3_multipart_upload_tab upload
+    JOIN tg_s3_multipart_part_tab source ON source.upload_id = upload.upload_id
+    WHERE upload.upload_state = 'completed'
+      AND upload.checksum_algorithm != ''
+      AND source.part_state = 'selected'
+)
+SELECT COUNT(*)
+FROM ranked_selected_part source
+LEFT JOIN tg_s3_completed_part_tab completed
+  ON completed.file_id = source.file_id
+ AND completed.part_number = source.final_part_number
+WHERE completed.file_id IS NULL
+   OR completed.checksum_state != 'available'
+   OR completed.checksum_algorithm != source.checksum_algorithm
+   OR completed.checksum_value != source.checksum_value`,
+		},
+		{
+			destination: &report.ObjectManifestAlgorithmMismatch,
+			name:        "object metadata and part manifest algorithm mismatches",
+			query: `SELECT COUNT(DISTINCT part.file_id)
+FROM tg_s3_completed_part_tab part
+JOIN tg_file_mapping_tab mapping ON mapping.ref_data = CAST(part.file_id AS TEXT)
+JOIN tg_s3_object_metadata_tab metadata ON metadata.entry_id = mapping.entry_id
+WHERE part.checksum_state = 'available'
+  AND metadata.request_checksum_algorithm != part.checksum_algorithm`,
+		},
+	})
+}
+
+func readCompletedPartChecksumAudit(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	rows, err := database.QueryContext(ctx, `
+SELECT checksum_state, checksum_algorithm, checksum_value
+FROM tg_s3_completed_part_tab
+ORDER BY file_id, part_number`)
+	if err != nil {
+		return fmt.Errorf("query completed S3 part checksums: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	for rows.Next() {
+		var state, algorithmValue, checksumValue string
+		if err := rows.Scan(&state, &algorithmValue, &checksumValue); err != nil {
+			return fmt.Errorf("scan completed S3 part checksum: %w", err)
+		}
+		if state == "unavailable" {
+			if algorithmValue != "" || checksumValue != "" {
+				report.InvalidCompletedPartChecksum++
+			}
+			continue
+		}
+		algorithm, err := s3checksum.ParseAlgorithm(algorithmValue)
+		if state != "available" || err != nil {
+			report.InvalidCompletedPartChecksum++
+			continue
+		}
+		if _, err := s3checksum.Decode(algorithm, checksumValue); err != nil {
+			report.InvalidCompletedPartChecksum++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate completed S3 part checksums: %w", err)
+	}
+	return nil
 }
 
 func readChecksumAudit(

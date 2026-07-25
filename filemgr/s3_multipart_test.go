@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"io"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -88,6 +89,11 @@ func TestMultipartCompleteCreatesReadableCompositeAndDeleteMarksSources(t *testi
 		t,
 		databaseClient,
 		"SELECT COUNT(*) FROM tg_s3_file_segment_tab",
+	))
+	require.Equal(t, 2, queryCount(
+		t,
+		databaseClient,
+		"SELECT COUNT(*) FROM tg_s3_completed_part_tab",
 	))
 
 	metadata, err := manager.StatFile(t.Context(), result.FileID)
@@ -282,6 +288,15 @@ SET checksum_algorithm = '', checksum_type = '' WHERE upload_id = ?`,
 	require.NoError(t, err)
 	require.Empty(t, result.Algorithm)
 	require.Empty(t, result.ChecksumValue)
+	require.Equal(t, 1, queryCount(
+		t,
+		databaseClient,
+		`SELECT COUNT(*) FROM tg_s3_completed_part_tab
+WHERE file_id = `+strconv.FormatUint(result.FileID, 10)+`
+  AND checksum_state = 'unavailable'
+  AND checksum_algorithm = ''
+  AND checksum_value = ''`,
+	))
 }
 
 func TestMultipartAbortAndReplacementUseDurableCleanup(t *testing.T) {

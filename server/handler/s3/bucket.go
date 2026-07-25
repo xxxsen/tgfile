@@ -83,8 +83,22 @@ func (h *S3Handler) GetBucketOrObject(c *gin.Context) {
 		h.GetBucket(c)
 		return
 	}
-	if hasQueryKey(c.Request.URL.Query(), "uploadId") {
+	query := c.Request.URL.Query()
+	hasUploadID := hasQueryKey(query, "uploadId")
+	hasAttributes := hasQueryKey(query, "attributes")
+	if hasUploadID && hasAttributes {
+		s3base.WriteError(c, s3base.InvalidRequest(
+			"uploadId and attributes cannot be combined.",
+			nil,
+		))
+		return
+	}
+	if hasUploadID {
 		h.ListParts(c)
+		return
+	}
+	if hasAttributes {
+		h.GetObjectAttributes(c)
 		return
 	}
 	h.DownloadObject(c)

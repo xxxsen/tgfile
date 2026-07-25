@@ -11,6 +11,8 @@ erDiagram
     FILE ||--o{ PART : "file_id"
     FILE ||--o{ SEGMENT : "final file_id"
     FILE ||--o| SEGMENT : "source_file_id"
+    FILE ||--o{ COMPLETED_PART : "final file_id"
+    SEGMENT ||--|| COMPLETED_PART : "final part position"
     FILE ||--o{ MAPPING : "ref_data"
     MAPPING ||--o{ MAPPING : "parent_entry_id"
     MAPPING ||--o| S3_METADATA : "entry_id"
@@ -22,6 +24,7 @@ erDiagram
 - File 是内部内容对象；
 - Part 是按顺序保存的后端块；
 - Segment 是 layout v2 Composite File 对 layout v1 source File 的有序引用；
+- Completed Part 是 layout v2 对外暴露的永久 S3 Part 边界和 checksum manifest；
 - Mapping 是路径树条目，文件条目通过十进制 `ref_data` 引用 File；
 - S3 Metadata 绑定具体 Mapping，不绑定 File，因此同一内容的不同对象可以拥有不同元数据；
 - Multipart Upload/Part 保存未完成上传和完成幂等所需的控制状态；
@@ -86,9 +89,36 @@ layout v2 File 通过本表顺序引用 layout v1 source File：
 
 final File 的 `file_size` 必须等于所有 Segment Size 之和，`file_part_count` 必须等于所有
 source File 物理 Part 数之和。Segment 不允许递归引用 layout v2。Complete 写入 final
-File、Segment、Mapping、S3 Metadata 和 Multipart 状态的操作处于同一事务。
+File、Segment、Completed Part、Mapping、S3 Metadata 和 Multipart 状态的操作处于同一事务。
 
-### 2.5 Multipart 控制表
+### 2.5 `tg_s3_completed_part_tab`
+
+本表保存 Multipart Complete 后不随控制记录清理而消失的 S3 Part 语义：
+
+| 字段 | 语义 |
+|---|---|
+| `file_id` | layout v2 final File |
+| `part_number` | final PartNumber，从 1 连续递增 |
+| `part_size` | Complete 时所选 source File 的完整大小 |
+| `checksum_state` | `available` 或 `unavailable` |
+| `checksum_algorithm` | checksum 可用时的固化 Multipart 算法，否则为空 |
+| `checksum_value` | checksum 可用时已经验证的 Part checksum，否则为空 |
+| `ctime`、`mtime` | manifest 记录时间 |
+
+`(file_id, part_number)` 是主键。每个 Segment 必须恰好对应一行 Completed Part，并满足
+`part_number = segment_index + 1`、`part_size = segment_size`，所有 Part Size 之和必须等于
+final File Size。layout v1 不得拥有 Completed Part。
+
+新完成的非 legacy Multipart 保存可解码的算法专用 checksum；legacy Multipart 以及无法从
+历史控制记录可靠恢复 checksum 的存量 Segment 只保存准确的 Part 顺序和大小，并把 checksum
+标记为 unavailable。迁移和读取都不得为补 checksum 而下载 Telegram 内容，也不得使用 ETag、
+File MD5 或完整对象 checksum 冒充 Part checksum。
+
+Completed Part 属于内容 File，不属于 Mapping。CopyObject 或 WebDAV COPY 复用同一 File 时
+共享一份 manifest；删除、移动或覆盖 Mapping，以及 Multipart 控制记录过期清理，都不得删除
+manifest。即使最后一个 Mapping 已移除并且底层 message 已删除，manifest 仍作为审计记录保留。
+
+### 2.6 Multipart 控制表
 
 `tg_s3_multipart_upload_tab` 保存 bucket/key、`active/completing/completed/aborted` 状态、
 创建时对象元数据、发起/过期/完成/清理时间，以及 Complete 幂等所需的 fingerprint、
@@ -109,9 +139,10 @@ result FileID、Multipart ETag 和最终 checksum。checksum 字段为：
 
 PartNumber 为 1～10000，单 part 最大 5 GiB。一个暂存 File 只能属于一个 Multipart Part。
 active upload 和 completed/aborted 控制记录分别在 24 小时有效期与保留期后由专用 worker
-处理；清理控制行不会删除 final File、Segment、Mapping、Telegram Part 或删除审计记录。
+处理；清理控制行不会删除 final File、Segment、Completed Part、Mapping、Telegram Part 或
+删除审计记录。
 
-### 2.6 `tg_s3_object_metadata_tab`
+### 2.7 `tg_s3_object_metadata_tab`
 
 每个新 S3 对象 Mapping 对应一行：
 
@@ -156,7 +187,7 @@ Multipart ETag 冒充 MD5。
 
 惰性兼容不写数据库，也不改变历史内容和外部标识。
 
-### 2.7 `tg_file_part_delete_state_tab`
+### 2.8 `tg_file_part_delete_state_tab`
 
 `(file_id, file_part_id)` 为主键。
 
@@ -265,6 +296,10 @@ Mapping 时逐一检查 source File；仍被有效 Mapping/Composite/active uplo
 - Multipart algorithm/type 组合、legacy 空字段、active Part checksum、COMPOSITE `-N`
   结果和 completed result；
 - Multipart result 与最终对象 Metadata 的一致性，以及对象 checksum 三元组的完整性。
+- Completed Part 总数和 checksum state 分布；
+- layout v2 缺失 Completed Part、layout v1 错误拥有 Completed Part、无 Segment 的孤立行；
+- final PartNumber 连续性、Part/Segment Size 和 final File Size 一致性；
+- Completed Part checksum 编码、控制记录和对象算法的一致性。
 
 共享 FileID 指标用于发现 private 内容的其他公开入口；它不会自动修改 Mapping 或 ACL。
 
@@ -277,6 +312,7 @@ Mapping 时逐一检查 source File；仍被有效 Mapping/Composite/active uplo
 - Mapping 层级和 `ref_data`；
 - 历史弱 ETag 和新对象强 ETag；
 - 历史 File 的 layout 默认值 `1`，以及 Multipart 组合 ETag；
+- layout v2 的 Segment 边界、永久 Completed Part 顺序/大小和已有 Part checksum；
 - 直链 key 与 `/defaults` 映射；
 - 已有内容使用的字节旋转参数。
 

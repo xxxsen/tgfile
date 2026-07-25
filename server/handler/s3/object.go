@@ -48,10 +48,17 @@ var (
 )
 
 func (h *S3Handler) DownloadObject(c *gin.Context) {
-	if h.rejectUnsupportedObjectQuery(c) {
+	observation := newObjectReadObservation("GetObject", objectReadModeFull)
+	defer observation.finish(c)
+	if h.rejectUnsupportedObjectReadQuery(c) {
 		return
 	}
-	bucket, key, apiError := h.authorizeObject(c)
+	bucket, key, apiError := h.authorizeObject(c, hasResponseOverrideQuery(c.Request.URL.Query()))
+	if apiError != nil {
+		s3base.WriteError(c, apiError)
+		return
+	}
+	options, apiError := parseObjectReadOptions(c.Request)
 	if apiError != nil {
 		s3base.WriteError(c, apiError)
 		return
@@ -72,6 +79,11 @@ func (h *S3Handler) DownloadObject(c *gin.Context) {
 	}
 	if apiError := checkReadConditions(c.Request, info); apiError != nil {
 		s3base.WriteError(c, apiError)
+		return
+	}
+	if options.partNumber != nil {
+		observation.readMode = objectReadModePart
+		h.downloadObjectPart(c, info, *options.partNumber, options, observation)
 		return
 	}
 	if apiError := validateObjectRange(c.Request, info); apiError != nil {
@@ -88,7 +100,13 @@ func (h *S3Handler) DownloadObject(c *gin.Context) {
 	}
 	defer logCloseError(c.Request.Context(), file, "close S3 download")
 	includeChecksum := c.GetHeader("Range") == "" || !objectRangeApplies(c.Request, info)
+	if !includeChecksum {
+		observation.readMode = objectReadModeRange
+	}
 	setObjectHeaders(c, info, includeChecksum)
+	if includeChecksum {
+		applyResponseOverrides(c, options)
+	}
 	http.ServeContent(
 		c.Writer,
 		c.Request,
@@ -99,10 +117,17 @@ func (h *S3Handler) DownloadObject(c *gin.Context) {
 }
 
 func (h *S3Handler) HeadObject(c *gin.Context) {
-	if h.rejectUnsupportedObjectQuery(c) {
+	observation := newObjectReadObservation("HeadObject", objectReadModeFull)
+	defer observation.finish(c)
+	if h.rejectUnsupportedObjectReadQuery(c) {
 		return
 	}
-	bucket, key, apiError := h.authorizeObject(c)
+	bucket, key, apiError := h.authorizeObject(c, hasResponseOverrideQuery(c.Request.URL.Query()))
+	if apiError != nil {
+		s3base.WriteError(c, apiError)
+		return
+	}
+	options, apiError := parseObjectReadOptions(c.Request)
 	if apiError != nil {
 		s3base.WriteError(c, apiError)
 		return
@@ -125,10 +150,144 @@ func (h *S3Handler) HeadObject(c *gin.Context) {
 		s3base.WriteError(c, apiError)
 		return
 	}
+	if options.partNumber != nil {
+		observation.readMode = objectReadModePart
+		h.headObjectPart(c, info, *options.partNumber, options, observation)
+		return
+	}
 	setObjectHeaders(c, info, true)
+	applyResponseOverrides(c, options)
 	c.Header("Accept-Ranges", "bytes")
 	c.Header("Content-Length", strconv.FormatInt(info.Link.FileSize, 10))
 	c.Status(http.StatusOK)
+}
+
+func (h *S3Handler) downloadObjectPart(
+	c *gin.Context,
+	info *filemgr.S3ObjectInfo,
+	partNumber int,
+	options *objectReadOptions,
+	observation *objectReadObservation,
+) {
+	part, err := h.fmgr.StatS3ObjectPart(
+		c.Request.Context(),
+		info.Link.FileId,
+		info.Link.FileSize,
+		partNumber,
+	)
+	if err != nil {
+		s3base.WriteError(c, objectPartError(err))
+		return
+	}
+	observation.manifestChecksumState = part.ChecksumState
+	if apiError := setObjectPartHeaders(c, info, part, checksumModeEnabled(c.Request)); apiError != nil {
+		s3base.WriteError(c, apiError)
+		return
+	}
+	reader, err := h.fmgr.OpenS3ObjectPart(c.Request.Context(), part)
+	if err != nil {
+		s3base.WriteError(c, s3base.InternalError(fmt.Errorf("open S3 object part: %w", err)))
+		return
+	}
+	defer logCloseError(c.Request.Context(), reader, "close S3 object part")
+	if part.PartSize == 0 {
+		applyResponseOverrides(c, options)
+		c.Status(http.StatusOK)
+		return
+	}
+	c.Status(http.StatusPartialContent)
+	if _, err := io.CopyN(c.Writer, reader, part.PartSize); err != nil {
+		logutil.GetLogger(c.Request.Context()).Error(
+			"stream S3 object part failed",
+			zap.Error(err),
+			zap.Int("part_number", part.PartNumber),
+		)
+	}
+}
+
+func (h *S3Handler) headObjectPart(
+	c *gin.Context,
+	info *filemgr.S3ObjectInfo,
+	partNumber int,
+	options *objectReadOptions,
+	observation *objectReadObservation,
+) {
+	part, err := h.fmgr.StatS3ObjectPart(
+		c.Request.Context(),
+		info.Link.FileId,
+		info.Link.FileSize,
+		partNumber,
+	)
+	if err != nil {
+		s3base.WriteError(c, objectPartError(err))
+		return
+	}
+	observation.manifestChecksumState = part.ChecksumState
+	if apiError := setObjectPartHeaders(c, info, part, checksumModeEnabled(c.Request)); apiError != nil {
+		s3base.WriteError(c, apiError)
+		return
+	}
+	applyResponseOverrides(c, options)
+	c.Status(http.StatusOK)
+}
+
+func setObjectPartHeaders(
+	c *gin.Context,
+	info *filemgr.S3ObjectInfo,
+	part *entity.S3CompletedPart,
+	includeChecksum bool,
+) *s3base.APIError {
+	setObjectHeaders(c, info, false)
+	c.Header("Accept-Ranges", "bytes")
+	c.Header("Content-Length", strconv.FormatInt(part.PartSize, 10))
+	if part.PartSize != 0 {
+		end := part.StartOffset + part.PartSize - 1
+		c.Header(
+			"Content-Range",
+			fmt.Sprintf("bytes %d-%d/%d", part.StartOffset, end, info.Link.FileSize),
+		)
+	}
+	if part.IsMultipart {
+		c.Header("x-amz-mp-parts-count", strconv.Itoa(part.PartsCount))
+	}
+	if !includeChecksum {
+		return nil
+	}
+	if !part.IsMultipart {
+		setObjectChecksumHeaders(c, info.Metadata)
+		return nil
+	}
+	if part.ChecksumState != "available" {
+		return nil
+	}
+	if part.ChecksumAlgorithm != info.Metadata.RequestChecksumAlgorithm {
+		return s3base.InternalError(filemgr.ErrInvalidS3Part)
+	}
+	c.Header(checksumHeader(part.ChecksumAlgorithm), part.ChecksumValue)
+	if info.Metadata.ChecksumType != "" {
+		c.Header("x-amz-checksum-type", info.Metadata.ChecksumType)
+	}
+	return nil
+}
+
+func objectPartError(err error) *s3base.APIError {
+	var partNumberError *filemgr.S3PartNumberError
+	if errors.As(err, &partNumberError) {
+		apiError := s3base.NewError(
+			http.StatusRequestedRangeNotSatisfiable,
+			"InvalidPartNumber",
+			"The requested part number is not satisfiable.",
+			err,
+		)
+		apiError.PartNumberRequested = partNumberError.Requested
+		apiError.ActualPartCount = partNumberError.Actual
+		return apiError
+	}
+	return s3base.InternalError(err)
+}
+
+func checksumModeEnabled(request *http.Request) bool {
+	return request.Header.Get("X-Amz-Checksum-Mode") == "ENABLED"
 }
 
 func (h *S3Handler) UploadObject(c *gin.Context) {
@@ -207,6 +366,23 @@ func (h *S3Handler) UploadObject(c *gin.Context) {
 
 func (h *S3Handler) rejectUnsupportedObjectQuery(c *gin.Context) bool {
 	if !hasUnsupportedObjectQuery(c.Request.URL.Query()) {
+		return false
+	}
+	if _, apiError := h.Authorize(c, true); apiError != nil {
+		s3base.WriteError(c, apiError)
+		return true
+	}
+	s3base.WriteError(c, s3base.NewError(
+		http.StatusNotImplemented,
+		"NotImplemented",
+		"The requested object subresource is not implemented.",
+		nil,
+	))
+	return true
+}
+
+func (h *S3Handler) rejectUnsupportedObjectReadQuery(c *gin.Context) bool {
+	if !hasUnsupportedObjectReadQuery(c.Request.URL.Query()) {
 		return false
 	}
 	if _, apiError := h.Authorize(c, true); apiError != nil {
@@ -384,7 +560,10 @@ func discardUploadedFile(ctx context.Context, manager filemgr.IFileManager, file
 	}
 }
 
-func (h *S3Handler) authorizeObject(c *gin.Context) (Bucket, string, *s3base.APIError) {
+func (h *S3Handler) authorizeObject(
+	c *gin.Context,
+	forceAuthentication bool,
+) (Bucket, string, *s3base.APIError) {
 	bucketName, key := requestBucketKey(c.Request.URL.Path)
 	bucket, exists := h.Bucket(bucketName)
 	if !exists {
@@ -395,7 +574,7 @@ func (h *S3Handler) authorizeObject(c *gin.Context) (Bucket, string, *s3base.API
 			nil,
 		)
 	}
-	required := bucket.ACL != BucketACLPublicRead
+	required := forceAuthentication || bucket.ACL != BucketACLPublicRead
 	if _, apiError := h.Authorize(c, required); apiError != nil {
 		return Bucket{}, "", apiError
 	}
@@ -505,20 +684,26 @@ func setObjectHeaders(c *gin.Context, info *filemgr.S3ObjectInfo, includeChecksu
 	setOptionalHeader(c, "Content-Encoding", metadata.ContentEncoding)
 	setOptionalHeader(c, "Content-Language", metadata.ContentLanguage)
 	setOptionalHeader(c, "Expires", metadata.Expires)
-	if includeChecksum && metadata.ChecksumSHA256 != "" {
-		c.Header("x-amz-checksum-sha256", metadata.ChecksumSHA256)
-	}
-	if includeChecksum && metadata.RequestChecksumAlgorithm != "" {
-		c.Header(checksumHeader(metadata.RequestChecksumAlgorithm), metadata.RequestChecksumValue)
-	}
-	if includeChecksum && metadata.ChecksumType != "" {
-		c.Header("x-amz-checksum-type", metadata.ChecksumType)
+	if includeChecksum {
+		setObjectChecksumHeaders(c, metadata)
 	}
 	var userMetadata map[string]string
 	if err := json.Unmarshal([]byte(metadata.UserMetadata), &userMetadata); err == nil {
 		for key, value := range userMetadata {
 			c.Header("x-amz-meta-"+key, value)
 		}
+	}
+}
+
+func setObjectChecksumHeaders(c *gin.Context, metadata *entity.S3ObjectMetadata) {
+	if metadata.ChecksumSHA256 != "" {
+		c.Header("x-amz-checksum-sha256", metadata.ChecksumSHA256)
+	}
+	if metadata.RequestChecksumAlgorithm != "" {
+		c.Header(checksumHeader(metadata.RequestChecksumAlgorithm), metadata.RequestChecksumValue)
+	}
+	if metadata.ChecksumType != "" {
+		c.Header("x-amz-checksum-type", metadata.ChecksumType)
 	}
 }
 

@@ -25,6 +25,8 @@ var (
 	ErrInvalidCachePath = errors.New("invalid file cache path")
 	ErrS3Precondition   = errors.New("S3 object precondition failed")
 	ErrS3ObjectConflict = errors.New("S3 object changed concurrently")
+	ErrInvalidS3Part    = errors.New("invalid completed S3 part manifest")
+	ErrS3PartNotFound   = errors.New("S3 object part number exceeds the completed part count")
 )
 
 type WalkLinkFunc func(ctx context.Context, link string, item *entity.FileLinkMeta) (bool, error)
@@ -109,6 +111,29 @@ type S3ListResult struct {
 	NextKey        string
 }
 
+type S3PartNumberError struct {
+	Requested int
+	Actual    int
+}
+
+func (e *S3PartNumberError) Error() string {
+	return ErrS3PartNotFound.Error()
+}
+
+func (e *S3PartNumberError) Unwrap() error {
+	return ErrS3PartNotFound
+}
+
+type S3ObjectPartPage struct {
+	Parts                []entity.S3CompletedPart
+	PartsCount           int
+	PartNumberMarker     int
+	NextPartNumberMarker int
+	MaxParts             int
+	IsTruncated          bool
+	IsMultipart          bool
+}
+
 type S3Condition struct {
 	IfMatch           string
 	IfNoneMatch       string
@@ -116,9 +141,29 @@ type S3Condition struct {
 	IfUnmodifiedSince *time.Time
 }
 
-type IS3ObjectManager interface {
+type IS3ObjectReader interface {
 	StatS3Object(ctx context.Context, path string) (*S3ObjectInfo, error)
+	StatS3ObjectPart(
+		ctx context.Context,
+		fileID uint64,
+		objectSize int64,
+		partNumber int,
+	) (*entity.S3CompletedPart, error)
+	OpenS3ObjectPart(
+		ctx context.Context,
+		part *entity.S3CompletedPart,
+	) (io.ReadSeekCloser, error)
+	ListS3ObjectParts(
+		ctx context.Context,
+		fileID uint64,
+		objectSize int64,
+		marker int,
+		maxParts int,
+	) (*S3ObjectPartPage, error)
 	ListS3Objects(ctx context.Context, req *S3ListRequest) (*S3ListResult, error)
+}
+
+type IS3ObjectWriter interface {
 	PublishS3Object(
 		ctx context.Context,
 		path string,
@@ -136,4 +181,9 @@ type IS3ObjectManager interface {
 		destinationCondition *S3Condition,
 	) (*S3ObjectInfo, error)
 	DeleteS3Object(ctx context.Context, path string, condition *S3Condition) (bool, error)
+}
+
+type IS3ObjectManager interface {
+	IS3ObjectReader
+	IS3ObjectWriter
 }

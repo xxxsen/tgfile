@@ -59,7 +59,8 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
 bucket ACL：
 
 - `private`：所有 S3 操作都需要认证；
-- `public-read`：仅对象 GET/HEAD 可匿名，List、PUT、Copy 和 Delete 仍需认证。
+- `public-read`：仅对象 GET/HEAD/GetObjectAttributes 可匿名，List、PUT、Copy 和 Delete
+  仍需认证。
 
 同一实例的 Telegram 上传请求串行执行，相邻上传的开始时间至少间隔配置值；删除请求也
 串行执行，相邻删除的开始时间至少间隔一秒。因此 `bot_config.upload_min_interval_ms`
@@ -113,6 +114,27 @@ aws --endpoint-url https://your-tgfile.example \
   s3api head-object --bucket private-data --key README.md
 
 aws --endpoint-url https://your-tgfile.example \
+  s3api get-object \
+  --bucket private-data \
+  --key multipart.bin \
+  --part-number 2 \
+  multipart.part2.bin
+
+aws --endpoint-url https://your-tgfile.example \
+  s3api get-object-attributes \
+  --bucket private-data \
+  --key multipart.bin \
+  --object-attributes ETag Checksum ObjectParts StorageClass ObjectSize \
+  --max-parts 1000
+
+aws --endpoint-url https://your-tgfile.example \
+  s3api get-object \
+  --bucket private-data \
+  --key README.md \
+  --response-content-disposition 'attachment; filename="README.md"' \
+  downloaded-README.md
+
+aws --endpoint-url https://your-tgfile.example \
   s3api copy-object \
   --bucket private-data \
   --copy-source private-data/README.md \
@@ -160,7 +182,9 @@ query。需要预签名 URL 时使用 AWS SDK、AWS CLI 或其他 SigV4 客户�
 - ListBuckets、HeadBucket、GetBucketLocation；
 - ListObjects V1/V2（prefix、delimiter、marker/token 分页、URL encoding）；
 - PutObject 标准覆盖与条件写；
-- GetObject、HeadObject、Range 和 HTTP 条件请求；
+- GetObject、HeadObject、Range、HTTP 条件请求和六种 `response-*` 响应头覆盖；
+- GetObject/HeadObject 的 `partNumber` 完成态 Part 读取；
+- GetObjectAttributes 的 ETag、Checksum、ObjectParts、StorageClass、ObjectSize 和分页；
 - CopyObject COPY/REPLACE；
 - DeleteObject、DeleteObjects；
 - CreateMultipartUpload、UploadPart、ListParts、CompleteMultipartUpload、
@@ -170,6 +194,9 @@ query。需要预签名 URL 时使用 AWS SDK、AWS CLI 或其他 SigV4 客户�
 
 Multipart 最终对象支持 S3/直链/WebDAV 的完整读取、HEAD、Range、Copy 和 Delete。
 Multipart additional checksum 支持 CRC32、CRC32C、CRC64NVME、SHA1 和 SHA256。
+`partNumber` 使用 Complete 后连续的 final Part 编号，不是可能非连续的原 UploadPart 编号；
+一个 S3 Part 仍可能跨多个 Telegram message。public-read bucket 的匿名请求如果携带任一
+`response-*` 覆盖参数仍必须认证，因为这些参数属于 SigV4 canonical query。
 UploadPartCopy、SSE、对象 ACL、bucket 创建/删除、版本控制、tagging 和 lifecycle
 暂不支持。
 

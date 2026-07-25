@@ -14,13 +14,15 @@ import (
 var errNilAPIError = errors.New("nil S3 API error")
 
 type APIError struct {
-	HTTPStatus int
-	Code       string
-	Message    string
-	Bucket     string
-	Key        string
-	Resource   string
-	Cause      error
+	HTTPStatus          int
+	Code                string
+	Message             string
+	Bucket              string
+	Key                 string
+	Resource            string
+	PartNumberRequested int
+	ActualPartCount     int
+	Cause               error
 }
 
 func (e *APIError) Error() string {
@@ -38,14 +40,16 @@ func (e *APIError) Unwrap() error {
 }
 
 type ErrorResponse struct {
-	XMLName    xml.Name `xml:"Error"`
-	Code       string   `xml:"Code"`
-	Message    string   `xml:"Message"`
-	BucketName string   `xml:"BucketName,omitempty"`
-	Key        string   `xml:"Key,omitempty"`
-	Resource   string   `xml:"Resource,omitempty"`
-	RequestID  string   `xml:"RequestId"`
-	HostID     string   `xml:"HostId"`
+	XMLName             xml.Name `xml:"Error"`
+	Code                string   `xml:"Code"`
+	Message             string   `xml:"Message"`
+	BucketName          string   `xml:"BucketName,omitempty"`
+	Key                 string   `xml:"Key,omitempty"`
+	Resource            string   `xml:"Resource,omitempty"`
+	PartNumberRequested int      `xml:"PartNumberRequested,omitempty"`
+	ActualPartCount     int      `xml:"ActualPartCount,omitempty"`
+	RequestID           string   `xml:"RequestId"`
+	HostID              string   `xml:"HostId"`
 }
 
 func NewError(status int, code, message string, cause error) *APIError {
@@ -64,23 +68,26 @@ func WriteError(c *gin.Context, apiError *APIError) {
 	requestID, _ := trace.GetTraceId(c.Request.Context())
 	logutil.GetLogger(c.Request.Context()).Error(
 		"S3 request failed",
-		zap.Error(apiError.Cause),
+		zap.Bool("has_cause", apiError.Cause != nil),
 		zap.String("code", apiError.Code),
 		zap.Int("status_code", apiError.HTTPStatus),
 	)
+	c.Set("s3-result-code", apiError.Code)
 	c.Header("x-amz-request-id", requestID)
 	if c.Request.Method == http.MethodHead || apiError.HTTPStatus == http.StatusNotModified {
 		c.Status(apiError.HTTPStatus)
 		return
 	}
 	c.XML(apiError.HTTPStatus, &ErrorResponse{
-		Code:       apiError.Code,
-		Message:    apiError.Message,
-		BucketName: apiError.Bucket,
-		Key:        apiError.Key,
-		Resource:   apiError.Resource,
-		RequestID:  requestID,
-		HostID:     requestID,
+		Code:                apiError.Code,
+		Message:             apiError.Message,
+		BucketName:          apiError.Bucket,
+		Key:                 apiError.Key,
+		Resource:            apiError.Resource,
+		PartNumberRequested: apiError.PartNumberRequested,
+		ActualPartCount:     apiError.ActualPartCount,
+		RequestID:           requestID,
+		HostID:              requestID,
 	})
 }
 

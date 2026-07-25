@@ -24,14 +24,14 @@ func TestOpenCreatesSchemaFromEmbeddedMigrations(t *testing.T) {
 		require.NoError(t, client.Close())
 	})
 
-	require.Equal(t, 9, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
-	require.Equal(t, 8, queryInt(t, client, `
+	require.Equal(t, 10, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
+	require.Equal(t, 9, queryInt(t, client, `
 SELECT COUNT(*) FROM sqlite_master
 WHERE type = 'table' AND name IN (
     'tg_file_tab', 'tg_file_part_tab', 'tg_file_mapping_tab',
     'tg_s3_object_metadata_tab', 'tg_file_part_delete_state_tab',
     'tg_s3_file_segment_tab', 'tg_s3_multipart_upload_tab',
-    'tg_s3_multipart_part_tab'
+    'tg_s3_multipart_part_tab', 'tg_s3_completed_part_tab'
 )`))
 	require.NoError(t, insertPart(t.Context(), client, "fresh-checksum"))
 }
@@ -49,7 +49,7 @@ func TestMigrationPlanDryRunAndPreMD5UpgradePreserveData(t *testing.T) {
 	require.True(t, plan.needsLedger)
 	require.Len(t, plan.baseline, 3)
 	require.Equal(t, 3, plan.baseline[2].version)
-	require.Len(t, plan.pending, 6)
+	require.Len(t, plan.pending, 7)
 	require.Equal(t, 4, plan.pending[0].version)
 	require.False(t, tableExistsForTest(t, legacy, "schema_migrations"))
 	require.NoError(t, legacy.Close())
@@ -60,7 +60,7 @@ func TestMigrationPlanDryRunAndPreMD5UpgradePreserveData(t *testing.T) {
 		require.NoError(t, upgraded.Close())
 	})
 
-	require.Equal(t, 9, queryInt(t, upgraded, `SELECT COUNT(*) FROM schema_migrations`))
+	require.Equal(t, 10, queryInt(t, upgraded, `SELECT COUNT(*) FROM schema_migrations`))
 	require.Equal(t, 1, queryInt(t, upgraded, `SELECT COUNT(*) FROM tg_file_tab WHERE file_id = 101`))
 	require.Equal(t, 1, queryInt(t, upgraded, `SELECT COUNT(*) FROM tg_file_mapping_tab WHERE ref_data = '101'`))
 	require.Equal(t, "", queryString(
@@ -84,7 +84,7 @@ func TestProductionLegacySchemaIsBaselinedAndNormalized(t *testing.T) {
 	plan, err := planMigrations(t.Context(), legacy, files)
 	require.NoError(t, err)
 	require.Len(t, plan.baseline, 4)
-	require.Len(t, plan.pending, 5)
+	require.Len(t, plan.pending, 6)
 	require.Equal(t, 5, plan.pending[0].version)
 	require.False(t, tableExistsForTest(t, legacy, "schema_migrations"))
 	require.NoError(t, legacy.Close())
@@ -95,7 +95,7 @@ func TestProductionLegacySchemaIsBaselinedAndNormalized(t *testing.T) {
 		require.NoError(t, upgraded.Close())
 	})
 
-	require.Equal(t, 9, queryInt(t, upgraded, `SELECT COUNT(*) FROM schema_migrations`))
+	require.Equal(t, 10, queryInt(t, upgraded, `SELECT COUNT(*) FROM schema_migrations`))
 	require.Equal(t, 1, queryInt(t, upgraded, `SELECT COUNT(*) FROM tg_file_tab WHERE file_id = 101`))
 	require.Equal(t, 1, queryInt(t, upgraded, `SELECT COUNT(*) FROM tg_file_part_tab WHERE file_id = 101`))
 	require.Equal(t, 1, queryInt(t, upgraded, `SELECT COUNT(*) FROM tg_file_mapping_tab WHERE ref_data = '101'`))
@@ -124,11 +124,12 @@ func TestVersionFivePlanContainsOnlyNewS3MigrationsAndIsReadOnly(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, plan.needsLedger)
 	require.Len(t, plan.current, 5)
-	require.Len(t, plan.pending, 4)
+	require.Len(t, plan.pending, 5)
 	require.Equal(t, "0006_add_s3_object_metadata.sql", plan.pending[0].filename)
 	require.Equal(t, "0007_add_block_delete_state.sql", plan.pending[1].filename)
 	require.Equal(t, "0008_add_s3_multipart_upload.sql", plan.pending[2].filename)
 	require.Equal(t, "0009_add_s3_multipart_checksum.sql", plan.pending[3].filename)
+	require.Equal(t, "0010_add_s3_completed_part_manifest.sql", plan.pending[4].filename)
 
 	require.Equal(t, 5, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
 	require.Equal(t, 1, queryInt(t, client, `SELECT COUNT(*) FROM tg_file_tab WHERE file_id = 101`))
@@ -158,7 +159,7 @@ func TestStrictLegacySchemaUsesCompatibilityProfile(t *testing.T) {
 	plan, err := planMigrations(t.Context(), legacy, files)
 	require.NoError(t, err)
 	require.Len(t, plan.baseline, 4)
-	require.Len(t, plan.pending, 5)
+	require.Len(t, plan.pending, 6)
 	require.NoError(t, validateCurrentSchemaFingerprint(t.Context(), legacy, plan.current))
 	require.NoError(t, legacy.Close())
 
@@ -168,7 +169,7 @@ func TestStrictLegacySchemaUsesCompatibilityProfile(t *testing.T) {
 		require.NoError(t, upgraded.Close())
 	})
 
-	require.Equal(t, 9, queryInt(t, upgraded, `SELECT COUNT(*) FROM schema_migrations`))
+	require.Equal(t, 10, queryInt(t, upgraded, `SELECT COUNT(*) FROM schema_migrations`))
 	require.Equal(t, "persisted-md5", queryString(
 		t,
 		upgraded,
@@ -213,7 +214,7 @@ WHERE type = 'index' AND name = 'migration_should_rollback'`))
 
 	setMigrationFS(original)
 	require.NoError(t, migrate(t.Context(), client))
-	require.Equal(t, 9, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
+	require.Equal(t, 10, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
 	require.Equal(t, 2, queryInt(t, client, `SELECT COUNT(*) FROM tg_file_tab`))
 	require.Equal(t, 1, queryInt(t, client, `SELECT COUNT(*) FROM tg_file_mapping_tab WHERE ref_data = '101'`))
 }
@@ -264,7 +265,7 @@ func TestMigrationChecksumDriftIsRejected(t *testing.T) {
 
 	err := migrate(t.Context(), client)
 	require.ErrorIs(t, err, errMigrationChanged)
-	require.Equal(t, 9, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
+	require.Equal(t, 10, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
 }
 
 func TestVersionEightChecksumMigrationPreservesMultipartData(t *testing.T) {
@@ -307,7 +308,7 @@ INSERT INTO tg_s3_object_metadata_tab (
 	require.NoError(t, err)
 
 	require.NoError(t, migrate(t.Context(), client))
-	require.Equal(t, 9, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
+	require.Equal(t, 10, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
 	require.Equal(t, 3, queryInt(t, client, `SELECT COUNT(*) FROM tg_s3_multipart_upload_tab`))
 	require.Equal(t, 1, queryInt(t, client, `SELECT COUNT(*) FROM tg_s3_multipart_part_tab`))
 	require.Equal(t, "", queryString(
@@ -338,6 +339,158 @@ INSERT INTO tg_s3_object_metadata_tab (
 	))
 }
 
+func TestCompletedPartManifestMigrationBackfillsChecksumsAndPreservesData(t *testing.T) {
+	client := openRawDatabase(t, filepath.Join(t.TempDir(), "version-nine.db"))
+	t.Cleanup(func() {
+		require.NoError(t, client.Close())
+	})
+	files, err := listMigrationFiles(schemamigrations.FS)
+	require.NoError(t, err)
+	applyMigrationBodies(t, client, files[:9])
+	require.NoError(t, initializeMigrationLedger(t.Context(), client, files[:9]))
+	_, err = client.ExecContext(t.Context(), `
+INSERT INTO tg_file_tab (
+    file_id, file_size, file_part_count, file_state, ctime, mtime, extinfo,
+    file_layout_version
+) VALUES
+    (500, 7, 0, 2, 1, 1, '{"kind":"final"}', 2),
+    (501, 3, 1, 2, 1, 1, '{"kind":"source-1"}', 1),
+    (502, 4, 1, 2, 1, 1, '{"kind":"source-2"}', 1),
+    (510, 2, 0, 3, 1, 1, '{"kind":"orphan-final"}', 2),
+    (511, 2, 1, 2, 1, 1, '{"kind":"orphan-source"}', 1);
+INSERT INTO tg_file_part_tab (
+    file_id, file_part_id, file_key, file_part_md5, ctime, mtime
+) VALUES
+    (501, 0, 'source-one', 'md5-one', 1, 1),
+    (502, 0, 'source-two', 'md5-two', 1, 1),
+    (511, 0, 'orphan-source', 'md5-orphan', 1, 1);
+INSERT INTO tg_file_mapping_tab (
+    entry_id, parent_entry_id, ref_data, file_kind, ctime, mtime,
+    file_size, file_mode, file_name
+) VALUES (600, 0, '500', 2, 1, 1, 7, 420, 'object.bin');
+INSERT INTO tg_s3_object_metadata_tab (
+    entry_id, etag, checksum_sha256, request_checksum_algorithm,
+    request_checksum_value, content_type, cache_control, content_disposition,
+    content_encoding, content_language, expires, user_metadata,
+    ctime, mtime, checksum_type
+) VALUES (
+    600, '"object-etag"', 'object-sha256', 'SHA256',
+    'b2JqZWN0LWNoZWNrc3Vt', 'application/octet-stream', '', '', '', '', '',
+    '{"owner":"migration-test"}', 1, 1, 'COMPOSITE'
+);
+INSERT INTO tg_file_part_delete_state_tab (
+    file_id, file_part_id, backend_kind, delete_ref, uploaded_at,
+    delete_state, attempt_count, next_attempt_at, lease_until,
+    last_attempt_at, last_error_code, deleted_at, ctime, mtime
+) VALUES (
+    501, 0, 'telegram', 'chat:message', 1,
+    'pending', 2, 3, 4, 5, 'retry', 0, 1, 1
+);
+INSERT INTO tg_s3_file_segment_tab (
+    file_id, segment_index, source_file_id, segment_size, ctime, mtime
+) VALUES
+    (500, 0, 501, 3, 10, 11),
+    (500, 1, 502, 4, 12, 13),
+    (510, 0, 511, 2, 14, 15);
+INSERT INTO tg_s3_multipart_upload_tab (
+    upload_id, bucket_name, object_key, upload_state,
+    completion_fingerprint, result_file_id, result_etag,
+    initiated_at, expires_at, completed_at, cleanup_at, ctime, mtime,
+    checksum_algorithm, checksum_type, result_checksum_value
+) VALUES (
+    'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+    'bucket', 'object.bin', 'completed', 'fingerprint', 500, '"object-etag"',
+    1, 100, 2, 100, 1, 2, 'SHA256', 'COMPOSITE', 'result-checksum'
+);
+INSERT INTO tg_s3_multipart_part_tab (
+    upload_id, part_number, part_state, file_id, part_size, part_etag,
+    uploaded_at, ctime, mtime, checksum_value
+) VALUES
+    ('dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+     2, 'selected', 501, 3, '11111111111111111111111111111111',
+     1, 1, 1, 'cGFydC1vbmUtY2hlY2tzdW0='),
+    ('dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+     9, 'selected', 502, 4, '22222222222222222222222222222222',
+     1, 1, 1, 'cGFydC10d28tY2hlY2tzdW0=');`)
+	require.NoError(t, err)
+
+	require.NoError(t, migrate(t.Context(), client))
+	require.Equal(t, 10, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
+	require.Equal(t, 2, queryInt(t, client, `
+SELECT COUNT(*) FROM tg_s3_completed_part_tab
+WHERE file_id = 500 AND checksum_state = 'available'
+  AND checksum_algorithm = 'SHA256'`))
+	require.Equal(t, "cGFydC1vbmUtY2hlY2tzdW0=", queryString(
+		t,
+		client,
+		`SELECT checksum_value FROM tg_s3_completed_part_tab
+WHERE file_id = 500 AND part_number = 1`,
+	))
+	require.Equal(t, "cGFydC10d28tY2hlY2tzdW0=", queryString(
+		t,
+		client,
+		`SELECT checksum_value FROM tg_s3_completed_part_tab
+WHERE file_id = 500 AND part_number = 2`,
+	))
+	require.Equal(t, 7, queryInt(t, client, `
+SELECT SUM(part_size) FROM tg_s3_completed_part_tab WHERE file_id = 500`))
+	require.Equal(t, 1, queryInt(t, client, `
+SELECT COUNT(*) FROM tg_s3_completed_part_tab
+WHERE file_id = 510 AND part_number = 1 AND part_size = 2
+  AND checksum_state = 'unavailable'
+  AND checksum_algorithm = '' AND checksum_value = ''`))
+
+	require.Equal(t, 5, queryInt(t, client, `SELECT COUNT(*) FROM tg_file_tab`))
+	require.Equal(t, 3, queryInt(t, client, `SELECT COUNT(*) FROM tg_file_part_tab`))
+	require.Equal(t, 1, queryInt(t, client, `
+SELECT COUNT(*) FROM tg_file_mapping_tab
+WHERE entry_id = 600 AND ref_data = '500' AND file_name = 'object.bin'`))
+	require.Equal(t, 1, queryInt(t, client, `
+SELECT COUNT(*) FROM tg_file_part_delete_state_tab
+WHERE file_id = 501 AND delete_state = 'pending'
+  AND attempt_count = 2 AND last_error_code = 'retry'`))
+	require.Equal(t, 3, queryInt(t, client, `SELECT COUNT(*) FROM tg_s3_file_segment_tab`))
+	require.Equal(t, 2, queryInt(t, client, `
+SELECT COUNT(*) FROM tg_s3_multipart_part_tab WHERE part_state = 'selected'`))
+	require.Equal(t, 1, queryInt(t, client, `
+SELECT COUNT(*) FROM tg_s3_multipart_upload_tab
+WHERE result_file_id = 500 AND upload_state = 'completed'`))
+	require.Equal(t, 1, queryInt(t, client, `
+SELECT COUNT(*) FROM tg_s3_object_metadata_tab
+WHERE entry_id = 600 AND checksum_type = 'COMPOSITE'
+  AND user_metadata = '{"owner":"migration-test"}'`))
+	require.Equal(t, 1, queryInt(t, client, `
+SELECT COUNT(*) FROM tg_file_part_delete_state_tab WHERE delete_state = 'pending'`))
+	require.Zero(t, queryInt(t, client, `
+SELECT COUNT(*) FROM tg_file_part_delete_state_tab WHERE delete_state = 'deleting'`))
+}
+
+func TestCompletedPartManifestMigrationFailureRollsBackTableAndLedger(t *testing.T) {
+	client := openRawDatabase(t, filepath.Join(t.TempDir(), "manifest-rollback.db"))
+	t.Cleanup(func() {
+		require.NoError(t, client.Close())
+	})
+	files, err := listMigrationFiles(schemamigrations.FS)
+	require.NoError(t, err)
+	applyMigrationBodies(t, client, files[:9])
+	require.NoError(t, initializeMigrationLedger(t.Context(), client, files[:9]))
+	insertLegacyRows(t, client)
+	migrationSet := embeddedMigrationMap(t)
+	migrationSet["0010_add_s3_completed_part_manifest.sql"] = &fstest.MapFile{Data: []byte(`
+CREATE TABLE tg_s3_completed_part_tab (file_id INTEGER PRIMARY KEY);
+INSERT INTO missing_completed_part_source(file_id) VALUES (1);
+`)}
+	useMigrationFS(t, migrationSet)
+
+	err = migrate(t.Context(), client)
+	require.Error(t, err)
+	require.False(t, tableExistsForTest(t, client, "tg_s3_completed_part_tab"))
+	require.Equal(t, 9, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
+	require.Equal(t, 1, queryInt(t, client, `SELECT COUNT(*) FROM tg_file_tab WHERE file_id = 101`))
+	require.Equal(t, 1, queryInt(t, client, `
+SELECT COUNT(*) FROM tg_file_mapping_tab WHERE ref_data = '101'`))
+}
+
 func TestChecksumMigrationFailureLeavesNoPartialColumns(t *testing.T) {
 	client := openRawDatabase(t, filepath.Join(t.TempDir(), "checksum-rollback.db"))
 	t.Cleanup(func() {
@@ -365,7 +518,7 @@ func TestFailedMigrationRollsBackSchemaAndLedger(t *testing.T) {
 	client := openMigratedRawDatabase(t)
 	insertLegacyRows(t, client)
 	migrationSet := embeddedMigrationMap(t)
-	migrationSet["0010_broken.sql"] = &fstest.MapFile{Data: []byte(`
+	migrationSet["0011_broken.sql"] = &fstest.MapFile{Data: []byte(`
 CREATE TABLE migration_should_rollback (id INTEGER PRIMARY KEY);
 CREATE TABLE migration_should_rollback (id INTEGER PRIMARY KEY);
 `)}
@@ -374,7 +527,7 @@ CREATE TABLE migration_should_rollback (id INTEGER PRIMARY KEY);
 	err := migrate(t.Context(), client)
 	require.Error(t, err)
 	require.False(t, tableExistsForTest(t, client, "migration_should_rollback"))
-	require.Equal(t, 9, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
+	require.Equal(t, 10, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
 	require.Equal(t, 1, queryInt(t, client, `SELECT COUNT(*) FROM tg_file_tab WHERE file_id = 101`))
 }
 
@@ -389,7 +542,7 @@ func TestMigrationBackupCanBeRestoredAfterFailure(t *testing.T) {
 	copyFile(t, dbFile, backupFile)
 
 	migrationSet := embeddedMigrationMap(t)
-	migrationSet["0010_broken.sql"] = &fstest.MapFile{Data: []byte(`
+	migrationSet["0011_broken.sql"] = &fstest.MapFile{Data: []byte(`
 UPDATE tg_file_tab SET extinfo = 'changed';
 CREATE TABLE tg_file_tab (id INTEGER);
 `)}
@@ -422,7 +575,7 @@ func TestSchemaDriftIsRejectedWithoutDataMutation(t *testing.T) {
 	_, err := client.ExecContext(t.Context(), `DROP INDEX idx_entry_id`)
 	require.NoError(t, err)
 	migrationSet := embeddedMigrationMap(t)
-	migrationSet["0010_add_drift_probe.sql"] = &fstest.MapFile{
+	migrationSet["0011_add_drift_probe.sql"] = &fstest.MapFile{
 		Data: []byte(`CREATE TABLE drift_probe (id INTEGER PRIMARY KEY);`),
 	}
 	useMigrationFS(t, migrationSet)
@@ -430,19 +583,20 @@ func TestSchemaDriftIsRejectedWithoutDataMutation(t *testing.T) {
 	err = migrate(t.Context(), client)
 	require.ErrorIs(t, err, errSchemaDrift)
 	require.False(t, tableExistsForTest(t, client, "drift_probe"))
-	require.Equal(t, 9, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
+	require.Equal(t, 10, queryInt(t, client, `SELECT COUNT(*) FROM schema_migrations`))
 	require.Equal(t, 1, queryInt(t, client, `SELECT COUNT(*) FROM tg_file_tab WHERE file_id = 101`))
 }
 
 func TestMigrationFilesUseVersionedNames(t *testing.T) {
 	files, err := listMigrationFiles(schemamigrations.FS)
 	require.NoError(t, err)
-	require.Len(t, files, 9)
+	require.Len(t, files, 10)
 	require.Equal(t, "0001_init_legacy_schema.sql", files[0].filename)
 	require.Equal(t, "0005_normalize_constraints.sql", files[4].filename)
 	require.Equal(t, "0007_add_block_delete_state.sql", files[6].filename)
 	require.Equal(t, "0008_add_s3_multipart_upload.sql", files[7].filename)
 	require.Equal(t, "0009_add_s3_multipart_checksum.sql", files[8].filename)
+	require.Equal(t, "0010_add_s3_completed_part_manifest.sql", files[9].filename)
 
 	_, err = listMigrationFiles(fstest.MapFS{
 		"1_invalid.sql": &fstest.MapFile{Data: []byte("SELECT 1;")},

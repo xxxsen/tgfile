@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -236,4 +237,148 @@ func TestReadDateConditionsUseSecondPrecision(t *testing.T) {
 	apiError = checkReadConditions(request, info)
 	require.NotNil(t, apiError)
 	require.Equal(t, http.StatusNotModified, apiError.HTTPStatus)
+}
+
+func TestObjectReadOptionsValidateOverridesAndNormalizeHTTPDates(t *testing.T) {
+	expected := time.Date(1994, time.November, 6, 8, 49, 37, 0, time.UTC)
+	for _, date := range []string{
+		expected.Format(http.TimeFormat),
+		"Sunday, 06-Nov-94 08:49:37 GMT",
+		expected.Format(time.ANSIC),
+	} {
+		request := httptest.NewRequestWithContext(
+			t.Context(),
+			http.MethodGet,
+			"/bucket/object?response-expires="+url.QueryEscape(date),
+			nil,
+		)
+		options, apiError := parseObjectReadOptions(request)
+		require.Nil(t, apiError, date)
+		require.Equal(t, expected.Format(http.TimeFormat), options.responseOverride["Expires"])
+	}
+
+	for queryName := range responseOverrideHeaders {
+		request := httptest.NewRequestWithContext(
+			t.Context(),
+			http.MethodGet,
+			"/bucket/object?"+queryName+"=",
+			nil,
+		)
+		_, apiError := parseObjectReadOptions(request)
+		require.NotNil(t, apiError, queryName)
+		require.Equal(t, "InvalidArgument", apiError.Code)
+	}
+
+	for _, control := range []byte{0, '\r', '\n', 0x1f, 0x7f} {
+		query := url.Values{"response-content-type": {string([]byte{'a', control, 'b'})}}
+		request := httptest.NewRequestWithContext(
+			t.Context(),
+			http.MethodGet,
+			"/bucket/object?"+query.Encode(),
+			nil,
+		)
+		_, apiError := parseObjectReadOptions(request)
+		require.NotNil(t, apiError, control)
+		require.Equal(t, "InvalidArgument", apiError.Code)
+	}
+}
+
+func TestObjectAttributeRequestParsingIsStrictAndBounded(t *testing.T) {
+	for _, name := range []string{"ETag", "Checksum", "ObjectParts", "StorageClass", "ObjectSize"} {
+		request := httptest.NewRequestWithContext(
+			t.Context(),
+			http.MethodGet,
+			"/bucket/object?attributes",
+			nil,
+		)
+		request.Header.Set("X-Amz-Object-Attributes", name)
+		_, marker, maxParts, apiError := parseObjectAttributesRequest(request)
+		require.Nil(t, apiError, name)
+		require.Zero(t, marker)
+		require.Equal(t, 1000, maxParts)
+	}
+
+	request := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/bucket/object?attributes",
+		nil,
+	)
+	request.Header.Set(
+		"X-Amz-Object-Attributes",
+		" ETag , Checksum , ObjectParts , StorageClass , ObjectSize ",
+	)
+	request.Header.Set("X-Amz-Max-Parts", "0")
+	request.Header.Set("X-Amz-Part-Number-Marker", "10000")
+	attributes, marker, maxParts, apiError := parseObjectAttributesRequest(request)
+	require.Nil(t, apiError)
+	require.True(t, attributes.etag)
+	require.True(t, attributes.checksum)
+	require.True(t, attributes.objectParts)
+	require.True(t, attributes.storageClass)
+	require.True(t, attributes.objectSize)
+	require.Equal(t, 10000, marker)
+	require.Zero(t, maxParts)
+
+	request = httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/bucket/object?attributes",
+		nil,
+	)
+	request.Header.Add("X-Amz-Object-Attributes", "ETag")
+	request.Header.Add("X-Amz-Object-Attributes", "ObjectSize")
+	parsedAttributes, parsedMarker, parsedMaxParts, apiError := parseObjectAttributesRequest(request)
+	require.NotNil(t, apiError)
+	require.Equal(t, "InvalidArgument", apiError.Code)
+	require.Equal(t, objectAttributeSet{}, parsedAttributes)
+	require.Zero(t, parsedMarker)
+	require.Zero(t, parsedMaxParts)
+
+	request = httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/bucket/object?attributes",
+		nil,
+	)
+	request.Header.Add("X-Amz-Object-Attributes", "ETag")
+	request.Header.Add("X-Amz-Object-Attributes", "ETag")
+	parsedAttributes, parsedMarker, parsedMaxParts, apiError = parseObjectAttributesRequest(request)
+	require.NotNil(t, apiError)
+	require.Equal(t, "InvalidArgument", apiError.Code)
+	require.Equal(t, objectAttributeSet{}, parsedAttributes)
+	require.Zero(t, parsedMarker)
+	require.Zero(t, parsedMaxParts)
+
+	request = httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/bucket/object?attributes",
+		nil,
+	)
+	request.Header.Set("X-Amz-Object-Attributes", "ETag")
+	request.Header.Add("X-Amz-Max-Parts", "1")
+	request.Header.Add("X-Amz-Max-Parts", "2")
+	parsedAttributes, parsedMarker, parsedMaxParts, apiError = parseObjectAttributesRequest(request)
+	require.NotNil(t, apiError)
+	require.Equal(t, "InvalidArgument", apiError.Code)
+	require.Equal(t, objectAttributeSet{}, parsedAttributes)
+	require.Zero(t, parsedMarker)
+	require.Zero(t, parsedMaxParts)
+
+	request = httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodGet,
+		"/bucket/object?attributes",
+		nil,
+	)
+	request.Header.Set("X-Amz-Object-Attributes", "ETag")
+	request.Header.Add("X-Amz-Max-Parts", "1")
+	request.Header.Add("X-Amz-Max-Parts", "1")
+	parsedAttributes, parsedMarker, parsedMaxParts, apiError = parseObjectAttributesRequest(request)
+	require.NotNil(t, apiError)
+	require.Equal(t, "InvalidArgument", apiError.Code)
+	require.Equal(t, objectAttributeSet{}, parsedAttributes)
+	require.Zero(t, parsedMarker)
+	require.Zero(t, parsedMaxParts)
 }

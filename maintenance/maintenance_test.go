@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/xxxsen/common/database"
 
 	"github.com/xxxsen/tgfile/db"
 	"github.com/xxxsen/tgfile/s3checksum"
@@ -69,6 +70,26 @@ func fileDigest(t *testing.T, file string) [sha256.Size]byte {
 	raw, err := os.ReadFile(file)
 	require.NoError(t, err)
 	return sha256.Sum256(raw)
+}
+
+func readCompletedManifestValues(
+	t *testing.T,
+	client database.IDatabase,
+) (string, string, string) {
+	t.Helper()
+	rows, err := client.QueryContext(t.Context(), `
+SELECT checksum_state, checksum_algorithm, checksum_value
+FROM tg_s3_completed_part_tab WHERE file_id = 301 AND part_number = 1`)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, rows.Close())
+	}()
+	require.True(t, rows.Next())
+	var state, algorithm, checksum string
+	require.NoError(t, rows.Scan(&state, &algorithm, &checksum))
+	require.False(t, rows.Next())
+	require.NoError(t, rows.Err())
+	return state, algorithm, checksum
 }
 
 func TestAuditIsReadOnlyAndReportsAnomalies(t *testing.T) {
@@ -256,10 +277,28 @@ INSERT INTO tg_s3_multipart_part_tab (
 UPDATE tg_s3_multipart_upload_tab
 SET checksum_algorithm = 'SHA256', checksum_type = 'COMPOSITE',
     result_checksum_value = ?
-WHERE upload_id = '0000000000000000000000000000000000000000000000000000000000000001';
+WHERE upload_id = '0000000000000000000000000000000000000000000000000000000000000001'`,
+		resultChecksum,
+	)
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), `
 UPDATE tg_s3_multipart_part_tab
 SET checksum_value = ?
-WHERE upload_id = '0000000000000000000000000000000000000000000000000000000000000001';
+WHERE upload_id = '0000000000000000000000000000000000000000000000000000000000000001'`,
+		partChecksum,
+	)
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), `
+INSERT INTO tg_s3_completed_part_tab (
+    file_id, part_number, part_size, checksum_state, checksum_algorithm,
+    checksum_value, ctime, mtime
+) VALUES (301, 1, 4, 'available', 'SHA256', ?, ?, ?)`,
+		partChecksum,
+		now,
+		now,
+	)
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), `
 INSERT INTO tg_s3_object_metadata_tab (
     entry_id, etag, checksum_sha256, request_checksum_algorithm,
     request_checksum_value, checksum_type, content_type, cache_control,
@@ -268,14 +307,16 @@ INSERT INTO tg_s3_object_metadata_tab (
 ) VALUES (
     3, '"etag-1"', '', 'SHA256', ?, 'COMPOSITE', 'application/octet-stream', '',
     '', '', '', '', '{}', ?, ?
-);`,
-		resultChecksum,
-		partChecksum,
+)`,
 		resultChecksum,
 		now,
 		now,
 	)
 	require.NoError(t, err)
+	manifestState, manifestAlgorithm, manifestChecksum := readCompletedManifestValues(t, database)
+	require.Equal(t, "available", manifestState)
+	require.Equal(t, "SHA256", manifestAlgorithm)
+	require.Equal(t, partChecksum, manifestChecksum)
 	_, err = database.ExecContext(t.Context(), `
 UPDATE tg_s3_multipart_upload_tab
 SET initiated_at = ?, expires_at = ?, completed_at = ?, cleanup_at = ?, ctime = ?, mtime = ?`,
@@ -302,6 +343,16 @@ SET initiated_at = ?, expires_at = ?, completed_at = ?, cleanup_at = ?, ctime = 
 	require.Zero(t, report.MissingCompletedResultChecksum)
 	require.Zero(t, report.MultipartResultMetadataMismatch)
 	require.Zero(t, report.InvalidObjectChecksumMetadata)
+	require.Equal(t, int64(1), report.CompletedPartCount)
+	require.Equal(t, int64(1), report.CompletedPartCountByState["available"])
+	require.Zero(t, report.LayoutV2MissingCompletedPart)
+	require.Zero(t, report.LayoutV1WithCompletedPart)
+	require.Zero(t, report.CompletedPartWithoutSegment)
+	require.Zero(t, report.CompletedPartSizeMismatch)
+	require.Zero(t, report.CompletedPartFinalSizeMismatch)
+	require.Zero(t, report.InvalidCompletedPartChecksum)
+	require.Zero(t, report.CompletedControlManifestMismatch)
+	require.Zero(t, report.ObjectManifestAlgorithmMismatch)
 	require.Equal(t, int64(1), report.MultipartUploadCountByState["completed"])
 	require.Equal(t, int64(1), report.MultipartPartCountByState["selected"])
 
@@ -328,6 +379,23 @@ SET initiated_at = ?, expires_at = ?, completed_at = ?, cleanup_at = ?, ctime = 
 	report, err = Audit(t.Context(), databaseFile)
 	require.NoError(t, err)
 	require.Equal(t, int64(1), report.InvalidCompositeManifestCount)
+	require.Equal(t, int64(1), report.CompletedPartSizeMismatch)
+
+	writable, err = openDatabase(t.Context(), databaseFile, false)
+	require.NoError(t, err)
+	_, err = writable.ExecContext(t.Context(), `
+UPDATE tg_s3_file_segment_tab
+SET segment_size = 4
+WHERE file_id = 301;
+UPDATE tg_s3_completed_part_tab
+SET checksum_value = 'not-base64'
+WHERE file_id = 301 AND part_number = 1;`)
+	require.NoError(t, err)
+	require.NoError(t, writable.Close())
+	report, err = Audit(t.Context(), databaseFile)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), report.InvalidCompletedPartChecksum)
+	require.Equal(t, int64(1), report.CompletedControlManifestMismatch)
 }
 
 func TestWriteAuditReportUsesPrivatePermissions(t *testing.T) {

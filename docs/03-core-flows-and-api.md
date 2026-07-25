@@ -14,6 +14,7 @@
 | ListObjects V1 | `GET /{bucket}/` 或不带 `list-type` 的列表 query | 必需 |
 | ListObjectsV2 | `GET /{bucket}?list-type=2` | 必需 |
 | GetObject / HeadObject | `GET/HEAD /{bucket}/{key}` | 由 bucket ACL 决定 |
+| GetObjectAttributes | `GET /{bucket}/{key}?attributes` | 由 bucket ACL 决定 |
 | PutObject | `PUT /{bucket}/{key}` | 必需 |
 | CopyObject | `PUT /{bucket}/{key}` + `x-amz-copy-source` | 必需 |
 | DeleteObject | `DELETE /{bucket}/{key}` | 必需 |
@@ -117,8 +118,8 @@ bucket 的别名都返回 InvalidObjectName，不能以历史兼容绕过 bucket
 
 ## 4. Multipart Upload
 
-Multipart 的六个核心 API 默认随 S3 启用，没有额外服务端开关。public-read bucket 也只
-允许匿名 GetObject/HeadObject，所有 Multipart API 必须认证。
+Multipart 的六个核心 API 默认随 S3 启用，没有额外服务端开关。public-read bucket 只
+允许匿名 GetObject、HeadObject 和 GetObjectAttributes，所有 Multipart API 必须认证。
 
 每个 UploadPart 使用普通文件创建流程保存成 layout v1 暂存 File，S3 part 可以为
 0～5 GiB，PartNumber 为 1～10000，允许乱序上传和相同编号覆盖。单个 S3 part 在 Telegram
@@ -160,9 +161,15 @@ Complete 请求：
 - COMPOSITE 的每个 XML Part 必须提交固化算法对应的 checksum；FULL_OBJECT 可省略；
 - 可提交最终算法 checksum、`x-amz-checksum-type` 和 `x-amz-mp-object-size`，均须匹配；
 - `If-Match`/`If-None-Match` 在最终 SQLite 事务内判断；
-- 创建 layout v2 Composite File 和有序 Segment，原子发布 Mapping；
+- 创建 layout v2 Composite File、有序 Segment 和永久 Completed Part manifest，原子发布
+  Mapping；
 - 不下载、复制或重新上传 Telegram message；
 - 未选择 part 在同一事务中进入删除队列。
+
+Completed Part 使用 Complete 后的连续编号，不保留客户端可能非连续的原 UploadPart 编号。
+非 legacy Upload 把已经验证的 Part checksum 固化为 available；legacy Upload 固化准确的
+Part 顺序和大小，但 checksum 为 unavailable。写入 final File、Segment、Completed Part、
+Mapping、S3 Metadata 和完成控制记录处于同一事务，Complete 过程中不读取 Telegram。
 
 FULL_OBJECT 只用于 CRC。服务端根据每个 Part 的 CRC 和字节数做 GF(2) combine，结果等于
 直接对完整对象计算 CRC；COMPOSITE 对按顺序 Base64 解码后的原始 Part digest 拼接后再次
@@ -177,7 +184,7 @@ UploadId 返回 NoSuchUpload。幂等重试仍校验 Part checksum、最终 chec
 Abort 把 active part 标记为 discarded，并通过 durable outbox 异步删除暂存 message；
 重复 Abort 返回 204。active upload 从创建起最多保留 `s3.multipart_expire_hours`
 （默认 24 小时），过期处理与 Abort 相同。completed/aborted 控制记录再保留 24 小时后
-仅清理控制行。
+仅清理控制行，不删除 Completed Part manifest。
 
 layout v2 的读取由统一 `OpenFile` 按 Segment 定位 source File，支持完整读取、任意 Seek
 和跨 S3 part/Telegram part 的 Range。因此 Multipart 最终对象可以被 S3 GET/HEAD/Copy/
@@ -209,8 +216,87 @@ ETag 列表只接受 `*` 或合法逗号分隔 tag；畸形值返回 InvalidArgu
 满足弱 `If-None-Match`，不能满足具体值的强 `If-Match`。ETag 条件优先于日期条件，时间
 比较按秒。
 
-private bucket 在查询 Mapping 前拒绝匿名请求；public-read bucket 仅允许匿名对象 GET/HEAD。
-提交了错误凭据的请求不会降级为匿名。
+private bucket 在查询 Mapping 前拒绝匿名请求；public-read bucket 仅允许匿名对象 GET、
+HEAD 和 GetObjectAttributes。提交了错误凭据的请求不会降级为匿名。
+
+### 5.1 响应头覆盖
+
+GetObject 和 HeadObject 支持以下精确、大小写敏感的 query：
+
+| Query | 响应 Header |
+|---|---|
+| `response-cache-control` | `Cache-Control` |
+| `response-content-disposition` | `Content-Disposition` |
+| `response-content-encoding` | `Content-Encoding` |
+| `response-content-language` | `Content-Language` |
+| `response-content-type` | `Content-Type` |
+| `response-expires` | `Expires` |
+
+每个参数只能出现一次，值不能为空、不能超过 8192 字节，也不能包含 HTTP 控制字符。
+`response-expires` 接受 HTTP 支持的三种日期格式并统一输出 IMF-fixdate。
+
+覆盖值只应用到最终 `200 OK` 对象响应；Range 或非零 Part GET 的 206、304、412、404 和其他
+错误响应都不得携带覆盖值。零字节唯一 Part 的 GET 和所有成功 Head Part 都是 200，因此可以
+应用覆盖值。覆盖值只改变本次响应，不写 S3 Metadata 或缓存。
+
+即使 bucket 是 public-read，只要出现任一 response override 就必须认证。Basic、SigV4
+Authorization 和 SigV4 presigned query 均可使用；override query 属于签名 canonical query，
+修改预签名 URL 中的值会导致 SignatureDoesNotMatch。匿名直接拼接 override query 返回
+AccessDenied。
+
+### 5.2 `partNumber` 对象读取
+
+GetObject 和 HeadObject 接受单值十进制 `partNumber=1..10000`，不能与 Range 同时出现。
+编号高于对象实际 Part 数时返回 `416 InvalidPartNumber`，错误 XML 只附加请求编号和实际
+Part 总数，不暴露 FileID 或 source File。
+
+layout v1 始终只有一个 S3 Part，不受底层 Telegram message 数量影响：
+
+- `partNumber=1` 表示完整对象；
+- 非零字节 GET 返回 206 和相对于完整对象的 Content-Range；
+- HEAD 返回 200；
+- 零字节对象 GET/HEAD 返回 200、Content-Length 0 且省略 Content-Range；
+- `partNumber>1` 返回 416。
+
+layout v2 的 final PartNumber 是 `segment_index + 1`，因此从 1 连续递增，不等同于客户端
+原始 UploadPart 编号。每次 Part GET 只打开目标 Segment 的 source File；一个 S3 Part 可以
+继续跨多个 Telegram message。GET 返回 206、Part Content-Length、相对于完整对象的
+Content-Range 和 `x-amz-mp-parts-count`；HEAD 返回相同元数据但状态为 200，并且不读取
+Telegram。
+
+Part 响应保留完整对象 ETag 和对象元数据，但不返回完整对象 checksum。只有显式
+`x-amz-checksum-mode: ENABLED` 时才返回 Part checksum：layout v1 的唯一 Part 可以复用
+完整对象 checksum；layout v2 只返回 Completed Part manifest 中 available 的固化 checksum，
+unavailable 时省略且不得现场读取 Telegram 补算。
+
+### 5.3 GetObjectAttributes
+
+GetObjectAttributes 使用 `GET /{bucket}/{key}?attributes`。`attributes` 必须出现一次且值
+为空，可伴随单值 `x-id`；与 Multipart query、`partNumber`、response override 冲突时返回
+InvalidRequest，与 `versionId` 组合返回 NotImplemented。
+
+请求必须提供 `x-amz-object-attributes`，其值是以下大小写敏感枚举的非空逗号列表：
+`ETag`、`Checksum`、`ObjectParts`、`StorageClass`、`ObjectSize`。允许逗号两侧 OWS，不允许
+空项、未知项或重复项。响应只包含明确请求的根字段，始终返回 Last-Modified，StorageClass
+固定为 STANDARD，XML namespace 固定为 `http://s3.amazonaws.com/doc/2006-03-01/`。
+
+ObjectParts 分页 Header：
+
+- `x-amz-max-parts` 缺省 1000，范围 0..1000；
+- `x-amz-part-number-marker` 缺省 0，范围 0..10000；
+- 只返回 PartNumber 大于 marker 的行，按升序查询 `max-parts + 1` 行判断截断；
+- `max-parts=0` 返回空页、`IsTruncated=false` 且没有 NextPartNumberMarker；
+- PartsCount 是完整对象的 Part 总数，不是当前页数量。
+
+layout v1 即使请求 ObjectParts 也省略整个容器。layout v2 使用永久 Completed Part 的编号和
+大小；对象存在 additional checksum 时返回 Part 元素，manifest checksum available 时增加
+唯一算法字段，unavailable 时只返回编号和大小。legacy Multipart 没有对象 additional
+checksum，因此保留 ObjectParts 分页元数据但省略 Part 元素。该接口以及 Head Part 只访问
+SQLite，不读取 Telegram。
+
+GetObject、HeadObject 和 GetObjectAttributes 记录低基数的 operation、read mode、结果码、
+attributes 集合、manifest checksum state 和分页状态；日志不记录完整对象 key、response
+override 值或 presigned query。
 
 ## 6. ListObjects V1 与 V2
 
@@ -287,6 +373,11 @@ PROPFIND 对 layout v1/v2 透明。COPY 复制 Mapping 和现有 S3 Metadata，M
 DELETE 或覆盖式 COPY/MOVE 递归收集被移除子树，在同一 SQLite 事务中更新 Mapping、
 Metadata、最后引用和 durable outbox。HTTP 成功表示该事务已提交，不表示 Telegram
 message 已同步删除。仍有其他 S3/WebDAV Mapping 的 File 必须保持 `live`。
+
+逻辑备份导出路径树和完整对象字节，不保存内部 FileID、Segment、Completed Part manifest
+或 S3 Metadata。导入后的文件统一是 layout v1；对象字节和路径保持一致，但历史弱 ETag、
+推断元数据和 `partNumber=1` 整对象语义生效，GetObjectAttributes 不返回 ObjectParts。
+因此逻辑备份不能替代 SQLite 与运行目录的协议元数据备份。
 
 ## 10. 命令
 

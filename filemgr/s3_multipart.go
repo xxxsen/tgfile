@@ -1133,6 +1133,16 @@ func (d *defaultFileManager) completeActiveMultipart(
 	); err != nil {
 		return nil, err
 	}
+	if err := insertCompletedPartManifest(
+		ctx,
+		tx.QueryExecer(),
+		finalFileID,
+		upload,
+		selected,
+		now,
+	); err != nil {
+		return nil, err
+	}
 	etag, err := multipartETag(selected)
 	if err != nil {
 		return nil, err
@@ -1159,6 +1169,22 @@ func (d *defaultFileManager) completeActiveMultipart(
 	); err != nil {
 		return nil, err
 	}
+	return completedMultipartResult(
+		upload,
+		finalFileID,
+		totalSize,
+		etag,
+		checksumValue,
+	)
+}
+
+func completedMultipartResult(
+	upload storedMultipartUpload,
+	finalFileID uint64,
+	totalSize int64,
+	etag string,
+	checksumValue string,
+) (*CompleteMultipartResult, error) {
 	spec, err := multipartChecksumSpec(upload)
 	if err != nil {
 		return nil, err
@@ -1171,6 +1197,46 @@ func (d *defaultFileManager) completeActiveMultipart(
 		ChecksumType:  spec.ChecksumType,
 		ChecksumValue: checksumValue,
 	}, nil
+}
+
+func insertCompletedPartManifest(
+	ctx context.Context,
+	exec database.IExecer,
+	finalFileID uint64,
+	upload storedMultipartUpload,
+	selected []MultipartPart,
+	now time.Time,
+) error {
+	checksumState := "available"
+	if upload.checksumAlgorithm == "" {
+		checksumState = "unavailable"
+	}
+	for index, part := range selected {
+		algorithm := upload.checksumAlgorithm
+		value := part.ChecksumValue
+		if checksumState == "unavailable" {
+			algorithm = ""
+			value = ""
+		}
+		if _, err := exec.ExecContext(
+			ctx,
+			`INSERT INTO tg_s3_completed_part_tab (
+file_id, part_number, part_size, checksum_state, checksum_algorithm,
+checksum_value, ctime, mtime
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			finalFileID,
+			index+1,
+			part.Size,
+			checksumState,
+			algorithm,
+			value,
+			now.UnixMilli(),
+			now.UnixMilli(),
+		); err != nil {
+			return fmt.Errorf("insert completed multipart part %d: %w", index+1, err)
+		}
+	}
+	return nil
 }
 
 func persistCompletedMultipart(

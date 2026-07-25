@@ -60,6 +60,7 @@ func New(bind string, opts ...Option) (*Server, error) {
 		bind,
 		webapi.WithAuth(auth.MapUserMatch(c.userMap)),
 		webapi.WithAuthenticators(auth.NewBasic()),
+		webapi.WithExtraMiddlewares(restoreOriginalRequestPath),
 		webapi.WithRegister(svr.initAPI),
 		webapi.WithNoRoute(svr.noRoute),
 	)
@@ -163,13 +164,13 @@ func (s *Server) noRoute(c *gin.Context) {
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
-	s.engine.ServeHTTP(writer, request)
+	s.engine.ServeHTTP(writer, s.requestWithRedactedLogPath(request))
 }
 
 func (s *Server) newHTTPServer() *http.Server {
 	return &http.Server{
 		Addr:              s.bind,
-		Handler:           s.engine,
+		Handler:           s,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		ReadTimeout:       0,
