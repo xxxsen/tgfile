@@ -204,9 +204,12 @@ func hasUnsupportedObjectQuery(query url.Values) bool {
 			return true
 		}
 		switch lower {
-		case "acl", "attributes", "delete", "legal-hold", "partnumber", "restore",
-			"retention", "select", "select-type", "tagging", "torrent", "uploadid",
-			"uploads", "versionid":
+		case "accelerate", "acl", "analytics", "attributes", "cors", "delete",
+			"encryption", "inventory", "legal-hold", "lifecycle", "location",
+			"logging", "metrics", "notification", "object-lock", "ownershipcontrols",
+			"partnumber", "policy", "publicaccessblock", "replication", "requestpayment",
+			"restore", "retention", "select", "select-type", "tagging", "torrent",
+			"uploadid", "uploads", "versionid", "versioning", "website":
 			return true
 		}
 	}
