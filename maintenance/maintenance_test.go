@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -111,6 +112,75 @@ INSERT INTO tg_file_mapping_tab (
 	report, err := Audit(t.Context(), databaseFile)
 	require.NoError(t, err)
 	require.False(t, report.DefaultRootExists)
+}
+
+func TestAuditReportsS3DeleteAndPrivateSharingMetrics(t *testing.T) {
+	databaseFile := filepath.Join(t.TempDir(), "s3-audit.db")
+	database, err := db.Open(databaseFile)
+	require.NoError(t, err)
+	now := time.Now().UnixMilli()
+	_, err = database.ExecContext(t.Context(), `
+INSERT INTO tg_file_tab (
+    file_id, file_size, file_part_count, file_state, ctime, mtime, extinfo
+) VALUES (200, 4, 1, 2, ?, ?, '{}');
+INSERT INTO tg_file_part_tab (
+    file_id, file_part_id, file_key, file_part_md5, ctime, mtime
+) VALUES (200, 0, 'file-key', 'checksum', ?, ?);
+INSERT INTO tg_file_mapping_tab (
+    entry_id, parent_entry_id, ref_data, file_kind,
+    ctime, mtime, file_size, file_mode, file_name
+) VALUES
+    (1, 0, '', 1, ?, ?, 0, 420, '/'),
+    (2, 1, '', 1, ?, ?, 0, 420, 'private-data'),
+    (3, 1, '', 1, ?, ?, 0, 420, 'public-data'),
+    (4, 1, '', 1, ?, ?, 0, 420, 'defaults'),
+    (5, 2, '200', 2, ?, ?, 4, 420, 'object'),
+    (6, 3, '200', 2, ?, ?, 4, 420, 'object'),
+    (7, 4, '200', 2, ?, ?, 4, 420, 'object');
+INSERT INTO tg_s3_object_metadata_tab (
+    entry_id, etag, checksum_sha256, content_type, cache_control,
+    user_metadata, ctime, mtime
+) VALUES (5, '"etag"', 'sha256', 'application/octet-stream', 'private', '{}', ?, ?);
+INSERT INTO tg_file_part_delete_state_tab (
+    file_id, file_part_id, backend_kind, delete_ref, uploaded_at, delete_state,
+    attempt_count, next_attempt_at, lease_until, last_attempt_at, last_error_code,
+    deleted_at, ctime, mtime
+) VALUES (200, 0, 'old-backend', 'delete-ref', ?, 'pending', 0, 0, 0, 0, '', 0, ?, ?);`,
+		now, now,
+		now, now,
+		now, now,
+		now, now,
+		now, now,
+		now, now,
+		now, now,
+		now, now,
+		now, now,
+		now, now,
+		now,
+		now-1000, now,
+	)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	report, err := AuditWithOptions(t.Context(), databaseFile, AuditOptions{
+		S3Buckets: []AuditBucket{
+			{Name: "private-data", ACL: "private"},
+			{Name: "public-data", ACL: "public-read"},
+		},
+		BackendKind: "telegram",
+	})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), report.S3MetadataCount)
+	require.Zero(t, report.S3MetadataWithoutMapping)
+	require.Zero(t, report.S3MappingWithoutMetadataByBucket["private-data"])
+	require.Equal(t, int64(1), report.S3MappingWithoutMetadataByBucket["public-data"])
+	require.Equal(t, int64(1), report.BlockDeleteCountByState["pending"])
+	require.Positive(t, report.OldestPendingAgeMillis)
+	require.Equal(t, int64(1), report.ProcessableDeleteCount)
+	require.Zero(t, report.DeleteStateWithoutPart)
+	require.Equal(t, int64(1), report.BlockDeleteBackendMismatch)
+	require.Equal(t, int64(1), report.PrivateFileWithPublicMapping)
+	require.Equal(t, int64(1), report.PrivateFileWithDefaultsMapping)
 }
 
 func TestWriteAuditReportUsesPrivatePermissions(t *testing.T) {

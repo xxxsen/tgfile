@@ -5,3 +5,6 @@ __debug_bin*
 /bin
 /.dev-data
 /tgfile
+/.local-go.work
+/.local-go.work.sum
+/td

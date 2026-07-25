@@ -5,6 +5,7 @@ type GetFileLinkMetaRequest struct {
 }
 
 type FileLinkMeta struct {
+	EntryID  uint64 `json:"entry_id"`
 	FileName string `json:"file_name"`
 	FileId   uint64 `json:"file_id"`
 	FileSize int64  `json:"file_size"`

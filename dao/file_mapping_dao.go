@@ -2,6 +2,7 @@ package dao
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path"
 	"strconv"
@@ -12,6 +13,11 @@ import (
 
 	"github.com/xxxsen/common/database"
 	"github.com/xxxsen/common/idgen"
+)
+
+var (
+	errDeleteStateRowMissing = errors.New("mapping file delete state query returned no row")
+	errFileDeleteNotLive     = errors.New("file has non-live block delete state")
 )
 
 type (
@@ -42,7 +48,7 @@ type IFileMappingDao interface {
 
 type fileMappingDaoImpl struct {
 	dbc database.IDatabase
-	dir directory.IDirectory
+	dir directory.ITransactionalDirectory
 }
 
 func NewFileMappingDao(dbc database.IDatabase) IFileMappingDao {
@@ -86,29 +92,154 @@ func (f *fileMappingDaoImpl) CreateFileLink(
 		}
 		return &entity.CreateFileLinkResponse{}, nil
 	}
-	if err := f.dir.Create(ctx, req.FileName, req.FileSize, fmt.Sprintf("%d", req.FileId)); err != nil {
-		return nil, fmt.Errorf("create file link %q: %w", req.FileName, err)
+	if err := f.dir.WithTransaction(ctx, func(ctx context.Context, tx directory.ITransaction) error {
+		if err := ensureMappingFileLinkable(ctx, tx.QueryExecer(), req.FileId); err != nil {
+			return fmt.Errorf("ensure mapping file is linkable: %w", err)
+		}
+		_, err := tx.Create(ctx, req.FileName, req.FileSize, fmt.Sprintf("%d", req.FileId))
+		if err != nil {
+			return fmt.Errorf("create mapping entry: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("create file link %q transaction: %w", req.FileName, err)
 	}
 	return &entity.CreateFileLinkResponse{}, nil
 }
 
 func (f *fileMappingDaoImpl) RemoveFileLink(ctx context.Context, link string) error {
-	if err := f.dir.Remove(ctx, link); err != nil {
+	if err := f.dir.WithTransaction(ctx, func(ctx context.Context, tx directory.ITransaction) error {
+		removed, err := tx.Remove(ctx, link)
+		if err != nil {
+			return fmt.Errorf("remove mapping entry: %w", err)
+		}
+		return deleteEntryMetadata(ctx, tx.QueryExecer(), removed)
+	}); err != nil {
 		return fmt.Errorf("remove file link %q: %w", link, err)
 	}
 	return nil
 }
 
 func (f *fileMappingDaoImpl) RenameFileLink(ctx context.Context, src, dst string, isOverwrite bool) error {
-	if err := f.dir.Move(ctx, src, dst, isOverwrite); err != nil {
+	if err := f.dir.WithTransaction(ctx, func(ctx context.Context, tx directory.ITransaction) error {
+		overwritten, err := tx.Move(ctx, src, dst, isOverwrite)
+		if err != nil {
+			return fmt.Errorf("move mapping entry: %w", err)
+		}
+		return deleteEntryMetadata(ctx, tx.QueryExecer(), overwritten)
+	}); err != nil {
 		return fmt.Errorf("rename file link %q to %q: %w", src, dst, err)
 	}
 	return nil
 }
 
 func (f *fileMappingDaoImpl) CopyFileLink(ctx context.Context, src, dst string, isOverwrite bool) error {
-	if err := f.dir.Copy(ctx, src, dst, isOverwrite); err != nil {
+	if err := f.dir.WithTransaction(ctx, func(ctx context.Context, tx directory.ITransaction) error {
+		copies, overwritten, err := tx.Copy(ctx, src, dst, isOverwrite)
+		if err != nil {
+			return fmt.Errorf("copy mapping entry: %w", err)
+		}
+		for _, copied := range copies {
+			if copied.Source.IsDir() {
+				continue
+			}
+			fileID, err := strconv.ParseUint(copied.Source.RefData(), 10, 64)
+			if err != nil {
+				return fmt.Errorf("parse copied mapping file id: %w", err)
+			}
+			if err := ensureMappingFileLinkable(ctx, tx.QueryExecer(), fileID); err != nil {
+				return fmt.Errorf("ensure copied mapping file is linkable: %w", err)
+			}
+		}
+		if err := deleteEntryMetadata(ctx, tx.QueryExecer(), overwritten); err != nil {
+			return err
+		}
+		for _, copied := range copies {
+			if copied.Source.IsDir() {
+				continue
+			}
+			if err := copyEntryMetadata(
+				ctx,
+				tx.QueryExecer(),
+				copied.Source.EntryID(),
+				copied.Destination.EntryID(),
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		return fmt.Errorf("copy file link %q to %q: %w", src, dst, err)
+	}
+	return nil
+}
+
+func ensureMappingFileLinkable(
+	ctx context.Context,
+	queryer database.IQueryer,
+	fileID uint64,
+) error {
+	rows, err := queryer.QueryContext(
+		ctx,
+		`SELECT COUNT(*) FROM tg_file_part_delete_state_tab
+WHERE file_id = ? AND delete_state != 'live'`,
+		fileID,
+	)
+	if err != nil {
+		return fmt.Errorf("query mapping file delete state: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate mapping file delete state: %w", err)
+		}
+		return errDeleteStateRowMissing
+	}
+	var count int64
+	if err := rows.Scan(&count); err != nil {
+		return fmt.Errorf("scan mapping file delete state: %w", err)
+	}
+	if count != 0 {
+		return errFileDeleteNotLive
+	}
+	return nil
+}
+
+func deleteEntryMetadata(
+	ctx context.Context,
+	exec database.IExecer,
+	entries []directory.IDirectoryEntry,
+) error {
+	for _, entry := range entries {
+		if _, err := exec.ExecContext(
+			ctx,
+			"DELETE FROM tg_s3_object_metadata_tab WHERE entry_id = ?",
+			entry.EntryID(),
+		); err != nil {
+			return fmt.Errorf("delete mapping metadata: %w", err)
+		}
+	}
+	return nil
+}
+
+func copyEntryMetadata(
+	ctx context.Context,
+	exec database.IExecer,
+	sourceEntryID, destinationEntryID uint64,
+) error {
+	const statement = `INSERT INTO tg_s3_object_metadata_tab (
+entry_id, etag, checksum_sha256, request_checksum_algorithm, request_checksum_value,
+content_type, cache_control, content_disposition, content_encoding, content_language,
+expires, user_metadata, ctime, mtime
+)
+SELECT ?, etag, checksum_sha256, request_checksum_algorithm, request_checksum_value,
+content_type, cache_control, content_disposition, content_encoding, content_language,
+expires, user_metadata, ctime, mtime
+FROM tg_s3_object_metadata_tab WHERE entry_id = ?`
+	if _, err := exec.ExecContext(ctx, statement, destinationEntryID, sourceEntryID); err != nil {
+		return fmt.Errorf("copy mapping metadata: %w", err)
 	}
 	return nil
 }
@@ -138,6 +269,7 @@ func (f *fileMappingDaoImpl) directoryEntryToFileMappingItem(
 	item directory.IDirectoryEntry,
 ) (*entity.FileLinkMeta, error) {
 	rs := &entity.FileLinkMeta{
+		EntryID:  item.EntryID(),
 		FileName: item.Name(),
 		FileId:   0,
 		FileSize: item.Size(),

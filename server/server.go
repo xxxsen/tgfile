@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/xxxsen/common/webapi"
@@ -17,6 +18,7 @@ import (
 	"github.com/xxxsen/tgfile/server/handler/backup"
 	"github.com/xxxsen/tgfile/server/handler/file"
 	"github.com/xxxsen/tgfile/server/handler/s3"
+	"github.com/xxxsen/tgfile/server/handler/s3/s3base"
 	"github.com/xxxsen/tgfile/server/handler/webdav"
 	"github.com/xxxsen/tgfile/server/model"
 
@@ -31,17 +33,34 @@ type Server struct {
 	c      *config
 	engine webapi.IWebEngine
 	bind   string
+	s3     *s3.S3Handler
 }
 
 func New(bind string, opts ...Option) (*Server, error) {
 	c := applyOpts(opts...)
 	svr := &Server{c: c, bind: bind}
+	if c.s3.Enabled {
+		buckets := make([]s3.Bucket, 0, len(c.s3.Buckets))
+		for _, bucket := range c.s3.Buckets {
+			buckets = append(buckets, s3.Bucket{
+				Name: bucket.Name,
+				ACL:  s3.BucketACL(bucket.ACL),
+			})
+		}
+		svr.s3 = s3.NewS3Handler(c.fmgr, s3.Config{
+			Buckets:       buckets,
+			MaxObjectSize: c.s3.MaxObjectSize,
+			Users:         c.userMap,
+		})
+	}
 	var err error
 	svr.engine, err = webapi.NewEngine(
 		"/",
 		bind,
 		webapi.WithAuth(auth.MapUserMatch(c.userMap)),
+		webapi.WithAuthenticators(auth.NewBasic()),
 		webapi.WithRegister(svr.initAPI),
+		webapi.WithNoRoute(svr.noRoute),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create web engine: %w", err)
@@ -85,14 +104,20 @@ func (s *Server) initAPI(router *gin.RouterGroup) {
 		)
 		backupRouter.POST("/import", importBackup)
 	}
-	if s.c.s3Enable {
-		s3Handler := s3.NewS3Handler(s.c.fmgr)
-		for _, bk := range s.c.s3Buckets {
-			bucketRouter := router.Group(fmt.Sprintf("/%s", bk))
-			bucketRouter.GET("", s3Handler.GetBucket)
-			bucketRouter.GET("/*object", s3Handler.DownloadObject)
-			bucketRouter.HEAD("/*object", s3Handler.HeadObject)
-			bucketRouter.PUT("/*object", mustAuthMiddleware, s3Handler.UploadObject)
+	if s.c.s3.Enabled {
+		router.GET("", s.s3.RequestID, s.s3.ListBuckets)
+		for _, bucket := range s.c.s3.Buckets {
+			bucketRouter := router.Group(fmt.Sprintf("/%s", bucket.Name))
+			bucketRouter.Use(s.s3.RequestID)
+			bucketRouter.GET("", s.s3.GetBucket)
+			bucketRouter.HEAD("", s.s3.HeadBucket)
+			bucketRouter.PUT("", s.s3.NotImplemented)
+			bucketRouter.DELETE("", s.s3.NotImplemented)
+			bucketRouter.POST("", s.s3.DeleteObjects)
+			bucketRouter.GET("/*object", s.s3.DownloadObject)
+			bucketRouter.HEAD("/*object", s.s3.HeadObject)
+			bucketRouter.PUT("/*object", s.s3.UploadObject)
+			bucketRouter.DELETE("/*object", s.s3.DeleteObject)
 		}
 	}
 	if s.c.webdavEnable {
@@ -104,6 +129,35 @@ func (s *Server) initAPI(router *gin.RouterGroup) {
 			}
 		}
 	}
+}
+
+func (s *Server) noRoute(c *gin.Context) {
+	if s.s3 == nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	first, _, _ := strings.Cut(strings.TrimPrefix(c.Request.URL.Path, "/"), "/")
+	switch first {
+	case "", "file", "static", "backup", "webdav":
+		c.Status(http.StatusNotFound)
+		return
+	}
+	if _, exists := s.s3.Bucket(first); exists {
+		s.s3.NotImplemented(c)
+		return
+	}
+	if _, apiError := s.s3.Authorize(c, true); apiError != nil {
+		s3base.WriteError(c, apiError)
+		return
+	}
+	apiError := s3base.NewError(
+		http.StatusNotFound,
+		"NoSuchBucket",
+		"The specified bucket does not exist.",
+		nil,
+	)
+	apiError.Bucket = first
+	s3base.WriteError(c, apiError)
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {

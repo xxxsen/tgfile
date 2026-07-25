@@ -34,8 +34,10 @@ func newPurgeTestManager(t *testing.T) IFileManager {
 func TestPurge(t *testing.T) {
 	testManager := newPurgeTestManager(t)
 	ctx := context.Background()
+	protectedFileID, err := testManager.CreateFile(ctx, 1, bytes.NewBufferString("x"))
+	require.NoError(t, err)
 	{
-		_, err := testManager.CreateFile(ctx, 0, &bytes.Buffer{})
+		_, err = testManager.CreateFile(ctx, 0, &bytes.Buffer{})
 		require.NoError(t, err)
 	}
 	{
@@ -49,4 +51,7 @@ func TestPurge(t *testing.T) {
 	cnt, err := testManager.PurgeFile(ctx, &now)
 	require.NoError(t, err)
 	require.Equal(t, 1, int(cnt))
+	protected, err := testManager.OpenFile(ctx, protectedFileID)
+	require.NoError(t, err)
+	require.NoError(t, protected.Close())
 }

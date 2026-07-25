@@ -9,10 +9,12 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/xxxsen/common/database"
 
+	"github.com/xxxsen/tgfile/blockio"
 	"github.com/xxxsen/tgfile/db"
 )
 
@@ -31,17 +33,26 @@ func (b *captureBlockIO) MaxFileSize() int64 {
 	return b.maxSize
 }
 
-func (b *captureBlockIO) Upload(_ context.Context, reader io.Reader) (string, error) {
+func (b *captureBlockIO) Upload(_ context.Context, reader io.Reader) (*blockio.UploadResult, error) {
 	raw, err := io.ReadAll(reader)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
 	key := fmt.Sprintf("part-%d", len(b.order))
 	b.parts[key] = append([]byte(nil), raw...)
 	b.order = append(b.order, key)
-	return key, nil
+	return &blockio.UploadResult{FileKey: key, DeleteRef: key, UploadedAt: time.Now().UnixMilli()}, nil
+}
+
+func (b *captureBlockIO) DeleteBlocks(_ context.Context, deleteRefs []string) error {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	for _, ref := range deleteRefs {
+		delete(b.parts, ref)
+	}
+	return nil
 }
 
 func (b *captureBlockIO) Download(_ context.Context, key string, position int64) (io.ReadCloser, error) {
@@ -168,6 +179,23 @@ func TestCreateFileRejectsShortReaderWithoutReadyFile(t *testing.T) {
 	require.ErrorIs(t, err, ErrFileShortRead)
 
 	require.Zero(t, queryCount(t, databaseClient, "SELECT COUNT(*) FROM tg_file_tab WHERE file_state = 2;"))
+}
+
+func TestCreateFileCompensatesUploadedBlockWhenDeleteStateCannotPersist(t *testing.T) {
+	manager, block, databaseClient := newCreateFileTestManager(t, 4)
+	_, err := databaseClient.ExecContext(t.Context(), `
+CREATE TRIGGER reject_create_file_delete_state
+BEFORE INSERT ON tg_file_part_delete_state_tab
+BEGIN
+    SELECT RAISE(ABORT, 'reject delete state');
+END;`)
+	require.NoError(t, err)
+
+	_, err = manager.CreateFile(t.Context(), 1, bytes.NewBufferString("x"))
+
+	require.Error(t, err)
+	require.Empty(t, block.parts)
+	require.Zero(t, queryCount(t, databaseClient, "SELECT COUNT(*) FROM tg_file_part_tab"))
 }
 
 func TestCreateEmptyFile(t *testing.T) {

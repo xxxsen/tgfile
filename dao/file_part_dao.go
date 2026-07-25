@@ -38,46 +38,49 @@ func (f *filePartDaoImpl) CreateFilePart(
 	req *entity.CreateFilePartRequest,
 ) (*entity.CreateFilePartResponse, error) {
 	now := time.Now().UnixMilli()
-	data := []map[string]any{
-		{
+	err := f.dbc.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
+		partData := []map[string]any{{
 			"file_id":       req.FileId,
 			"file_part_id":  req.FilePartId,
 			"ctime":         now,
 			"mtime":         now,
 			"file_key":      req.FileKey,
 			"file_part_md5": req.FilePartMd5,
-		},
-	}
-	sql, args, err := builder.BuildInsert(f.table(), data)
+		}}
+		partSQL, partArgs, err := builder.BuildInsert(f.table(), partData)
+		if err != nil {
+			return fmt.Errorf("build file part insert: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, partSQL, partArgs...); err != nil {
+			return fmt.Errorf("insert file part: %w", err)
+		}
+		deleteData := []map[string]any{{
+			"file_id":         req.FileId,
+			"file_part_id":    req.FilePartId,
+			"backend_kind":    req.BackendKind,
+			"delete_ref":      req.DeleteRef,
+			"uploaded_at":     req.UploadedAt,
+			"delete_state":    "live",
+			"attempt_count":   0,
+			"next_attempt_at": 0,
+			"lease_until":     0,
+			"last_attempt_at": 0,
+			"last_error_code": "",
+			"deleted_at":      0,
+			"ctime":           now,
+			"mtime":           now,
+		}}
+		deleteSQL, deleteArgs, err := builder.BuildInsert("tg_file_part_delete_state_tab", deleteData)
+		if err != nil {
+			return fmt.Errorf("build block delete state insert: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, deleteSQL, deleteArgs...); err != nil {
+			return fmt.Errorf("insert block delete state: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("build file part insert: %w", err)
-	}
-	_, insertErr := f.dbc.ExecContext(ctx, sql, args...)
-	if insertErr == nil {
-		return &entity.CreateFilePartResponse{}, nil
-	}
-	where := map[string]any{
-		"file_id":      req.FileId,
-		"file_part_id": req.FilePartId,
-	}
-	update := map[string]any{
-		"file_key": req.FileKey,
-		"mtime":    now,
-	}
-	sql, args, err = builder.BuildUpdate(f.table(), where, update)
-	if err != nil {
-		return nil, fmt.Errorf("build duplicate file part update: %w", err)
-	}
-	rs, err := f.dbc.ExecContext(ctx, sql, args...)
-	if err != nil {
-		return nil, fmt.Errorf("update duplicate file part: %w", err)
-	}
-	affect, err := rs.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("read updated file part row count: %w", err)
-	}
-	if affect == 0 {
-		return nil, fmt.Errorf("insert on duplicate key update no affect rows, insert err:%w", insertErr)
+		return nil, fmt.Errorf("create file part transaction: %w", err)
 	}
 	return &entity.CreateFilePartResponse{}, nil
 }

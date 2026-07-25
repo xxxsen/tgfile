@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 
 	"github.com/xxxsen/tgfile/entity"
 )
@@ -22,6 +23,8 @@ var (
 	ErrNotDirectory     = errors.New("operation requires a directory")
 	ErrInvalidCache     = errors.New("invalid file cache configuration")
 	ErrInvalidCachePath = errors.New("invalid file cache path")
+	ErrS3Precondition   = errors.New("S3 object precondition failed")
+	ErrS3ObjectConflict = errors.New("S3 object changed concurrently")
 )
 
 type WalkLinkFunc func(ctx context.Context, link string, item *entity.FileLinkMeta) (bool, error)
@@ -64,4 +67,64 @@ type ILinkManager interface {
 type IFileManager interface {
 	IFileStorage
 	ILinkManager
+	IS3ObjectManager
+	RunBlockDeleteWorker(ctx context.Context) error
+}
+
+type S3ObjectInfo struct {
+	Link     *entity.FileLinkMeta
+	Metadata *entity.S3ObjectMetadata
+}
+
+type S3ListRequest struct {
+	Bucket            string
+	Prefix            string
+	Delimiter         string
+	StartAfter        string
+	ContinuationToken string
+	MaxKeys           int
+	FetchOwner        bool
+}
+
+type S3ListItem struct {
+	Key          string
+	Size         int64
+	LastModified int64
+	ETag         string
+}
+
+type S3ListResult struct {
+	Items          []S3ListItem
+	CommonPrefixes []string
+	IsTruncated    bool
+	NextKey        string
+}
+
+type S3Condition struct {
+	IfMatch           string
+	IfNoneMatch       string
+	IfModifiedSince   *time.Time
+	IfUnmodifiedSince *time.Time
+}
+
+type IS3ObjectManager interface {
+	StatS3Object(ctx context.Context, path string) (*S3ObjectInfo, error)
+	ListS3Objects(ctx context.Context, req *S3ListRequest) (*S3ListResult, error)
+	PublishS3Object(
+		ctx context.Context,
+		path string,
+		fileID uint64,
+		size int64,
+		metadata *entity.S3ObjectMetadata,
+		condition *S3Condition,
+	) (*S3ObjectInfo, error)
+	CopyS3Object(
+		ctx context.Context,
+		source string,
+		destination string,
+		metadata *entity.S3ObjectMetadata,
+		sourceCondition *S3Condition,
+		destinationCondition *S3Condition,
+	) (*S3ObjectInfo, error)
+	DeleteS3Object(ctx context.Context, path string, condition *S3Condition) (bool, error)
 }

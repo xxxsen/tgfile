@@ -1,128 +1,185 @@
 # 核心流程与接口设计
 
-本文描述 tgfile 对外接口的稳定语义及其在内部组件间的处理流程。系统分层见
-[`01-architecture.md`](01-architecture.md)，持久化约束见
+本文描述 tgfile 当前稳定的协议语义。架构边界见
+[`01-architecture.md`](01-architecture.md)，持久化模型见
 [`02-data-and-storage-model.md`](02-data-and-storage-model.md)。
 
-## 1. 接口边界
+## 1. S3 能力
 
-| 能力 | 路由或命令 | 鉴权 | 稳定语义 |
-|---|---|---|---|
-| S3 上传 | `PUT /{bucket}/{object}` | 是 | 创建新对象；已存在路径返回冲突，不覆盖 |
-| S3 下载 | `GET /{bucket}/{object}` | 否 | 流式返回对象内容，支持 Range |
-| S3 元数据 | `HEAD /{bucket}/{object}` | 否 | 返回大小、修改时间和 ETag，不读取完整内容 |
-| 直链上传 | `POST /file/upload` | 是 | 创建文件并返回稳定外部 key |
-| 直链下载 | `GET /file/download/{key}` | 否 | 按规范 key 路径流式读取，支持 Range |
-| 直链元数据 | `GET /file/meta/{key}` | 否 | 返回文件大小等元数据 |
-| 元数据清理 | `POST /file/purge` | 是 | 清理满足条件且无 Mapping 引用的 SQLite 元数据 |
-| 目录浏览 | `/static/*` | 是 | 浏览和下载目录树中的内容 |
-| 备份导入导出 | `/backup/import`、`/backup/export` | 是 | 以 tar.gz 在实例间传输逻辑文件树 |
-| WebDAV | `/webdav/*` | 是 | 将配置的内部根路径映射为 WebDAV 文件树 |
-| 只读审计 | `tgfile audit` | 本地命令 | 只读检查数据库一致性，不启动在线依赖 |
-| 直链 key 检查 | `tgfile check-key` | 本地命令 | 只校验并解析 key，不访问数据库或后端 |
+| 能力 | 路由 | 认证 |
+|---|---|---|
+| ListBuckets | `GET /` | 必需 |
+| HeadBucket | `HEAD /{bucket}` | 必需 |
+| GetBucketLocation | `GET /{bucket}?location` 或 legacy bucket GET | 必需 |
+| ListObjectsV2 | `GET /{bucket}?list-type=2` | 必需 |
+| GetObject / HeadObject | `GET/HEAD /{bucket}/{key}` | 由 bucket ACL 决定 |
+| PutObject | `PUT /{bucket}/{key}` | 必需 |
+| CopyObject | `PUT /{bucket}/{key}` + `x-amz-copy-source` | 必需 |
+| DeleteObject | `DELETE /{bucket}/{key}` | 必需 |
+| DeleteObjects | `POST /{bucket}?delete` | 必需 |
 
-受保护的 HTTP 接口使用配置中的用户信息完成认证。S3 写请求使用 S3 Signature V4；普通
-HTTP 接口使用 Basic Auth。读取接口是否公开是协议的一部分，部署时还应通过 TLS、反向
-代理和访问控制保护传输与暴露范围。
+不实现 bucket 创建/删除、对象 ACL、版本控制、multipart upload、tagging、lifecycle 和
+SelectObjectContent。相关 bucket 操作返回 NotImplemented；`x-amz-acl` 和 grant header
+返回 AccessControlListNotSupported。
 
-## 2. S3 PUT 流程
+## 2. SigV4 与请求完整性
+
+S3 请求可以使用 Basic Auth、SigV4 Authorization header 或 SigV4 presigned query。
+SigV4 固定使用 region `us-east-1`、service `s3`，凭据来自 `user_info`。
+
+本地 `s3verify` 完成：
+
+- canonical URI、query、header、credential scope、session token 和时间窗口校验；
+- 普通 signed payload SHA-256；
+- `UNSIGNED-PAYLOAD`；
+- signed aws-chunked；
+- signed aws-chunked + trailer；
+- unsigned aws-chunked + trailer。
+
+handler 只能读取 verifier 返回的 Body，并且必须成功读到 EOF 后才能发布 Mapping。
+streaming 模式校验每个 chunk、签名链、解码长度和 trailer；应用层另外校验
+`x-amz-trailer` 声明的对象 checksum，不能只验证 trailer 签名。
+
+认证错误使用稳定 S3 XML code，不在响应或日志中暴露 secret、Authorization、签名或
+完整后端引用。
+
+## 3. PutObject
 
 ```mermaid
 sequenceDiagram
     participant C as S3 Client
     participant H as S3 Handler
+    participant V as s3verify
     participant F as FileManager
-    participant B as BlockIO
+    participant T as Telegram
     participant D as SQLite
 
-    C->>H: "PUT object + Content-Length"
-    H->>F: "检查路径是否存在"
-    alt 路径已存在
-        H-->>C: "409 Conflict"
-    else 路径不存在
-        H->>F: "CreateFile(size, body)"
-        loop 每个分片
-            F->>B: "Upload(part)"
-            B-->>F: "FileKey"
-            F->>D: "保存 Part"
-        end
-        F->>D: "File 标记 Ready"
-        H->>F: "CreateFileLink(path, file_id)"
-        F->>D: "创建 Mapping"
-        H-->>C: "成功"
+    C->>H: "PUT /bucket/key"
+    H->>V: "校验 seed signature，取得验证 Body"
+    H->>F: "CreateFile(size, verified body)"
+    loop 每个 Part
+        F->>T: "sendDocument"
+        T-->>F: "FileKey + message identity + time"
+        F->>D: "事务写 Part + live Delete State"
     end
+    H->>H: "读至 EOF，验证 payload/checksum"
+    H->>F: "PublishS3Object + 条件"
+    F->>D: "事务检查条件并写 Mapping + Metadata"
+    opt "覆盖且旧 File 最后引用消失"
+        F->>D: "旧 Part live -> pending"
+    end
+    H-->>C: "200 + ETag + checksum"
 ```
 
-请求必须带合法 `Content-Length`，因为分片数和每片预期长度在读取请求体前确定。handler
-对同一进程内的相同路径串行化写入；SQLite 的父目录与文件名唯一约束处理跨进程竞争。
+对象 key 必须是有效 UTF-8，最长 1024 字节，拒绝空段、`.`、`..`、反斜杠、控制字符和
+首尾 `/`。请求必须提供普通 Content-Length 或 streaming decoded length，且不能超过
+配置的 `max_object_size`。
 
-S3 PUT 采用“只创建”语义。若建链阶段失败，已上传 File 可能成为无引用对象；接口不能因
-补偿失败而删除未知范围的后端内容。
+上述完整规则用于新建 PUT/COPY 目标。历史对象的 GET/HEAD、DELETE 和 COPY 源允许读取
+既有非规范名称，但仍拒绝空段、`.`、`..` 和首尾 `/`；任何可能被路径清理折叠到其他
+bucket 的别名都返回 InvalidObjectName，不能以历史兼容绕过 bucket ACL。
 
-## 3. 直链上传流程
+支持：
 
-`POST /file/upload` 接收 multipart 文件并复用 `CreateFile`。文件就绪后，handler：
+- 标准覆盖；
+- `If-None-Match: *`；
+- `If-Match: *` 或单个强 ETag；
+- Content-MD5；
+- CRC32、CRC32C、CRC64NVME、SHA1、SHA256 request checksum；
+- `x-amz-sdk-checksum-algorithm` 与实际 header/trailer 一致性；
+- Content-Type、Cache-Control、Content-Disposition、Content-Encoding、
+  Content-Language、Expires 和受限 `x-amz-meta-*`。
 
-1. 根据 `file_id` 生成 16 位小写十六进制哈希；
-2. 清洗并限制原始文件名长度；
-3. 生成 `{hash}-{filename}` 外部 key；
-4. 在 `/defaults/{hash 前两位}/` 下创建 Mapping；
-5. 将外部 key 返回给调用方。
+服务端始终计算对象原文的强 MD5 ETag 和 Base64 SHA-256。checksum、payload 或 trailer
+验证失败时不发布 Mapping；已经成功上传但未被引用的 File 由 audit 暴露，不猜测性删除。
 
-文件内容一旦创建成功但 Mapping 创建失败，也可能留下无引用对象。直链 key 的格式和内部
-映射规则属于持久化兼容协议，详见
-[`02-data-and-storage-model.md`](02-data-and-storage-model.md#5-路径与直链-key)。
+## 4. GetObject、HeadObject 与条件请求
 
-## 4. 读取、HEAD 与 Range
+GET/HEAD 返回 ETag、Last-Modified、Content-Type、Cache-Control、可选内容元数据、用户
+元数据和 checksum。HEAD 不读取 Telegram 内容。
 
-读取流程对 S3 和直链接口一致：
+支持：
 
-1. 将外部对象路径或直链 key 转换为规范 Mapping 路径；
-2. 从目录树解析 `file_id`，读取 File 和有序 Part 元数据；
-3. 对符合大小策略的文件依次查询 L1、L2 缓存；
-4. 缓存未命中时，根据游标计算分片序号和块内偏移；
-5. 使用 Part 的 FileKey 从 BlockIO 获取流，跨分片连续读取；
-6. 将可重建的完整小文件回填缓存；
-7. 通过 HTTP 内容服务处理 `Range`、`Content-Length` 和修改时间。
+- 单 Range、206、Content-Range 和越界 416；
+- `If-Match`、`If-None-Match`；
+- `If-Modified-Since`、`If-Unmodified-Since`；
+- `If-Range`。
 
-HEAD 只读取 Mapping 和 File 元数据，不应拉取完整后端内容。文件级 MD5 用于表达当前
-ETag，但它不是强安全校验。
+ETag 列表只接受 `*` 或合法逗号分隔 tag；畸形值返回 InvalidArgument。历史弱 ETag 可以
+满足弱 `If-None-Match`，不能满足具体值的强 `If-Match`。ETag 条件优先于日期条件，时间
+比较按秒。
 
-## 5. 路径并发与错误语义
+private bucket 在查询 Mapping 前拒绝匿名请求；public-read bucket 仅允许匿名对象 GET/HEAD。
+提交了错误凭据的请求不会降级为匿名。
 
-- 所有外部路径在进入 Directory 前必须清理并规范化；
-- 文件与同名目录不能同时存在，父目录内名称由 SQLite 唯一约束保护；
-- S3 已存在对象返回 `409 Conflict`，不能隐式覆盖；
-- 不存在的路径或 key 返回未找到，不回退到其他根目录；
-- 请求取消必须传播到数据库和 BlockIO；
-- handler 将业务错误映射为协议状态码，不能把凭据、FileKey 或内部路径泄露给客户端；
-- 上传是非幂等操作，除非后端提供明确幂等键，否则不能自动重试整个上传。
+## 5. ListObjectsV2
 
-## 6. 辅助能力
+支持 `prefix`、空 delimiter 或 `/`、`max-keys` 0..1000、`start-after`、
+`continuation-token`、`encoding-type=url` 和 `fetch-owner`。重复单值参数、无效组合和
+不支持的值返回 InvalidArgument。
 
-### 6.1 WebDAV
+SQLite 递归 CTE 只扫描配置 bucket 路径，prefix 使用转义后的参数化 LIKE。delimiter
+投影产生去重 CommonPrefixes，结果按 key 排序并只读取 `max-keys + 1` 项。
 
-WebDAV 把外部 `/webdav` 映射到配置的内部根目录，支持读取、写入、建目录、删除、复制和
-移动等文件树操作。它与 S3 共用同一 Mapping 和 FileManager，因此必须遵守相同的路径
-冲突和内容持久化规则。
+continuation token 是严格解码的 Base64URL JSON，绑定版本、bucket、prefix、delimiter 和
+最后一项；未知字段、超长值或与当前请求不匹配都返回 InvalidToken。
 
-### 6.2 备份
+## 6. CopyObject
 
-导出接口遍历逻辑路径树，将文件内容以 tar.gz 流式输出；导入接口读取同一逻辑格式并重新
-创建 File 和 Mapping。该能力是逻辑文件迁移，不是 SQLite、配置或 BlockIO 的逐字节灾备。
+CopyObject 只在 SQLite 中新增对源 File 的引用，不下载或重新上传 Telegram 内容。
+源和目标必须是已配置 bucket，写操作必须认证。为避免同进程死锁，源/目标 path lock
+按排序后的路径获取；SQLite 事务处理跨进程竞争。
 
-### 6.3 元数据清理
+- COPY：复制源对象元数据和 checksum；
+- REPLACE：使用请求元数据替换可写元数据，保留内容 ETag/checksum；
+- 支持源条件 header 和目标 `If-Match`/`If-None-Match`；
+- 同 key COPY 不改变内容；同 key REPLACE 原子更新元数据；
+- 目标覆盖移除旧 Mapping，只有旧 File 最后引用消失时才进入删除队列。
 
-Purge 只处理达到时间条件且不再被 Mapping 引用的 File/Part 元数据。由于 BlockIO 不提供
-删除能力，它不会回收后端块。生产清理仍需以审计、备份、明确范围和可验证恢复方案为前提。
+请求新的 checksum 算法但源元数据无法直接复用时返回 NotImplemented，不为此读取完整内容。
 
-## 7. 命令设计
+## 7. DeleteObject 与 DeleteObjects
+
+DeleteObject 是幂等逻辑删除：不存在对象仍返回 204。它只删除目标 Mapping 和 S3 Metadata；
+不删除 File、Part 或目录树中的其他对象。`If-Match` 可约束删除。
+
+DeleteObjects：
+
+- 必须使用精确 `?delete`；
+- XML body 最大 2 MiB；
+- 必须提供正确 Content-MD5；
+- 每次 1..1000 个 Object；
+- XML 只允许 Delete/Object/Key/ETag/Quiet 结构；
+- 每个 Object 独立事务，返回 Deleted 或逐项 Error；
+- Quiet 模式省略成功项。
+
+当操作移除某 File 的最后一个 Mapping 时，对应 `live` Delete State 在同一事务中变为
+`pending`。worker 批量删除 Telegram message；429 使用 retry_after，网络错误和 5xx
+指数退避且不越过 47 小时截止时间，永久错误按单条拆分隔离。
+
+## 8. 直链与其他 HTTP 能力
+
+| 能力 | 路由 | 认证 |
+|---|---|---|
+| 直链上传 | `POST /file/upload` | Basic |
+| 直链下载 | `GET /file/download/{key}` | 匿名 |
+| 直链元数据 | `GET /file/meta/{key}` | 匿名 |
+| 元数据 purge | `POST /file/purge` | Basic |
+| 静态目录 | `/static/*` | Basic |
+| 逻辑备份 | `/backup/import`、`/backup/export` | Basic |
+| WebDAV | `/webdav/*` | Basic |
+
+直链下载只使用规范 `/defaults` 映射。Purge 只清理无引用且没有 Delete State 的旧 File；
+不会丢弃 durable 删除引用或删除 Telegram message。
+
+## 9. 命令
 
 每种运行模式使用独立 Cobra 子命令：
 
-- `serve`：启动完整在线服务；
-- `audit`：以只读方式审计 SQLite；
-- `check-key`：离线检查直链 key。
+- `serve --config=...`：校验配置、执行 migration、启动 HTTP 和 worker；
+- `check-config --config=...`：仅解析和校验配置，无日志、数据库或网络副作用；
+- `audit --config=... --output=...`：只读审计 SQLite；
+- `check-key --key=...`：纯计算校验直链 key。
 
-仅服务端使用的参数属于 `serve`，只读审计和纯计算参数分别属于各自子命令。新增独立运行
-模式时应增加子命令，不把不相关参数继续堆叠到根命令，也不让离线命令初始化在线依赖。
+离线命令不得初始化 Telegram、缓存或 HTTP 服务。根命令不接受把不同运行模式混在一起的
+业务参数。

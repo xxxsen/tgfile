@@ -2,8 +2,8 @@ package s3base
 
 import (
 	"encoding/xml"
+	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/logutil"
@@ -11,70 +11,120 @@ import (
 	"go.uber.org/zap"
 )
 
-type S3ErrorMessage struct {
+var errNilAPIError = errors.New("nil S3 API error")
+
+type APIError struct {
+	HTTPStatus int
+	Code       string
+	Message    string
+	Bucket     string
+	Key        string
+	Resource   string
+	Cause      error
+}
+
+func (e *APIError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	return e.Code + ": " + e.Message
+}
+
+func (e *APIError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+type ErrorResponse struct {
 	XMLName    xml.Name `xml:"Error"`
 	Code       string   `xml:"Code"`
 	Message    string   `xml:"Message"`
-	Key        string   `xml:"Key"`
-	BucketName string   `xml:"BucketName"`
-	Resource   string   `xml:"Resource"`
-	RequestId  string   `xml:"RequestId"`
-	HostId     string   `xml:"HostId"`
+	BucketName string   `xml:"BucketName,omitempty"`
+	Key        string   `xml:"Key,omitempty"`
+	Resource   string   `xml:"Resource,omitempty"`
+	RequestID  string   `xml:"RequestId"`
+	HostID     string   `xml:"HostId"`
 }
 
-func ResponseWithError(ctx *gin.Context, code int, e *S3ErrorMessage) {
-	ctx.XML(code, e)
+func NewError(status int, code, message string, cause error) *APIError {
+	return &APIError{
+		HTTPStatus: status,
+		Code:       code,
+		Message:    message,
+		Cause:      cause,
+	}
+}
+
+func WriteError(c *gin.Context, apiError *APIError) {
+	if apiError == nil {
+		apiError = InternalError(errNilAPIError)
+	}
+	requestID, _ := trace.GetTraceId(c.Request.Context())
+	logutil.GetLogger(c.Request.Context()).Error(
+		"S3 request failed",
+		zap.Error(apiError.Cause),
+		zap.String("code", apiError.Code),
+		zap.Int("status_code", apiError.HTTPStatus),
+	)
+	c.Header("x-amz-request-id", requestID)
+	if c.Request.Method == http.MethodHead || apiError.HTTPStatus == http.StatusNotModified {
+		c.Status(apiError.HTTPStatus)
+		return
+	}
+	c.XML(apiError.HTTPStatus, &ErrorResponse{
+		Code:       apiError.Code,
+		Message:    apiError.Message,
+		BucketName: apiError.Bucket,
+		Key:        apiError.Key,
+		Resource:   apiError.Resource,
+		RequestID:  requestID,
+		HostID:     requestID,
+	})
+}
+
+func InternalError(cause error) *APIError {
+	return NewError(
+		http.StatusInternalServerError,
+		"InternalError",
+		"We encountered an internal error. Please try again.",
+		cause,
+	)
+}
+
+func NoSuchKey(cause error) *APIError {
+	return NewError(http.StatusNotFound, "NoSuchKey", "The specified key does not exist.", cause)
+}
+
+func AccessDenied(cause error) *APIError {
+	return NewError(http.StatusForbidden, "AccessDenied", "Access Denied.", cause)
+}
+
+func InvalidRequest(message string, cause error) *APIError {
+	return NewError(http.StatusBadRequest, "InvalidRequest", message, cause)
+}
+
+func PreconditionFailed(cause error) *APIError {
+	return NewError(
+		http.StatusPreconditionFailed,
+		"PreconditionFailed",
+		"At least one of the preconditions you specified did not hold.",
+		cause,
+	)
+}
+
+func InvalidRange(cause error) *APIError {
+	return NewError(
+		http.StatusRequestedRangeNotSatisfiable,
+		"InvalidRange",
+		"The requested range is not satisfiable.",
+		cause,
+	)
 }
 
 func SimpleReply(ctx *gin.Context) {
 	data := []byte("<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
 		"<LocationConstraint xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"></LocationConstraint>")
-	_, err := ctx.Writer.Write(data)
-	if err != nil {
-		logutil.GetLogger(ctx).Error("write msg fail", zap.Error(err))
-		return
-	}
-}
-
-func logError(c *gin.Context, statuscode int, err error) string {
-	ctx := c.Request.Context()
-	logutil.GetLogger(ctx).Error("write err to client",
-		zap.Error(err),
-		zap.Int("status_code", statuscode))
-	traceid, _ := trace.GetTraceId(ctx)
-	return traceid
-}
-
-func WriteError(c *gin.Context, statuscode int, err error) {
-	traceid := logError(c, statuscode, err)
-	code := ErrInternalService
-	message := "We encountered an internal error. Please try again."
-	switch statuscode {
-	case http.StatusNotFound:
-		code = ErrFileNotFound
-		message = "The specified key does not exist."
-	case http.StatusConflict:
-		code = ErrOperationAborted
-		message = "A conflicting operation is already in progress or the object already exists."
-	case http.StatusLengthRequired:
-		code = ErrMissingContentSize
-		message = "You must provide the Content-Length HTTP header."
-	case http.StatusBadRequest:
-		code = ErrInvalidRequest
-		message = "The request is invalid."
-	}
-	e := &S3ErrorMessage{
-		Code:      code,
-		Message:   message,
-		Key:       strings.TrimPrefix(c.Param("object"), "/"),
-		Resource:  c.Request.URL.Path,
-		RequestId: traceid,
-		HostId:    traceid,
-	}
-	ResponseWithError(c, statuscode, e)
-}
-
-func WriteHeadError(c *gin.Context, statuscode int, err error) {
-	logError(c, statuscode, err)
-	c.Status(statuscode)
+	ctx.Data(http.StatusOK, "application/xml", data)
 }

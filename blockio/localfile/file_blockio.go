@@ -2,10 +2,12 @@ package localfile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path"
+	"time"
 
 	"github.com/xxxsen/common/utils"
 
@@ -13,6 +15,8 @@ import (
 
 	"github.com/google/uuid"
 )
+
+var errInvalidDeleteReference = errors.New("invalid local file delete reference")
 
 type localFileBlockIO struct {
 	baseDir string
@@ -23,17 +27,17 @@ func (f *localFileBlockIO) MaxFileSize() int64 {
 	return f.blksize
 }
 
-func (f *localFileBlockIO) Upload(_ context.Context, r io.Reader) (string, error) {
+func (f *localFileBlockIO) Upload(_ context.Context, r io.Reader) (*blockio.UploadResult, error) {
 	key := uuid.NewString()
 	filename := path.Join(f.baseDir, key)
 	raw, err := io.ReadAll(r)
 	if err != nil {
-		return "", fmt.Errorf("read block content: %w", err)
+		return nil, fmt.Errorf("read block content: %w", err)
 	}
 	if err := os.WriteFile(filename, raw, 0o600); err != nil {
-		return "", fmt.Errorf("write block file: %w", err)
+		return nil, fmt.Errorf("write block file: %w", err)
 	}
-	return key, nil
+	return &blockio.UploadResult{FileKey: key, DeleteRef: key, UploadedAt: time.Now().UnixMilli()}, nil
 }
 
 func (f *localFileBlockIO) Download(_ context.Context, filekey string, pos int64) (io.ReadCloser, error) {
@@ -53,6 +57,18 @@ func (f *localFileBlockIO) Download(_ context.Context, filekey string, pos int64
 
 func (f *localFileBlockIO) Name() string {
 	return "localfile"
+}
+
+func (f *localFileBlockIO) DeleteBlocks(_ context.Context, deleteRefs []string) error {
+	for _, ref := range deleteRefs {
+		if ref == "" || path.Base(ref) != ref {
+			return errInvalidDeleteReference
+		}
+		if err := os.Remove(path.Join(f.baseDir, ref)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("delete block file: %w", err)
+		}
+	}
+	return nil
 }
 
 func New(dir string, blksize int64) (blockio.IBlockIO, error) {

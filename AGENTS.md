@@ -7,8 +7,11 @@
 - 不允许主动降低代码质量要求，包括放宽 lint、跳过失败测试、删除测试、缩小检查范围，
   或使用 `//nolint` 等方式掩盖可以修复的问题。
 - 修改必须优先保证存量 S3 GET/HEAD、文件直链读取和 SQLite 数据兼容性。
-- 不得自动删除 Telegram 消息、后端块、文件记录、分片记录、Draft 或无引用文件；
-  数据清理必须有审计结果、明确范围、备份和可验证的迁移/回滚方案。
+- Telegram 消息只允许在显式 S3 DeleteObject、DeleteObjects 或覆盖操作移除最后一个
+  Mapping 引用后，通过持久化删除状态机处理；读取、启动、audit、migration、普通
+  Mapping 操作和历史无删除引用的数据不得触发后端删除。
+- 后端删除成功也必须保留 File、Part 和删除状态记录；其他数据清理必须有审计结果、
+  明确范围、备份和可验证的迁移/回滚方案。
 - 工作区可能包含用户尚未提交的修改。不得覆盖、丢弃或重置无关改动。
 
 ## 1. 项目概述
@@ -78,7 +81,8 @@ make check                  # 格式、vet、test、race、lint 全量门禁
 - `filemgr` 负责文件与路径语义；handler 不得绕过它直接修改业务表。
 - `audit` 和 `check-key` 子命令不得初始化 Telegram、HTTP 服务或缓存。
 - 只读维护命令必须用 SQLite 只读模式，不能调用会建表或迁移 schema 的初始化逻辑。
-- S3 已存在对象保持 409 语义，不得在没有新设计和迁移方案时改为覆盖。
+- S3 PUT 和 CopyObject 遵循标准覆盖语义，`If-Match`/`If-None-Match` 条件必须在最终
+  SQLite 事务中再次判断；被替换内容只有在最后一个 Mapping 引用消失后才能进入删除队列。
 - 默认上传根目录固定为 `/defaults`；运行时代码不得增加历史路径 fallback。
 - 外部直链 key、file_id、Telegram FileKey、分片顺序和存量 MD5 不得静默改写。
 - 业务 schema DDL 只能放在根目录 `migrations/`，文件名使用 `NNNN_name.sql`；Go 代码中
@@ -89,6 +93,8 @@ make check                  # 格式、vet、test、race、lint 全量门禁
   不得通过忽略列约束、默认值、索引或未知表来扩大通用兼容范围。
 - migration 必须可在单事务内执行。无法识别的旧 schema 或 schema 漂移必须安全失败，
   不得自动重建数据库、删除业务表或跳过 checksum 校验。
+- `tg_file_part_delete_state_tab` 是 Telegram 删除的 durable outbox；任何代码不得绕过
+  `live -> pending -> deleting -> terminal` 状态机直接删除消息或丢弃删除引用。
 
 ## 6. 安全与日志
 

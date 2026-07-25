@@ -23,6 +23,9 @@ type CreateFilePartRequest struct {
 	FilePartId  int32
 	FileKey     string // 真实的, 用于换取文件信息的key
 	FilePartMd5 string
+	BackendKind string
+	DeleteRef   string
+	UploadedAt  int64
 }
 
 type CreateFilePartResponse struct{}

@@ -41,6 +41,250 @@ type dbDirectory struct {
 	idfn IDGenFunc
 }
 
+type directoryTransaction struct {
+	directory *dbDirectory
+	tx        database.IQueryExecer
+}
+
+func (t *directoryTransaction) QueryExecer() database.IQueryExecer {
+	return t.tx
+}
+
+func (t *directoryTransaction) Stat(
+	ctx context.Context,
+	filename string,
+) (IDirectoryEntry, bool, error) {
+	entry, exists, err := t.directory.txGetEntryInfo(ctx, t.tx, filename, nil)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("stat transaction path %q: %w", filename, err)
+	}
+	if !exists {
+		return nil, false, nil
+	}
+	return entry.ToDirectoyEntry(), true, nil
+}
+
+func (t *directoryTransaction) Create(
+	ctx context.Context,
+	filename string,
+	size int64,
+	refdata string,
+) (IDirectoryEntry, error) {
+	filename = strings.TrimSuffix(filename, "/")
+	dir, name, isRoot := t.directory.splitFilename(filename)
+	if isRoot {
+		return nil, errEntryMustNotBeRoot
+	}
+	var created IDirectoryEntry
+	err := t.directory.txOnSelectDir(ctx, t.tx, dir, true, func(
+		ctx context.Context,
+		parentID uint64,
+		tx database.IQueryExecer,
+	) error {
+		exists, err := t.directory.txIsEntryExist(ctx, tx, parentID, name)
+		if err != nil {
+			return fmt.Errorf("check file entry %q: %w", name, err)
+		}
+		if exists {
+			return os.ErrExist
+		}
+		now := time.Now().UnixMilli()
+		entry := &directoryEntryTab{
+			ParentEntryId_: parentID,
+			RefData_:       refdata,
+			FileKind_:      defaultFileKindFile,
+			Ctime_:         now,
+			Mtime_:         now,
+			FileSize_:      size,
+			FileMode_:      defaultEntryFileMode,
+			FileName_:      name,
+		}
+		entryID, err := t.directory.txCreateFile(ctx, tx, parentID, entry)
+		if err != nil {
+			return fmt.Errorf("create file entry %q: %w", name, err)
+		}
+		entry.EntryId_ = entryID
+		created = entry
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create transaction path %q: %w", filename, err)
+	}
+	return created, nil
+}
+
+func (t *directoryTransaction) Remove(
+	ctx context.Context,
+	filename string,
+) ([]IDirectoryEntry, error) {
+	entry, exists, err := t.directory.txGetEntryInfo(ctx, t.tx, filename, nil)
+	if err != nil {
+		return nil, fmt.Errorf("find transaction remove path %q: %w", filename, err)
+	}
+	if !exists {
+		return nil, nil
+	}
+	removed := make([]IDirectoryEntry, 0, 1)
+	if err := t.collectAndRemove(ctx, entry, &removed); err != nil {
+		return nil, err
+	}
+	return removed, nil
+}
+
+func (t *directoryTransaction) collectAndRemove(
+	ctx context.Context,
+	entry *directoryEntryTab,
+	removed *[]IDirectoryEntry,
+) error {
+	if entry.FileKind_ == defaultFileKindDir {
+		children, err := t.directory.txListAllDir(ctx, t.tx, entry.EntryId_)
+		if err != nil {
+			return fmt.Errorf("list transaction remove children: %w", err)
+		}
+		for _, child := range children {
+			if err := t.collectAndRemove(ctx, child, removed); err != nil {
+				return err
+			}
+		}
+	}
+	*removed = append(*removed, entry)
+	if err := t.directory.txRemove(ctx, t.tx, entry.ParentEntryId_, entry.FileName_); err != nil {
+		return fmt.Errorf("remove transaction entry %q: %w", entry.FileName_, err)
+	}
+	return nil
+}
+
+func (t *directoryTransaction) Touch(ctx context.Context, filename string, mtime int64) error {
+	entry, exists, err := t.directory.txGetEntryInfo(ctx, t.tx, filename, nil)
+	if err != nil {
+		return fmt.Errorf("find transaction touch path %q: %w", filename, err)
+	}
+	if !exists {
+		return os.ErrNotExist
+	}
+	sql, args, err := builder.BuildUpdate(t.directory.table(), map[string]any{
+		"entry_id": entry.EntryId_,
+	}, map[string]any{
+		"mtime": mtime,
+	})
+	if err != nil {
+		return fmt.Errorf("build transaction touch: %w", err)
+	}
+	if _, err := t.tx.ExecContext(ctx, sql, args...); err != nil {
+		return fmt.Errorf("touch transaction entry: %w", err)
+	}
+	return nil
+}
+
+func (t *directoryTransaction) Copy(
+	ctx context.Context,
+	source, destination string,
+	overwrite bool,
+) ([]EntryCopy, []IDirectoryEntry, error) {
+	next, err := t.directory.precheckMoveCopy(source, destination)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !next {
+		return nil, nil, nil
+	}
+	var overwritten []IDirectoryEntry
+	destinationEntry, destinationExists, err := t.directory.txGetEntryInfo(ctx, t.tx, destination, nil)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, err
+	}
+	if destinationExists {
+		overwritten = append(overwritten, destinationEntry)
+	}
+	if err := t.directory.txDoCopy(ctx, t.tx, source, destination, overwrite); err != nil {
+		return nil, nil, err
+	}
+	sourceEntry, sourceExists, err := t.directory.txGetEntryInfo(ctx, t.tx, source, nil)
+	if err != nil || !sourceExists {
+		return nil, nil, fmt.Errorf("read copied source: %w", err)
+	}
+	copiedEntry, copiedExists, err := t.directory.txGetEntryInfo(ctx, t.tx, destination, nil)
+	if err != nil || !copiedExists {
+		return nil, nil, fmt.Errorf("read copied destination: %w", err)
+	}
+	pairs := make([]EntryCopy, 0, 1)
+	if err := t.collectCopyPairs(ctx, sourceEntry, copiedEntry, &pairs); err != nil {
+		return nil, nil, err
+	}
+	return pairs, overwritten, nil
+}
+
+func (t *directoryTransaction) collectCopyPairs(
+	ctx context.Context,
+	source, destination *directoryEntryTab,
+	pairs *[]EntryCopy,
+) error {
+	*pairs = append(*pairs, EntryCopy{
+		Source:      source.ToDirectoyEntry(),
+		Destination: destination.ToDirectoyEntry(),
+	})
+	if source.FileKind_ == defaultFileKindFile {
+		return nil
+	}
+	sourceChildren, err := t.directory.txListAllDir(ctx, t.tx, source.EntryId_)
+	if err != nil {
+		return err
+	}
+	for _, sourceChild := range sourceChildren {
+		destinationChild, exists, err := t.directory.txSearchEntry(
+			ctx,
+			t.tx,
+			destination.EntryId_,
+			sourceChild.FileName_,
+		)
+		if err != nil || !exists {
+			return fmt.Errorf("find copied child %q: %w", sourceChild.FileName_, err)
+		}
+		if err := t.collectCopyPairs(ctx, sourceChild, destinationChild, pairs); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *directoryTransaction) Move(
+	ctx context.Context,
+	source, destination string,
+	overwrite bool,
+) ([]IDirectoryEntry, error) {
+	next, err := t.directory.precheckMoveCopy(source, destination)
+	if err != nil {
+		return nil, err
+	}
+	if !next {
+		return nil, nil
+	}
+	var overwritten []IDirectoryEntry
+	destinationEntry, destinationExists, err := t.directory.txGetEntryInfo(ctx, t.tx, destination, nil)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if destinationExists {
+		overwritten = append(overwritten, destinationEntry)
+	}
+	if err := t.directory.txDoMove(ctx, t.tx, source, destination, overwrite); err != nil {
+		return nil, err
+	}
+	return overwritten, nil
+}
+
+func (e *dbDirectory) WithTransaction(ctx context.Context, callback TransactionFunc) error {
+	if err := e.db.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
+		return callback(ctx, &directoryTransaction{directory: e, tx: tx})
+	}); err != nil {
+		return fmt.Errorf("directory transaction: %w", err)
+	}
+	return nil
+}
+
 func (e *dbDirectory) isArrayEqual(origin, ck []string) bool {
 	if len(origin) != len(ck) {
 		return false
@@ -514,8 +758,12 @@ func (e *dbDirectory) txDoCopy(ctx context.Context, tx database.IQueryExecer, sr
 }
 
 func (e *dbDirectory) Copy(ctx context.Context, src, dst string, overwrite bool) error {
-	if err := e.db.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
-		return e.txDoCopy(ctx, tx, src, dst, overwrite)
+	if err := e.WithTransaction(ctx, func(ctx context.Context, tx ITransaction) error {
+		_, _, err := tx.Copy(ctx, src, dst, overwrite)
+		if err != nil {
+			return fmt.Errorf("copy directory transaction: %w", err)
+		}
+		return nil
 	}); err != nil {
 		return fmt.Errorf("do copy failed, err:%w", err)
 	}
@@ -589,55 +837,25 @@ func (e *dbDirectory) txDoMove(ctx context.Context, tx database.IQueryExecer, sr
 }
 
 func (e *dbDirectory) Move(ctx context.Context, src, dst string, overwrite bool) error {
-	if err := e.db.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
-		return e.txDoMove(ctx, tx, src, dst, overwrite)
+	if err := e.WithTransaction(ctx, func(ctx context.Context, tx ITransaction) error {
+		_, err := tx.Move(ctx, src, dst, overwrite)
+		if err != nil {
+			return fmt.Errorf("move directory transaction: %w", err)
+		}
+		return nil
 	}); err != nil {
 		return fmt.Errorf("do move failed, err:%w", err)
 	}
 	return nil
 }
 
-func (e *dbDirectory) txDoRemove(ctx context.Context, tx database.IQueryExecer, parentid uint64, name string) error {
-	ent, ok, err := e.txSearchEntry(ctx, tx, parentid, name)
-	if err != nil {
-		return fmt.Errorf("read entry pid=%d name=%q: %w", parentid, name, err)
-	}
-	if !ok { // 已经被删了
-		return nil
-	}
-	if ent.FileKind_ == defaultFileKindDir {
-		items, err := e.txListAllDir(ctx, tx, ent.EntryId_)
-		if err != nil {
-			return fmt.Errorf("scan entry from pid:%d failed, err:%w", parentid, err)
-		}
-		for _, item := range items {
-			if err := e.txDoRemove(ctx, tx, item.ParentEntryId_, item.FileName_); err != nil {
-				return fmt.Errorf("remove child entry %q: %w", item.FileName_, err)
-			}
-		}
-	}
-	if err := e.txRemove(ctx, tx, parentid, name); err != nil {
-		return fmt.Errorf("remove entry %q: %w", name, err)
-	}
-	return nil
-}
-
 func (e *dbDirectory) Remove(ctx context.Context, filename string) error {
-	// 递归删除其子节点, 再删除父节点
-	dir, name, isRoot := e.splitFilename(filename)
-	if err := e.db.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
-		if isRoot {
-			return e.txDoRemove(ctx, tx, 0, "/")
+	if err := e.WithTransaction(ctx, func(ctx context.Context, tx ITransaction) error {
+		_, err := tx.Remove(ctx, filename)
+		if err != nil {
+			return fmt.Errorf("remove directory transaction: %w", err)
 		}
-		return e.txOnSelectDir(
-			ctx,
-			tx,
-			dir,
-			false,
-			func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
-				return e.txDoRemove(ctx, tx, parentid, name)
-			},
-		)
+		return nil
 	}); err != nil {
 		return fmt.Errorf("remove path %q: %w", filename, err)
 	}
@@ -645,30 +863,10 @@ func (e *dbDirectory) Remove(ctx context.Context, filename string) error {
 }
 
 func (e *dbDirectory) Create(ctx context.Context, filename string, size int64, refdata string) error {
-	filename = strings.TrimSuffix(filename, "/")
-	dir, name, isRoot := e.splitFilename(filename)
-	if isRoot {
-		return errEntryMustNotBeRoot
-	}
-	if err := e.onSelectDir(ctx, dir, true, func(ctx context.Context, parentid uint64, tx database.IQueryExecer) error {
-		exist, err := e.txIsEntryExist(ctx, tx, parentid, name)
+	if err := e.WithTransaction(ctx, func(ctx context.Context, tx ITransaction) error {
+		_, err := tx.Create(ctx, filename, size, refdata)
 		if err != nil {
-			return fmt.Errorf("check file entry %q: %w", name, err)
-		}
-		if exist {
-			return os.ErrExist
-		}
-		now := time.Now().UnixMilli()
-		if _, err := e.txCreateFile(ctx, tx, parentid, &directoryEntryTab{
-			RefData_:  refdata,
-			FileKind_: 2,
-			Ctime_:    now,
-			Mtime_:    now,
-			FileSize_: size,
-			FileMode_: defaultEntryFileMode,
-			FileName_: name,
-		}); err != nil {
-			return fmt.Errorf("create file entry %q: %w", name, err)
+			return fmt.Errorf("create directory transaction: %w", err)
 		}
 		return nil
 	}); err != nil {
@@ -770,7 +968,7 @@ func (e *dbDirectory) innerScan(ctx context.Context, lastid uint64, batch uint) 
 	return out, nextid, nil
 }
 
-func NewDBDirectory(db database.IDatabase, tab string, idfn IDGenFunc) (IDirectory, error) {
+func NewDBDirectory(db database.IDatabase, tab string, idfn IDGenFunc) (ITransactionalDirectory, error) {
 	return &dbDirectory{
 		db:   db,
 		tab:  tab,

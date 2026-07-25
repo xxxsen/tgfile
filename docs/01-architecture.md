@@ -1,137 +1,135 @@
 # 系统架构
 
-本文描述 tgfile 当前稳定的系统边界、组件职责和依赖方向。使用与部署方式以
-[`README.md`](../README.md) 为准，数据模型与核心流程分别见
-[`02-data-and-storage-model.md`](02-data-and-storage-model.md) 和
+本文描述 tgfile 当前稳定的系统边界、组件职责和依赖方向。数据模型见
+[`02-data-and-storage-model.md`](02-data-and-storage-model.md)，协议语义见
 [`03-core-flows-and-api.md`](03-core-flows-and-api.md)。
 
-## 1. 设计目标
+## 1. 系统定位
 
-tgfile 是一个面向流式读写的文件服务。它把文件内容切分为若干块，使用可插拔的
-BlockIO 后端保存块内容，并在 SQLite 中保存文件、分片和路径映射元数据。
+tgfile 是一个以 Telegram 为主要内容后端的流式文件服务。文件按 BlockIO 单块上限切分，
+块内容存入 Telegram，SQLite 保存文件、分片、路径、S3 元数据和删除任务。一个内部 File
+可以被多个 Mapping 引用，因此复制对象不需要重新上传内容。
 
-系统的主要设计目标是：
+生产核心能力是：
 
-- 以有限内存完成大文件上传、下载和 Range 读取；
-- 将外部路径与内部文件内容标识解耦，使一个文件可以被路径引用；
-- 将后端返回的块标识作为不透明数据持久化，读取时按原分片顺序恢复内容；
-- 允许在不改变文件与路径语义的前提下替换 BlockIO 或缓存实现；
-- 保持 S3 GET/HEAD、S3 PUT 和文件直链读取的稳定行为。
+- S3 PUT、GET、HEAD、Range、ListObjectsV2、CopyObject 和删除；
+- 基于 bucket ACL 的公开或私有读取；
+- 文件直链上传、下载和元数据读取；
+- SQLite migration、只读审计和持久化 Telegram 删除 worker。
+
+WebDAV、逻辑备份和静态目录复用同一 FileManager，但不是 S3 语义的替代实现。
 
 ## 2. 组件关系
 
 ```mermaid
 flowchart LR
-    Client["S3 / HTTP / WebDAV 客户端"] --> Server["server<br/>路由、鉴权、协议适配"]
-    Server --> FM["filemgr<br/>文件与路径业务语义"]
-    FM --> Directory["directory<br/>层级路径模型"]
-    FM --> DAO["dao<br/>文件与分片访问"]
-    Directory --> DAO
-    DAO --> SQLite[("SQLite<br/>元数据")]
-    FM --> Cache["cacheapi / file_io_cache<br/>可丢弃内容缓存"]
-    Cache --> BlockIO["blockio.IBlockIO<br/>分片内容访问"]
-    BlockIO --> Backend["Telegram / localfile / mem"]
+    Client["S3 / HTTP / WebDAV 客户端"] --> Server["server<br/>路由、ACL、鉴权、协议适配"]
+    Server --> Verify["s3verify<br/>SigV4 与 payload 校验"]
+    Server --> FM["filemgr<br/>文件、对象和引用语义"]
+    FM --> Directory["directory<br/>事务性路径树"]
+    FM --> DAO["dao<br/>File / Part 访问"]
+    Directory --> SQLite[("SQLite<br/>元数据与 durable outbox")]
+    DAO --> SQLite
+    FM --> Cache["L1 / L2 可丢弃缓存"]
+    Cache --> BlockIO["blockio.IBlockIO"]
+    BlockIO --> Telegram["Telegram Bot API"]
+    FM --> Worker["删除 worker"]
+    Worker --> SQLite
+    Worker --> Telegram
 ```
 
-SQLite 保存“内容在哪里”和“路径指向哪个内容”，BlockIO 保存真正的文件字节。缓存仅
-保存可重新获取的内容副本，不参与持久化一致性判定。
+SQLite 是元数据事实来源，Telegram 是内容事实来源，缓存只保存可重建副本。handler
+不得直接写业务表；跨 Mapping、S3 元数据和删除状态的原子操作由 FileManager 与
+Directory 事务完成。
 
-## 3. 包职责与依赖边界
+## 3. 包职责
 
 | 包 | 稳定职责 |
 |---|---|
-| `cmd` | Cobra 命令定义、配置加载、依赖组装、进程生命周期 |
-| `server` | HTTP 路由、鉴权接入、协议与业务模型转换、流式响应 |
-| `filemgr` | 文件创建、分片读写、路径链接、复制、移动与删除语义 |
-| `directory` | 基于映射表实现目录树和路径操作 |
-| `dao` | SQLite 表的读写及元数据缓存 |
-| `db` | SQLite 连接、migration 规划与执行、版本账本和 schema 校验 |
-| `migrations` | 按版本保存并嵌入二进制的 SQLite schema SQL |
-| `blockio` | 分片内容存储接口及 Telegram、localfile、mem 实现 |
-| `cacheapi`、`filemgr/file_io_cache.go` | L1/L2 文件内容缓存 |
-| `entity` | 持久化访问所需的内部数据结构 |
-| `server/model` | HTTP 接口的请求和响应结构 |
-| `maintenance` | 不启动在线服务的只读数据库审计 |
+| `cmd` | Cobra 子命令、配置校验、依赖组装和进程生命周期 |
+| `server` | HTTP 路由、bucket ACL、认证、S3/HTTP 协议转换 |
+| `filemgr` | 文件创建与读取、S3 对象事务、引用计数判断、删除 worker |
+| `directory` | SQLite 路径树及事务内 Stat/Create/Remove/Copy/Move/Touch |
+| `dao` | File、Part 和普通 Mapping 数据访问 |
+| `db` | migration 规划、账本、checksum 和 schema 指纹校验 |
+| `migrations` | 按版本嵌入二进制的业务 DDL 与精确 legacy schema 画像 |
+| `blockio` | Telegram、localfile、mem 内容后端及可逆字节旋转 |
+| `maintenance` | 不初始化在线依赖的 SQLite 只读审计 |
+| `entity`、`server/model` | 内部持久化模型和 HTTP 请求/响应模型 |
 
-依赖必须保持单向：
+依赖方向必须保持单向：`cmd` 负责组装，业务包不反向依赖 `cmd`；数据模型层不依赖
+handler；协议层通过 `IFileManager` 使用存储能力。
 
-- `cmd` 可以组装其他包，其他包不得反向依赖 `cmd`；
-- handler 通过 `filemgr.IFileManager` 使用业务能力，不直接修改业务表；
-- `filemgr` 通过 DAO、Directory、Cache 和 BlockIO 接口访问基础设施；
-- 数据模型包不依赖 handler、命令或具体后端实现；
-- 离线只读命令不初始化 HTTP 服务、缓存或 BlockIO 后端。
+## 4. 认证与 bucket ACL
 
-## 4. 在线服务生命周期
+每个 server 实例拥有独立、有序的 authenticator，不使用进程级隐式注册。普通受保护
+HTTP 路由使用 Basic Auth；S3 接受 Basic Auth 或本地 `s3verify` 校验的 SigV4 header /
+presigned query。
 
-`serve` 命令按以下顺序组装服务：
+bucket 必须显式配置以下 ACL 之一：
 
-1. 解析配置并初始化日志与 ID 生成器；
-2. 打开 SQLite，执行待处理的嵌入式 migration 并校验 schema；
-3. 按配置创建 BlockIO，并在需要时增加可逆字节旋转层；
-4. 创建 L1/L2 内容缓存和 FileManager；
-5. 注册 HTTP 路由并开始监听；
-6. 收到终止信号后停止接收请求，等待在途请求退出并关闭数据库。
+- `private`：GET、HEAD、List、PUT、Copy 和 Delete 均要求认证；
+- `public-read`：仅对象 GET/HEAD 允许真正匿名访问，其余操作仍要求认证。
 
-HTTP 服务为流式上传和下载保留无限的整请求读写时间，但限制请求头读取时间、空闲连接
-时间和请求头大小。业务调用应传播 `context.Context`，使客户端取消和服务关闭可以中止
-后续工作。
+客户端一旦提交认证信息，认证失败就返回错误，不能因 bucket 可公开读取而降级为匿名。
+未知 bucket 对匿名请求返回 AccessDenied，对已认证请求返回 NoSuchBucket，避免私有部署
+被匿名枚举。
 
-## 5. 稳定扩展点
+## 5. BlockIO 与 Telegram 边界
 
-### 5.1 BlockIO
+`blockio.IBlockIO` 提供实现名称、单块上限、上传、按偏移下载和批量删除。上传结果同时
+包含：
 
-`blockio.IBlockIO` 定义四项能力：实现名称、单块大小上限、上传一个块和从指定偏移下载
-一个块。FileManager 不依赖 Telegram API，只依赖这一接口。
+- `FileKey`：后续下载使用的不透明标识；
+- `DeleteRef`：能够定位原 Telegram message 的版本化引用；
+- `UploadedAt`：判断 Telegram 删除时限的服务端时间。
 
-新增后端必须满足：
+Telegram 后端的稳定约束：
 
-- `Upload` 返回的 FileKey 可以原样持久化并用于后续 `Download`；
-- `Download` 支持块内偏移并返回需要调用方关闭的流；
-- `MaxFileSize` 在实例生命周期内保持稳定且大于零；
-- 错误保留原因链，并响应调用方 context；
-- 不擅自重试可能创建重复对象的非幂等上传。
+- 单块最大 20 MiB；
+- 上传是非幂等操作，不自动重试；
+- 上传和删除分别串行；相邻上传按配置间隔，相邻删除至少间隔一秒；
+- 删除引用绑定当前 bot、chat 和 message，解析时拒绝未知字段和身份不匹配；
+- `deleteMessages` 每批最多 100 条，普通消息只能在 Telegram 的 48 小时窗口内删除。
 
-### 5.2 缓存
+FileKey 和 DeleteRef 都是后端数据，日志和外部响应不得输出其完整值。
 
-缓存位于 BlockIO 之前：
+## 6. 删除状态机
 
-1. 小文件优先查询 L1 内存缓存；
-2. 未命中时查询 L2 磁盘缓存；
-3. 仍未命中时从 BlockIO 读取，并按大小策略回填缓存；
-4. 超出缓存对象上限的文件直接从 BlockIO 流式读取。
+Telegram 消息删除不是 Mapping 事务中的同步网络调用。S3 DeleteObject、DeleteObjects
+或覆盖操作移除最后一个 Mapping 引用时，只把对应 Part 的 durable outbox 状态从 `live`
+改为 `pending`。后台 worker：
 
-缓存键使用内部 `file_id`。清空、淘汰或损坏缓存不得改变 SQLite 元数据或后端块内容。
+1. 恢复过期的 `deleting` lease；
+2. 按上传时间领取至多 100 个 `pending` Part；
+3. 再次确认 File 没有任何 Mapping 引用；
+4. 在 47 小时安全截止时间内调用 BlockIO 删除；
+5. 根据成功、限流、临时错误或永久错误写入终态或下次重试时间。
 
-### 5.3 协议适配
+读取、启动、migration、audit、普通 Mapping 删除以及缺少 DeleteRef 的历史数据不会触发
+Telegram 删除。删除成功后仍保留 File、Part 和删除状态，保证审计与引用安全。
 
-S3、文件直链接口、WebDAV 和备份接口共享 FileManager，不各自实现一套存储规则。新协议
-应只负责鉴权、参数校验、状态码映射和流式传输；文件状态、路径冲突、分片和校验和语义
-由 FileManager 统一维护。
+## 7. 在线生命周期
 
-## 6. 配置边界
+`serve` 的固定顺序是：
 
-配置按职责分为：
+1. 解析并完整校验配置；
+2. 初始化日志和 ID 生成器；
+3. 打开 SQLite，规划并事务性执行 migration，再校验 schema；
+4. 创建 BlockIO、缓存和 FileManager；
+5. 创建 HTTP server，同时启动删除 worker；
+6. 收到终止信号后停止 HTTP 服务、取消 worker 并关闭数据库。
 
-- 监听地址与日志；
-- SQLite 文件位置；
-- BlockIO 类型及其后端参数；
-- 上传鉴权用户；
-- S3 bucket、WebDAV 根路径等协议开关；
-- 可逆字节旋转参数；
-- L1/L2 缓存容量、单对象上限和磁盘目录。
+`check-config` 在日志、数据库、网络和缓存初始化之前完成验证。`audit` 使用 SQLite 只读
+模式，不执行 migration。
 
-凭据仅用于初始化对应组件，不得写入日志、API 响应或设计文档。配置解析和依赖组装属于
-`cmd`；业务包不应自行读取配置文件。
+## 8. 架构不变量
 
-## 7. 架构不变量
-
-修改实现时必须保持以下约束，除非先完成明确的新设计和数据迁移：
-
-- SQLite 是元数据事实来源，BlockIO 是内容事实来源，缓存不是事实来源；
-- 业务 schema 只通过不可变的版本化 migration 演进，不在 Go 启动逻辑中散落 DDL；
-- 路径映射与文件内容分离，删除路径不等于删除后端块；
-- FileKey 是后端生成的不透明标识，不解析、不归一化、不静默改写；
-- `file_id`、分片顺序、已持久化校验和和外部直链 key 保持兼容；
-- 已存在的 S3 对象不被 PUT 静默覆盖；
-- 默认直链上传统一映射到 `/defaults` 路径树；
-- 任何自动清理能力都不能越过 FileManager 和明确的数据安全边界。
+- 业务 schema 只通过不可变的 `migrations/NNNN_name.sql` 演进；
+- Mapping 与 File 分离，CopyObject 只增加引用，不复制 Telegram 内容；
+- S3 Mapping 与对象元数据在同一个 SQLite 事务中创建、覆盖、复制或删除；
+- 最后引用判断与 `live -> pending` 状态变化处于同一事务；
+- 非 `live` File 不能重新创建 Mapping，worker 发现引用恢复时将可恢复状态改回 `live`；
+- 外部直链 key、`file_id`、Part 顺序、FileKey 和已持久化 MD5 不被静默改写；
+- 历史 S3 对象没有元数据行时只做惰性兼容读取，不批量回填或改变 ETag；
+- 缓存损坏、淘汰或清空不得影响 SQLite 或 Telegram 原始数据。
