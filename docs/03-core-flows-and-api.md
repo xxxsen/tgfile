@@ -30,6 +30,11 @@
 `GET /{bucket}/` 表示 ListObjects V1。DeleteObjects 同时接受
 `POST /{bucket}?delete` 和 `POST /{bucket}/?delete`。
 
+S3 endpoint 只支持 path-style 寻址。签名协议只支持 SigV4，不支持 SigV2、SigV4a、
+virtual-hosted-style bucket、Multi-Region Access Point 和 browser-based POST policy。
+客户端必须关闭对象 ACL 探测或接受未实现 ACL subresource 的 NotImplemented 响应；
+预签名 URL 必须由支持 SigV4 的客户端生成。
+
 不实现 bucket 创建/删除、对象 ACL、版本控制、tagging、lifecycle 和
 SelectObjectContent。Multipart 不实现 UploadPartCopy、SSE 和对象 ACL，对应请求稳定返回
 NotImplemented。其他未实现的标准 bucket/object subresource

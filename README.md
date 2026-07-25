@@ -169,8 +169,9 @@ query。需要预签名 URL 时使用 AWS SDK、AWS CLI 或其他 SigV4 客户�
 - Content-MD5 以及 CRC32、CRC32C、CRC64NVME、SHA1、SHA256 checksum。
 
 Multipart 最终对象支持 S3/直链/WebDAV 的完整读取、HEAD、Range、Copy 和 Delete。
-Multipart additional checksum、UploadPartCopy、SSE、对象 ACL、bucket 创建/删除、版本控制、
-tagging 和 lifecycle 暂不支持。
+Multipart additional checksum 支持 CRC32、CRC32C、CRC64NVME、SHA1 和 SHA256。
+UploadPartCopy、SSE、对象 ACL、bucket 创建/删除、版本控制、tagging 和 lifecycle
+暂不支持。
 
 显式 S3 删除/覆盖或 WebDAV DELETE/COPY/MOVE 覆盖移除内容的最后一个路径引用后，后台
 worker 会在 Telegram 时限内尝试删除对应 message。WebDAV 成功响应表示路径变更和删除

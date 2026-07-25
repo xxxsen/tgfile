@@ -12,7 +12,7 @@ tgfile 是一个以 Telegram 为主要内容后端的流式文件服务。文件
 
 生产核心能力是：
 
-- S3 PUT、GET、HEAD、Range、ListObjectsV2、CopyObject 和删除；
+- S3 PUT、GET、HEAD、Range、ListObjects V1/V2、CopyObject 和删除；
 - S3 Multipart Upload 的创建、分片上传、列举、完成、终止和过期清理；
 - 基于 bucket ACL 的公开或私有读取；
 - 文件直链上传、下载和元数据读取；
