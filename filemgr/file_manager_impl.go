@@ -70,6 +70,20 @@ func (d *defaultFileManager) CreateFileLink(
 	size int64,
 	isDir bool,
 ) error {
+	if !isDir {
+		if err := d.objectDir.WithTransaction(ctx, func(ctx context.Context, tx directory.ITransaction) error {
+			if err := ensureFileTreeCanBeLinked(ctx, tx.QueryExecer(), fileid); err != nil {
+				return err
+			}
+			if _, err := tx.Create(ctx, link, size, fmt.Sprintf("%d", fileid)); err != nil {
+				return fmt.Errorf("create mapping entry: %w", err)
+			}
+			return nil
+		}); err != nil {
+			return fmt.Errorf("create file link %q: %w", link, err)
+		}
+		return nil
+	}
 	_, err := d.fileMappingDao.CreateFileLink(ctx, &entity.CreateFileLinkRequest{
 		FileName: link,
 		FileId:   fileid,
@@ -109,24 +123,15 @@ func (d *defaultFileManager) WalkFileLink(ctx context.Context, prefix string, cb
 }
 
 func (d *defaultFileManager) RemoveFileLink(ctx context.Context, link string) error {
-	if err := d.fileMappingDao.RemoveFileLink(ctx, link); err != nil {
-		return fmt.Errorf("remove file link %q: %w", link, err)
-	}
-	return nil
+	return d.removeWebDAVLink(ctx, link)
 }
 
 func (d *defaultFileManager) RenameFileLink(ctx context.Context, src, dst string, isOverwrite bool) error {
-	if err := d.fileMappingDao.RenameFileLink(ctx, src, dst, isOverwrite); err != nil {
-		return fmt.Errorf("rename file link %q to %q: %w", src, dst, err)
-	}
-	return nil
+	return d.moveWebDAVLink(ctx, src, dst, isOverwrite)
 }
 
 func (d *defaultFileManager) CopyFileLink(ctx context.Context, src, dst string, isOverwrite bool) error {
-	if err := d.fileMappingDao.CopyFileLink(ctx, src, dst, isOverwrite); err != nil {
-		return fmt.Errorf("copy file link %q to %q: %w", src, dst, err)
-	}
-	return nil
+	return d.copyWebDAVLink(ctx, src, dst, isOverwrite)
 }
 
 func (d *defaultFileManager) lowlevelIOStream(
@@ -173,7 +178,16 @@ func (d *defaultFileManager) OpenFile(ctx context.Context, fileid uint64) (io.Re
 	if !ok {
 		return nil, os.ErrNotExist
 	}
-	rsc, err := d.ioc.Load(ctx, fileid, finfo.FileSize, d.lowlevelIOStream(d.bkio, fileid, finfo.FileSize))
+	var loader func(context.Context) (io.ReadSeekCloser, error)
+	switch finfo.FileLayoutVersion {
+	case 1:
+		loader = d.lowlevelIOStream(d.bkio, fileid, finfo.FileSize)
+	case 2:
+		loader = d.compositeIOStream(fileid, finfo.FileSize)
+	default:
+		return nil, fmt.Errorf("%w: file=%d layout=%d", ErrInvalidFileLayout, fileid, finfo.FileLayoutVersion)
+	}
+	rsc, err := d.ioc.Load(ctx, fileid, finfo.FileSize, loader)
 	if err != nil {
 		return nil, fmt.Errorf("open file %d content: %w", fileid, err)
 	}
@@ -288,29 +302,54 @@ func (d *defaultFileManager) FinishFileCreate(ctx context.Context, fileid uint64
 	return nil
 }
 
-func (d *defaultFileManager) CreateFile(ctx context.Context, size int64, reader io.Reader) (uint64, error) {
+func (d *defaultFileManager) CreateFile(
+	ctx context.Context,
+	size int64,
+	reader io.Reader,
+) (uint64, error) {
+	fileID, err := d.createFile(ctx, size, reader)
+	if err == nil || fileID == 0 {
+		return fileID, err
+	}
+	cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), deleteTimeout)
+	defer cancel()
+	cleanupErr := d.DiscardUnpublishedFile(cleanupContext, fileID)
+	return 0, errors.Join(err, cleanupErr)
+}
+
+func (d *defaultFileManager) createFile(
+	ctx context.Context,
+	size int64,
+	reader io.Reader,
+) (uint64, error) {
 	fileid, blksize, err := d.CreateFileDraft(ctx, size)
 	if err != nil {
 		return 0, err
 	}
 	blockCount, err := calculateFileBlockCount(size, blksize)
 	if err != nil {
-		return 0, err
+		return fileid, err
 	}
 	var uploadedSize int64
 	for partID := int64(0); partID < blockCount; partID++ {
 		partSize := min(blksize, size-uploadedSize)
 		counted := &countingReader{reader: io.LimitReader(reader, partSize)}
 		if err := d.CreateFilePart(ctx, fileid, partID, counted); err != nil {
-			return 0, fmt.Errorf("create part record failed, err:%w", err)
+			return fileid, fmt.Errorf("create part record failed, err:%w", err)
 		}
 		if counted.count != partSize {
-			return 0, fmt.Errorf("%w: part=%d expected=%d actual=%d", ErrFileShortRead, partID, partSize, counted.count)
+			return fileid, fmt.Errorf(
+				"%w: part=%d expected=%d actual=%d",
+				ErrFileShortRead,
+				partID,
+				partSize,
+				counted.count,
+			)
 		}
 		uploadedSize += counted.count
 	}
 	if err := d.FinishFileCreate(ctx, fileid); err != nil {
-		return 0, fmt.Errorf("finish create file failed, err:%w", err)
+		return fileid, fmt.Errorf("finish create file failed, err:%w", err)
 	}
 	return fileid, nil
 }
@@ -429,11 +468,63 @@ func (d *defaultFileManager) readUnRefFileIdList(ctx context.Context, limitMtime
 	if len(fidMap) == 0 {
 		return nil, nil
 	}
+	for _, query := range []string{
+		"SELECT DISTINCT file_id FROM tg_s3_file_segment_tab",
+		"SELECT DISTINCT source_file_id FROM tg_s3_file_segment_tab",
+		`SELECT DISTINCT part.file_id
+FROM tg_s3_multipart_part_tab part
+JOIN tg_s3_multipart_upload_tab upload ON upload.upload_id = part.upload_id
+WHERE upload.upload_state = 'active' AND part.part_state = 'active'`,
+	} {
+		fileIDs, err := queryFileIDList(ctx, d.dbc, query)
+		if err != nil {
+			return nil, fmt.Errorf("query protected file references: %w", err)
+		}
+		for _, fileID := range fileIDs {
+			delete(fidMap, fileID)
+		}
+	}
 	rs := make([]uint64, 0, len(fidMap))
 	for fid := range fidMap {
 		rs = append(rs, fid)
 	}
 	return rs, nil
+}
+
+func queryFileIDList(
+	ctx context.Context,
+	queryer database.IQueryer,
+	query string,
+	args ...any,
+) ([]uint64, error) {
+	return queryColumnList[uint64](ctx, queryer, query, args...)
+}
+
+func queryColumnList[T string | uint64](
+	ctx context.Context,
+	queryer database.IQueryer,
+	query string,
+	args ...any,
+) ([]T, error) {
+	rows, err := queryer.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query column values: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	values := make([]T, 0)
+	for rows.Next() {
+		var value T
+		if err := rows.Scan(&value); err != nil {
+			return nil, fmt.Errorf("scan column value: %w", err)
+		}
+		values = append(values, value)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate column values: %w", err)
+	}
+	return values, nil
 }
 
 func (d *defaultFileManager) PurgeFile(ctx context.Context, before *int64) (int64, error) {

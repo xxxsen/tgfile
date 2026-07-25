@@ -48,9 +48,10 @@ func New(bind string, opts ...Option) (*Server, error) {
 			})
 		}
 		svr.s3 = s3.NewS3Handler(c.fmgr, s3.Config{
-			Buckets:       buckets,
-			MaxObjectSize: c.s3.MaxObjectSize,
-			Users:         c.userMap,
+			Buckets:              buckets,
+			MaxObjectSize:        c.s3.MaxObjectSize,
+			MultipartExpireHours: c.s3.MultipartExpireHours,
+			Users:                c.userMap,
 		})
 	}
 	var err error
@@ -113,7 +114,7 @@ func (s *Server) initAPI(router *gin.RouterGroup) {
 			bucketRouter.HEAD("", s.s3.HeadBucket)
 			bucketRouter.PUT("", s.s3.NotImplemented)
 			bucketRouter.DELETE("", s.s3.NotImplemented)
-			bucketRouter.POST("", s.s3.DeleteObjects)
+			bucketRouter.POST("", s.s3.PostBucketOrObject)
 			bucketRouter.GET("/*object", s.s3.GetBucketOrObject)
 			bucketRouter.HEAD("/*object", s.s3.HeadBucketOrObject)
 			bucketRouter.POST("/*object", s.s3.PostBucketOrObject)

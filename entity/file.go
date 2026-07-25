@@ -35,14 +35,15 @@ type GetFileInfoRequest struct {
 }
 
 type FileInfoItem struct {
-	Id            uint64 `json:"id"`
-	FileId        uint64 `json:"file_id"`
-	FileSize      int64  `json:"file_size"`
-	FilePartCount int32  `json:"file_part_count"`
-	Ctime         int64  `json:"ctime"`
-	Mtime         int64  `json:"mtime"`
-	FileState     uint32 `json:"file_state"`
-	Extinfo       string `json:"extinfo"`
+	Id                uint64 `json:"id"`
+	FileId            uint64 `json:"file_id"`
+	FileSize          int64  `json:"file_size"`
+	FilePartCount     int32  `json:"file_part_count"`
+	Ctime             int64  `json:"ctime"`
+	Mtime             int64  `json:"mtime"`
+	FileState         uint32 `json:"file_state"`
+	Extinfo           string `json:"extinfo"`
+	FileLayoutVersion int32  `json:"file_layout_version"`
 }
 
 type FileExtInfo struct {
@@ -57,6 +58,7 @@ func (f *FileInfoItem) ToFileMeta() *FileMeta {
 		Mtime:         f.Mtime,
 		FileState:     f.FileState,
 		FilePartCount: f.FilePartCount,
+		LayoutVersion: f.FileLayoutVersion,
 	}
 	if len(f.Extinfo) == 0 || f.Extinfo == "{}" {
 		return fm
@@ -87,4 +89,5 @@ type FileMeta struct {
 	FileState     uint32
 	Md5Sum        string
 	FilePartCount int32
+	LayoutVersion int32
 }

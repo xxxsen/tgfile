@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/server/handler/s3/s3base"
@@ -35,19 +36,22 @@ type Bucket struct {
 }
 
 type Config struct {
-	Buckets       []Bucket
-	MaxObjectSize int64
-	Users         map[string]string
+	Buckets              []Bucket
+	MaxObjectSize        int64
+	MultipartExpireHours int
+	Users                map[string]string
 }
 
 type S3Handler struct {
-	fmgr          filemgr.IFileManager
-	locks         *pathLocker
-	buckets       map[string]Bucket
-	bucketList    []Bucket
-	maxObjectSize int64
-	users         map[string]string
-	verifier      *s3verify.Verifier
+	fmgr            filemgr.IFileManager
+	locks           *pathLocker
+	multipartLocks  *pathLocker
+	buckets         map[string]Bucket
+	bucketList      []Bucket
+	maxObjectSize   int64
+	multipartExpiry time.Duration
+	users           map[string]string
+	verifier        *s3verify.Verifier
 }
 
 func NewS3Handler(fmgr filemgr.IFileManager, configs ...Config) *S3Handler {
@@ -57,6 +61,9 @@ func NewS3Handler(fmgr filemgr.IFileManager, configs ...Config) *S3Handler {
 	}
 	if len(configs) != 0 {
 		config = configs[0]
+	}
+	if config.MultipartExpireHours == 0 {
+		config.MultipartExpireHours = 24
 	}
 	users := make(map[string]string, len(config.Users))
 	for accessKey, secret := range config.Users {
@@ -85,13 +92,15 @@ func NewS3Handler(fmgr filemgr.IFileManager, configs ...Config) *S3Handler {
 		buckets[bucket.Name] = bucket
 	}
 	return &S3Handler{
-		fmgr:          fmgr,
-		locks:         newPathLocker(),
-		buckets:       buckets,
-		bucketList:    bucketList,
-		maxObjectSize: config.MaxObjectSize,
-		users:         users,
-		verifier:      verifier,
+		fmgr:            fmgr,
+		locks:           newPathLocker(),
+		multipartLocks:  newPathLocker(),
+		buckets:         buckets,
+		bucketList:      bucketList,
+		maxObjectSize:   config.MaxObjectSize,
+		multipartExpiry: time.Duration(config.MultipartExpireHours) * time.Hour,
+		users:           users,
+		verifier:        verifier,
 	}
 }
 

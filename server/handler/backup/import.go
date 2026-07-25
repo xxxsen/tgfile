@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/xxxsen/common/webapi/proxyutil"
 
@@ -99,7 +100,10 @@ func (h *BackupHandler) importOneFile(ctx context.Context, hdr *tar.Header, r *t
 		return fmt.Errorf("create file failed, err:%w", err)
 	}
 	if err := h.fmgr.CreateFileLink(ctx, hdr.Name, fileid, hdr.Size, false); err != nil {
-		return fmt.Errorf("create link failed, err:%w", err)
+		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		cleanupErr := h.fmgr.DiscardUnpublishedFile(cleanupContext, fileid)
+		cancel()
+		return fmt.Errorf("create link failed: %w", errors.Join(err, cleanupErr))
 	}
 	return nil
 }

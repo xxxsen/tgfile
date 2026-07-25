@@ -37,7 +37,8 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
         "acl": "public-read"
       }
     ],
-    "max_object_size": 5368709120
+    "max_object_size": 5368709120,
+    "multipart_expire_hours": 24
   },
   "webdav": {
     "enable": false,
@@ -64,6 +65,9 @@ bucket ACL：
 串行执行，相邻删除的开始时间至少间隔一秒。因此 `bot_config.upload_min_interval_ms`
 不能小于 `1000`。配置不会兼容旧的单一 `s3.bucket` 字段，bucket 必须显式写入
 `s3.buckets` 并指定 ACL。
+
+`s3.multipart_expire_hours` 控制未完成 Multipart Upload 的有效期。缺省或配置为 `0`
+时使用 24 小时，显式值只能为 1～24；到期的暂存 part 会进入异步删除状态机。
 
 启动前可执行无副作用校验；该命令不会初始化日志、SQLite、Telegram、缓存或 HTTP：
 
@@ -133,12 +137,13 @@ signature_v2 = False
 check_ssl_certificate = True
 check_ssl_hostname = True
 acl_public = False
-enable_multipart = False
+enable_multipart = True
+multipart_chunk_size_mb = 15
 ```
 
 `acl_public = False` 只阻止 s3cmd 探测或设置对象级 ACL，不改变 tgfile 配置的 bucket ACL。
-`enable_multipart = False` 关闭的是客户端 S3 Multipart Upload；tgfile 仍会按 BlockIO 限制
-对普通 PutObject 内部分片。常用命令：
+Multipart 默认可用且没有服务端开关；`multipart_chunk_size_mb` 是客户端 S3 part 大小，
+每个 S3 part 在 Telegram 后端仍会按 20 MiB 上限继续拆成物理 message。常用命令：
 
 ```bash
 s3cmd ls s3://private-data/
@@ -158,13 +163,19 @@ query。需要预签名 URL 时使用 AWS SDK、AWS CLI 或其他 SigV4 客户�
 - GetObject、HeadObject、Range 和 HTTP 条件请求；
 - CopyObject COPY/REPLACE；
 - DeleteObject、DeleteObjects；
+- CreateMultipartUpload、UploadPart、ListParts、CompleteMultipartUpload、
+  AbortMultipartUpload、ListMultipartUploads；
 - SigV4 header、presigned URL、signed/unsigned aws-chunked trailer；
 - Content-MD5 以及 CRC32、CRC32C、CRC64NVME、SHA1、SHA256 checksum。
 
-不支持 bucket 创建/删除、对象 ACL、版本控制、multipart upload、tagging 和 lifecycle。
+Multipart 最终对象支持 S3/直链/WebDAV 的完整读取、HEAD、Range、Copy 和 Delete。
+Multipart additional checksum、UploadPartCopy、SSE、对象 ACL、bucket 创建/删除、版本控制、
+tagging 和 lifecycle 暂不支持。
 
-显式 S3 删除或覆盖移除内容的最后一个路径引用后，后台 worker 会在 Telegram 时限内尝试
-删除对应 message。逻辑删除成功仍保留 File、Part 和状态记录用于审计。
+显式 S3 删除/覆盖或 WebDAV DELETE/COPY/MOVE 覆盖移除内容的最后一个路径引用后，后台
+worker 会在 Telegram 时限内尝试删除对应 message。WebDAV 成功响应表示路径变更和删除
+任务已持久化，不表示 Telegram 已同步删除。逻辑删除成功仍保留 File、Part 和状态记录
+用于审计。
 
 ## 其他接口
 

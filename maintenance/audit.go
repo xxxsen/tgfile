@@ -45,6 +45,21 @@ type AuditReport struct {
 	BlockDeleteBackendMismatch       int64            `json:"block_delete_backend_mismatch_count"`
 	PrivateFileWithPublicMapping     int64            `json:"private_bucket_file_with_public_mapping_count"`
 	PrivateFileWithDefaultsMapping   int64            `json:"private_bucket_file_with_defaults_mapping_count"`
+	MultipartUploadCountByState      map[string]int64 `json:"multipart_upload_state_count"`
+	MultipartPartCountByState        map[string]int64 `json:"multipart_part_state_count"`
+	InvalidMultipartStateCount       int64            `json:"invalid_multipart_state_count"`
+	InvalidCompletedUploadCount      int64            `json:"invalid_completed_upload_count"`
+	InvalidCompositeManifestCount    int64            `json:"invalid_composite_manifest_count"`
+	OrphanMultipartPartCount         int64            `json:"orphan_multipart_part_count"`
+	OrphanCompositeSegmentCount      int64            `json:"orphan_composite_segment_count"`
+	MappedCompositeNonLiveSource     int64            `json:"mapped_composite_non_live_source_count"`
+	ActiveMultipartNonLivePart       int64            `json:"active_multipart_non_live_part_count"`
+	NonLiveReferencedFileCount       int64            `json:"non_live_referenced_file_count"`
+	DiscardedUnreferencedLivePart    int64            `json:"discarded_unreferenced_live_part_count"`
+	RetainedUnreferencedLiveFile     int64            `json:"retained_unreferenced_live_file_count"`
+	CompletingUploadCount            int64            `json:"multipart_completing_upload_count"`
+	ExpiredActiveUploadCount         int64            `json:"multipart_expired_active_upload_count"`
+	OldestExpiredUploadAgeMillis     int64            `json:"multipart_oldest_expired_upload_age_ms"`
 }
 
 type AuditOptions struct {
@@ -128,13 +143,28 @@ func readMappingIssues(
 
 func readPartCountIssues(ctx context.Context, database *sql.DB) ([]PartCountIssue, error) {
 	rows, err := database.QueryContext(ctx, `
-SELECT file.file_id, file.file_part_count, COUNT(part.id)
-FROM tg_file_tab AS file
-LEFT JOIN tg_file_part_tab AS part ON part.file_id = file.file_id
-WHERE file.file_state = ?
-GROUP BY file.file_id, file.file_part_count
-HAVING file.file_part_count <> COUNT(part.id)
-ORDER BY file.file_id;`, constant.FileStateReady)
+WITH actual_counts AS (
+    SELECT file.file_id, file.file_part_count,
+        CASE file.file_layout_version
+            WHEN 1 THEN (
+                SELECT COUNT(*) FROM tg_file_part_tab part
+                WHERE part.file_id = file.file_id
+            )
+            WHEN 2 THEN (
+                SELECT COALESCE(SUM(source.file_part_count), 0)
+                FROM tg_s3_file_segment_tab segment
+                JOIN tg_file_tab source ON source.file_id = segment.source_file_id
+                WHERE segment.file_id = file.file_id
+            )
+            ELSE -1
+        END AS actual_part_count
+    FROM tg_file_tab file
+    WHERE file.file_state = ?
+)
+SELECT file_id, file_part_count, actual_part_count
+FROM actual_counts
+WHERE file_part_count <> actual_part_count
+ORDER BY file_id;`, constant.FileStateReady)
 	if err != nil {
 		return nil, fmt.Errorf("find part count mismatches: %w", err)
 	}
@@ -204,11 +234,16 @@ func AuditWithOptions(
 		MappingToNonReadyFile:            make([]MappingIssue, 0),
 		S3MappingWithoutMetadataByBucket: make(map[string]int64, len(options.S3Buckets)),
 		BlockDeleteCountByState:          make(map[string]int64),
+		MultipartUploadCountByState:      make(map[string]int64),
+		MultipartPartCountByState:        make(map[string]int64),
 	}
 	if err := readCoreAudit(ctx, database, report); err != nil {
 		return nil, err
 	}
 	if err := readS3Audit(ctx, database, report, options); err != nil {
+		return nil, err
+	}
+	if err := readMultipartAudit(ctx, database, report); err != nil {
 		return nil, err
 	}
 	return report, nil
@@ -266,6 +301,18 @@ WHERE NOT EXISTS (
     FROM tg_file_mapping_tab AS mapping
     WHERE mapping.file_kind = 2
       AND mapping.ref_data = CAST(file.file_id AS TEXT)
+)
+AND NOT EXISTS (
+    SELECT 1 FROM tg_s3_file_segment_tab segment
+    WHERE segment.file_id = file.file_id OR segment.source_file_id = file.file_id
+)
+AND NOT EXISTS (
+    SELECT 1
+    FROM tg_s3_multipart_part_tab part
+    JOIN tg_s3_multipart_upload_tab upload ON upload.upload_id = part.upload_id
+    WHERE part.file_id = file.file_id
+      AND part.part_state = 'active'
+      AND upload.upload_state = 'active'
 );`).Scan(&report.UnreferencedFileCount); err != nil {
 		return fmt.Errorf("count unreferenced files: %w", err)
 	}
@@ -273,6 +320,330 @@ WHERE NOT EXISTS (
 	defaultRoot := database.QueryRowContext(ctx, defaultRootExistsSQL, "defaults")
 	if err := defaultRoot.Scan(&report.DefaultRootExists); err != nil {
 		return fmt.Errorf("check default root: %w", err)
+	}
+	return nil
+}
+
+func readMultipartAudit(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	if err := readStateCounts(
+		ctx,
+		database,
+		"SELECT upload_state, COUNT(*) FROM tg_s3_multipart_upload_tab GROUP BY upload_state ORDER BY upload_state",
+		report.MultipartUploadCountByState,
+	); err != nil {
+		return fmt.Errorf("read multipart upload state counts: %w", err)
+	}
+	if err := readStateCounts(
+		ctx,
+		database,
+		"SELECT part_state, COUNT(*) FROM tg_s3_multipart_part_tab GROUP BY part_state ORDER BY part_state",
+		report.MultipartPartCountByState,
+	); err != nil {
+		return fmt.Errorf("read multipart part state counts: %w", err)
+	}
+	for _, readGroup := range []func(context.Context, *sql.DB, *AuditReport) error{
+		readMultipartAuditGroupOne,
+		readMultipartAuditGroupTwo,
+		readMultipartAuditGroupThree,
+		readMultipartAuditGroupFour,
+	} {
+		if err := readGroup(ctx, database, report); err != nil {
+			return err
+		}
+	}
+	return readExpiredMultipartAudit(ctx, database, report)
+}
+
+type multipartAuditCountQuery struct {
+	destination *int64
+	name        string
+	query       string
+}
+
+func readMultipartAuditGroupOne(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	return runMultipartAuditCountQueries(ctx, database, []multipartAuditCountQuery{
+		{
+			destination: &report.InvalidMultipartStateCount,
+			name:        "invalid multipart state combinations",
+			query: `SELECT COUNT(*)
+FROM tg_s3_multipart_part_tab part
+LEFT JOIN tg_s3_multipart_upload_tab upload ON upload.upload_id = part.upload_id
+WHERE upload.upload_id IS NULL
+   OR part.part_state = 'active' AND upload.upload_state != 'active'
+   OR part.part_state = 'selected' AND upload.upload_state != 'completed'
+   OR part.part_state = 'discarded' AND upload.upload_state NOT IN ('completed', 'aborted')`,
+		},
+		{
+			destination: &report.InvalidCompletedUploadCount,
+			name:        "invalid completed multipart uploads",
+			query: `SELECT COUNT(*)
+FROM tg_s3_multipart_upload_tab upload
+LEFT JOIN tg_file_tab result ON result.file_id = upload.result_file_id
+WHERE upload.upload_state = 'completed'
+  AND (
+      upload.completion_fingerprint = ''
+      OR upload.result_file_id = 0
+      OR upload.result_etag = ''
+      OR upload.completed_at = 0
+      OR upload.cleanup_at <= upload.completed_at
+      OR result.file_id IS NULL
+      OR result.file_layout_version != 2
+      OR result.file_state != 2
+  )`,
+		},
+	})
+}
+
+func readMultipartAuditGroupTwo(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	return runMultipartAuditCountQueries(ctx, database, []multipartAuditCountQuery{
+		{
+			destination: &report.InvalidCompositeManifestCount,
+			name:        "invalid composite manifests",
+			query: `SELECT COUNT(*) FROM (
+    SELECT final.file_id
+    FROM tg_file_tab final
+    LEFT JOIN tg_s3_file_segment_tab segment ON segment.file_id = final.file_id
+    LEFT JOIN tg_file_tab source ON source.file_id = segment.source_file_id
+    WHERE final.file_layout_version = 2
+    GROUP BY final.file_id, final.file_size, final.file_part_count, final.file_state
+    HAVING final.file_state != 2
+       OR COUNT(segment.segment_index) = 0
+       OR MIN(segment.segment_index) != 0
+       OR MAX(segment.segment_index) + 1 != COUNT(segment.segment_index)
+       OR COALESCE(SUM(segment.segment_size), 0) != final.file_size
+       OR COALESCE(SUM(source.file_part_count), 0) != final.file_part_count
+       OR SUM(CASE
+            WHEN source.file_id IS NULL
+              OR source.file_state != 2
+              OR source.file_layout_version != 1
+              OR source.file_size != segment.segment_size
+            THEN 1 ELSE 0 END) != 0
+)`,
+		},
+		{
+			destination: &report.OrphanMultipartPartCount,
+			name:        "orphan multipart parts",
+			query: `SELECT COUNT(*)
+FROM tg_s3_multipart_part_tab part
+LEFT JOIN tg_s3_multipart_upload_tab upload ON upload.upload_id = part.upload_id
+LEFT JOIN tg_file_tab file ON file.file_id = part.file_id
+WHERE upload.upload_id IS NULL OR file.file_id IS NULL`,
+		},
+		{
+			destination: &report.OrphanCompositeSegmentCount,
+			name:        "orphan composite segments",
+			query: `SELECT COUNT(*)
+FROM tg_s3_file_segment_tab segment
+LEFT JOIN tg_file_tab final ON final.file_id = segment.file_id
+LEFT JOIN tg_file_tab source ON source.file_id = segment.source_file_id
+WHERE final.file_id IS NULL OR final.file_layout_version != 2 OR source.file_id IS NULL`,
+		},
+	})
+}
+
+func readMultipartAuditGroupThree(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	return runMultipartAuditCountQueries(ctx, database, []multipartAuditCountQuery{
+		{
+			destination: &report.MappedCompositeNonLiveSource,
+			name:        "mapped composite non-live sources",
+			query: `SELECT COUNT(DISTINCT segment.source_file_id)
+	FROM tg_s3_file_segment_tab segment
+	JOIN tg_file_mapping_tab mapping ON mapping.ref_data = CAST(segment.file_id AS TEXT)
+	JOIN tg_file_tab source ON source.file_id = segment.source_file_id
+	WHERE (
+	    SELECT COUNT(*) FROM tg_file_part_tab physical
+	    WHERE physical.file_id = source.file_id
+	) != source.file_part_count
+	   OR (
+	    SELECT COUNT(*) FROM tg_file_part_delete_state_tab state
+	    WHERE state.file_id = source.file_id AND state.delete_state = 'live'
+	) != source.file_part_count`,
+		},
+		{
+			destination: &report.ActiveMultipartNonLivePart,
+			name:        "active multipart non-live parts",
+			query: `SELECT COUNT(DISTINCT part.file_id)
+	FROM tg_s3_multipart_part_tab part
+	JOIN tg_s3_multipart_upload_tab upload ON upload.upload_id = part.upload_id
+	JOIN tg_file_tab file ON file.file_id = part.file_id
+	WHERE upload.upload_state = 'active'
+	  AND part.part_state = 'active'
+	  AND (
+	      (
+	          SELECT COUNT(*) FROM tg_file_part_tab physical
+	          WHERE physical.file_id = file.file_id
+	      ) != file.file_part_count
+	      OR (
+	          SELECT COUNT(*) FROM tg_file_part_delete_state_tab state
+	          WHERE state.file_id = file.file_id AND state.delete_state = 'live'
+	      ) != file.file_part_count
+	  )`,
+		},
+		{
+			destination: &report.NonLiveReferencedFileCount,
+			name:        "non-live referenced files",
+			query: `SELECT COUNT(DISTINCT state.file_id)
+FROM tg_file_part_delete_state_tab state
+WHERE state.delete_state != 'live'
+  AND (
+      EXISTS (
+          SELECT 1 FROM tg_file_mapping_tab mapping
+          WHERE mapping.ref_data = CAST(state.file_id AS TEXT)
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM tg_s3_file_segment_tab segment
+          JOIN tg_file_mapping_tab mapping ON mapping.ref_data = CAST(segment.file_id AS TEXT)
+          WHERE segment.source_file_id = state.file_id
+      )
+      OR EXISTS (
+          SELECT 1
+          FROM tg_s3_multipart_part_tab part
+          JOIN tg_s3_multipart_upload_tab upload ON upload.upload_id = part.upload_id
+          WHERE part.file_id = state.file_id
+            AND part.part_state = 'active'
+            AND upload.upload_state = 'active'
+      )
+  )`,
+		},
+	})
+}
+
+func readMultipartAuditGroupFour(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	return runMultipartAuditCountQueries(ctx, database, []multipartAuditCountQuery{
+		{
+			destination: &report.DiscardedUnreferencedLivePart,
+			name:        "discarded unreferenced live parts",
+			query: `SELECT COUNT(DISTINCT part.file_id)
+FROM tg_s3_multipart_part_tab part
+WHERE part.part_state = 'discarded'
+  AND EXISTS (
+      SELECT 1 FROM tg_file_part_delete_state_tab state
+      WHERE state.file_id = part.file_id AND state.delete_state = 'live'
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM tg_file_mapping_tab mapping
+      WHERE mapping.ref_data = CAST(part.file_id AS TEXT)
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM tg_s3_file_segment_tab segment
+      JOIN tg_file_mapping_tab mapping ON mapping.ref_data = CAST(segment.file_id AS TEXT)
+      WHERE segment.source_file_id = part.file_id
+  )`,
+		},
+		{
+			destination: &report.RetainedUnreferencedLiveFile,
+			name:        "retained unreferenced live files",
+			query: `SELECT COUNT(*) FROM tg_file_tab file
+WHERE file.file_layout_version = 1
+  AND EXISTS (
+      SELECT 1 FROM tg_file_part_delete_state_tab state
+      WHERE state.file_id = file.file_id AND state.delete_state = 'live'
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM tg_file_mapping_tab mapping
+      WHERE mapping.ref_data = CAST(file.file_id AS TEXT)
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM tg_s3_file_segment_tab segment
+      WHERE segment.source_file_id = file.file_id
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM tg_s3_multipart_part_tab part
+      JOIN tg_s3_multipart_upload_tab upload ON upload.upload_id = part.upload_id
+      WHERE part.file_id = file.file_id
+        AND part.part_state = 'active'
+        AND upload.upload_state = 'active'
+  )`,
+		},
+		{
+			destination: &report.CompletingUploadCount,
+			name:        "completing multipart uploads",
+			query:       "SELECT COUNT(*) FROM tg_s3_multipart_upload_tab WHERE upload_state = 'completing'",
+		},
+	})
+}
+
+func runMultipartAuditCountQueries(
+	ctx context.Context,
+	database *sql.DB,
+	queries []multipartAuditCountQuery,
+) error {
+	for _, item := range queries {
+		if err := database.QueryRowContext(ctx, item.query).Scan(item.destination); err != nil {
+			return fmt.Errorf("count %s: %w", item.name, err)
+		}
+	}
+	return nil
+}
+
+func readStateCounts(
+	ctx context.Context,
+	database *sql.DB,
+	query string,
+	destination map[string]int64,
+) error {
+	rows, err := database.QueryContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("query state counts: %w", err)
+	}
+	defer func() {
+		_ = rows.Close()
+	}()
+	for rows.Next() {
+		var state string
+		var count int64
+		if err := rows.Scan(&state, &count); err != nil {
+			return fmt.Errorf("scan state count: %w", err)
+		}
+		destination[state] = count
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate state counts: %w", err)
+	}
+	return nil
+}
+
+func readExpiredMultipartAudit(
+	ctx context.Context,
+	database *sql.DB,
+	report *AuditReport,
+) error {
+	now := time.Now().UnixMilli()
+	var oldest sql.NullInt64
+	if err := database.QueryRowContext(ctx, `
+SELECT COUNT(*), MIN(expires_at)
+FROM tg_s3_multipart_upload_tab
+WHERE upload_state = 'active' AND expires_at <= ?`, now).Scan(
+		&report.ExpiredActiveUploadCount,
+		&oldest,
+	); err != nil {
+		return fmt.Errorf("count expired active multipart uploads: %w", err)
+	}
+	if oldest.Valid && oldest.Int64 < now {
+		report.OldestExpiredUploadAgeMillis = now - oldest.Int64
 	}
 	return nil
 }

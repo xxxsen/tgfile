@@ -26,6 +26,7 @@ func (c *Config) SafeLogFields() []zap.Field {
 		zap.String("bot_kind", c.BotKind),
 		zap.Bool("s3_enable", c.S3.Enable),
 		zap.Strings("s3_buckets", c.S3.BucketNames()),
+		zap.Int("s3_multipart_expire_hours", c.S3.MultipartExpireHours),
 		zap.Bool("webdav_enable", c.Webdav.Enable),
 		zap.String("webdav_root", c.Webdav.Root),
 		zap.Bool("l1_cache_enable", c.IOCache.EnableL1Cache),
@@ -42,9 +43,10 @@ type S3BucketConfig struct {
 }
 
 type S3Config struct {
-	Enable        bool             `json:"enable"`
-	Buckets       []S3BucketConfig `json:"buckets"`
-	MaxObjectSize int64            `json:"max_object_size"`
+	Enable               bool             `json:"enable"`
+	Buckets              []S3BucketConfig `json:"buckets"`
+	MaxObjectSize        int64            `json:"max_object_size"`
+	MultipartExpireHours int              `json:"multipart_expire_hours"`
 }
 
 func (c S3Config) BucketNames() []string {
@@ -127,6 +129,12 @@ func (c *Config) Validate() error {
 func (c *Config) validateS3() error {
 	if c.S3.MaxObjectSize < 0 {
 		return fmt.Errorf("%w: s3.max_object_size must not be negative", errInvalidConfig)
+	}
+	if c.S3.MultipartExpireHours == 0 {
+		c.S3.MultipartExpireHours = 24
+	}
+	if c.S3.MultipartExpireHours < 1 || c.S3.MultipartExpireHours > 24 {
+		return fmt.Errorf("%w: s3.multipart_expire_hours must be between 1 and 24", errInvalidConfig)
 	}
 	if c.S3.Enable && len(c.S3.Buckets) == 0 {
 		return fmt.Errorf("%w: s3.buckets must contain at least one bucket when S3 is enabled", errInvalidConfig)

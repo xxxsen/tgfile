@@ -556,7 +556,11 @@ func TestCopy(t *testing.T) {
 				src:       "/a/b/c",
 				dst:       "/x/y/c",
 				overwrite: true,
-				hasErr:    true,
+				hasErr:    false,
+			},
+			testList: []testMoveTestItem{
+				{link: "/a/b/c", exist: true, isDir: true},
+				{link: "/x/y/c", exist: true, isDir: true},
 			},
 		},
 		{
