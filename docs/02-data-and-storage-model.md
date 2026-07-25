@@ -68,6 +68,36 @@ erDiagram
 `(parent_entry_id, file_name)` 唯一，是跨进程路径冲突的最终约束。根目录名称为 `/`，
 父条目标识为 `0`。
 
+### 2.4 `schema_migrations`
+
+该表是 schema 版本账本，不保存业务数据。
+
+| 字段 | 语义 |
+|---|---|
+| `version` | migration 的整数版本，主键 |
+| `filename` | 被执行的 SQL 文件名，唯一 |
+| `checksum` | SQL 文件原始内容的 SHA-256 |
+| `applied_at` | migration 提交时间 |
+
+业务 DDL 位于根目录 `migrations/`，文件名使用 `NNNN_name.sql`。SQL 文件嵌入服务二进制，
+启动时按版本升序执行；每个文件的 SQL 与账本写入处于同一个事务中。已经登记的版本必须与
+当前二进制中的文件名和 checksum 完全一致，因此已发布 migration 不得修改、删除或换序，
+后续 schema 变化只能追加更高版本。
+
+首次接管没有账本的数据库时，执行器先进行只读 schema 指纹比对：
+
+- 空数据库从第一个 migration 开始初始化；
+- 能精确匹配历史基础 schema 的数据库登记已有版本，再执行缺少的版本；
+- 由旧版硬编码 DDL 产生、但与正式历史版本不完全相同的已知 schema，必须在
+  `migrations/legacy/` 中保存独立兼容画像，不能在 Go 代码中放宽通用校验；
+- 无法识别、只有部分表或发生 schema 漂移的数据库拒绝继续，不自动删除、重建或猜测性
+  修复业务数据。
+
+历史 migration 先表达线上实际经历过的可空字段、索引、`extinfo` 和 `file_part_md5`
+演进，再通过后续版本事务性重建三张业务表，将所有数据库统一到当前非空约束。重建必须
+显式复制主键和全部业务字段，并在旧表删除前由新表约束验证数据；任一复制失败都会回滚
+该版本。`busy_timeout` 等连接级 PRAGMA 属于运行参数，不属于业务 schema migration。
+
 ## 3. 文件创建状态
 
 文件创建遵循以下状态流：

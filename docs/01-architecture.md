@@ -45,7 +45,8 @@ SQLite 保存“内容在哪里”和“路径指向哪个内容”，BlockIO �
 | `filemgr` | 文件创建、分片读写、路径链接、复制、移动与删除语义 |
 | `directory` | 基于映射表实现目录树和路径操作 |
 | `dao` | SQLite 表的读写及元数据缓存 |
-| `db` | SQLite 连接、基础 schema 初始化和必要的兼容性补列 |
+| `db` | SQLite 连接、migration 规划与执行、版本账本和 schema 校验 |
+| `migrations` | 按版本保存并嵌入二进制的 SQLite schema SQL |
 | `blockio` | 分片内容存储接口及 Telegram、localfile、mem 实现 |
 | `cacheapi`、`filemgr/file_io_cache.go` | L1/L2 文件内容缓存 |
 | `entity` | 持久化访问所需的内部数据结构 |
@@ -65,7 +66,7 @@ SQLite 保存“内容在哪里”和“路径指向哪个内容”，BlockIO �
 `serve` 命令按以下顺序组装服务：
 
 1. 解析配置并初始化日志与 ID 生成器；
-2. 打开 SQLite，完成 schema 初始化；
+2. 打开 SQLite，执行待处理的嵌入式 migration 并校验 schema；
 3. 按配置创建 BlockIO，并在需要时增加可逆字节旋转层；
 4. 创建 L1/L2 内容缓存和 FileManager；
 5. 注册 HTTP 路由并开始监听；
@@ -127,6 +128,7 @@ S3、文件直链接口、WebDAV 和备份接口共享 FileManager，不各自�
 修改实现时必须保持以下约束，除非先完成明确的新设计和数据迁移：
 
 - SQLite 是元数据事实来源，BlockIO 是内容事实来源，缓存不是事实来源；
+- 业务 schema 只通过不可变的版本化 migration 演进，不在 Go 启动逻辑中散落 DDL；
 - 路径映射与文件内容分离，删除路径不等于删除后端块；
 - FileKey 是后端生成的不透明标识，不解析、不归一化、不静默改写；
 - `file_id`、分片顺序、已持久化校验和和外部直链 key 保持兼容；

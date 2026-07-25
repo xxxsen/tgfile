@@ -81,6 +81,14 @@ make check                  # 格式、vet、test、race、lint 全量门禁
 - S3 已存在对象保持 409 语义，不得在没有新设计和迁移方案时改为覆盖。
 - 默认上传根目录固定为 `/defaults`；运行时代码不得增加历史路径 fallback。
 - 外部直链 key、file_id、Telegram FileKey、分片顺序和存量 MD5 不得静默改写。
+- 业务 schema DDL 只能放在根目录 `migrations/`，文件名使用 `NNNN_name.sql`；Go 代码中
+  只允许保留连接级 PRAGMA 和 migration 账本自身的基础设施 SQL。
+- 已发布或可能已被执行的 migration 禁止修改、删除、重命名或换序；schema 调整必须追加
+  更高版本，并保持空库初始化和存量库升级结果一致。
+- 需要兼容已知历史 schema 时，将完整 SQL 画像放入 `migrations/legacy/` 并精确匹配；
+  不得通过忽略列约束、默认值、索引或未知表来扩大通用兼容范围。
+- migration 必须可在单事务内执行。无法识别的旧 schema 或 schema 漂移必须安全失败，
+  不得自动重建数据库、删除业务表或跳过 checksum 校验。
 
 ## 6. 安全与日志
 
