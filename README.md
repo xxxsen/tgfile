@@ -118,10 +118,42 @@ aws --endpoint-url https://your-tgfile.example \
   s3api delete-object --bucket private-data --key archive/README.md
 ```
 
+使用 s3cmd 时必须配置 path-style endpoint。`host_bucket` 不得保留 s3cmd 默认的
+`%(bucket)s.s3.amazonaws.com`，否则 bucket 请求会发往 AWS：
+
+```ini
+[default]
+access_key = access-key
+secret_key = secret-key
+host_base = your-tgfile.example
+host_bucket = your-tgfile.example
+bucket_location = us-east-1
+use_https = True
+signature_v2 = False
+check_ssl_certificate = True
+check_ssl_hostname = True
+acl_public = False
+enable_multipart = False
+```
+
+`acl_public = False` 只阻止 s3cmd 探测或设置对象级 ACL，不改变 tgfile 配置的 bucket ACL。
+`enable_multipart = False` 关闭的是客户端 S3 Multipart Upload；tgfile 仍会按 BlockIO 限制
+对普通 PutObject 内部分片。常用命令：
+
+```bash
+s3cmd ls s3://private-data/
+s3cmd sync ./local-dir/ s3://private-data/backup/
+s3cmd sync s3://private-data/backup/ ./restore-dir/
+s3cmd del --recursive s3://private-data/backup/
+```
+
+不要使用 `s3cmd signurl`：s3cmd 2.4 生成 SigV2 URL，而 tgfile 只支持 SigV4 presigned
+query。需要预签名 URL 时使用 AWS SDK、AWS CLI 或其他 SigV4 客户端。
+
 支持的 S3 能力：
 
 - ListBuckets、HeadBucket、GetBucketLocation；
-- ListObjectsV2（prefix、delimiter、分页、URL encoding）；
+- ListObjects V1/V2（prefix、delimiter、marker/token 分页、URL encoding）；
 - PutObject 标准覆盖与条件写；
 - GetObject、HeadObject、Range 和 HTTP 条件请求；
 - CopyObject COPY/REPLACE；

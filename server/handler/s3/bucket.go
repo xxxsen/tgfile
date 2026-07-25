@@ -77,6 +77,15 @@ func (h *S3Handler) ListBuckets(c *gin.Context) {
 	})
 }
 
+func (h *S3Handler) GetBucketOrObject(c *gin.Context) {
+	_, key := requestBucketKey(c.Request.URL.Path)
+	if key == "" {
+		h.GetBucket(c)
+		return
+	}
+	h.DownloadObject(c)
+}
+
 func (h *S3Handler) GetBucket(c *gin.Context) {
 	bucketName, _ := requestBucketKey(c.Request.URL.Path)
 	if _, exists := h.Bucket(bucketName); !exists {
@@ -93,16 +102,33 @@ func (h *S3Handler) GetBucket(c *gin.Context) {
 		h.listObjectsV2(c, bucketName)
 	case hasQueryKey(query, "location"):
 		s3base.SimpleReply(c)
+	case hasUnsupportedBucketSubresource(query):
+		writeUnsupportedBucketSubresource(c)
+	case isListObjectsV1Request(c.Request):
+		h.listObjectsV1(c, bucketName)
 	case c.Request.URL.RawQuery == "":
 		s3base.SimpleReply(c)
 	default:
-		s3base.WriteError(c, s3base.NewError(
-			http.StatusNotImplemented,
-			"NotImplemented",
-			"The requested bucket subresource is not implemented.",
-			nil,
-		))
+		writeUnsupportedBucketSubresource(c)
 	}
+}
+
+func (h *S3Handler) HeadBucketOrObject(c *gin.Context) {
+	_, key := requestBucketKey(c.Request.URL.Path)
+	if key == "" {
+		h.HeadBucket(c)
+		return
+	}
+	h.HeadObject(c)
+}
+
+func (h *S3Handler) PostBucketOrObject(c *gin.Context) {
+	_, key := requestBucketKey(c.Request.URL.Path)
+	if key == "" {
+		h.DeleteObjects(c)
+		return
+	}
+	h.NotImplemented(c)
 }
 
 func (h *S3Handler) HeadBucket(c *gin.Context) {
@@ -123,7 +149,43 @@ func hasQueryKey(query url.Values, key string) bool {
 	return exists
 }
 
-type listBucketResult struct {
+func isListObjectsV1Request(request *http.Request) bool {
+	query := request.URL.Query()
+	if hasQueryKey(query, "list-type") {
+		return false
+	}
+	for _, key := range []string{"prefix", "delimiter", "marker", "max-keys", "encoding-type"} {
+		if hasQueryKey(query, key) {
+			return true
+		}
+	}
+	return strings.HasSuffix(request.URL.Path, "/")
+}
+
+func hasUnsupportedBucketSubresource(query url.Values) bool {
+	for key := range query {
+		switch strings.ToLower(key) {
+		case "accelerate", "acl", "analytics", "cors", "delete", "encryption",
+			"inventory", "lifecycle", "logging", "metrics", "notification",
+			"object-lock", "ownershipcontrols", "policy", "publicaccessblock",
+			"replication", "requestpayment", "tagging", "uploads", "versioning",
+			"website":
+			return true
+		}
+	}
+	return false
+}
+
+func writeUnsupportedBucketSubresource(c *gin.Context) {
+	s3base.WriteError(c, s3base.NewError(
+		http.StatusNotImplemented,
+		"NotImplemented",
+		"The requested bucket subresource is not implemented.",
+		nil,
+	))
+}
+
+type listBucketV2Result struct {
 	XMLName               xml.Name       `xml:"ListBucketResult"`
 	XMLNS                 string         `xml:"xmlns,attr"`
 	Name                  string         `xml:"Name"`
@@ -138,6 +200,21 @@ type listBucketResult struct {
 	EncodingType          string         `xml:"EncodingType,omitempty"`
 	Contents              []listContent  `xml:"Contents,omitempty"`
 	CommonPrefixes        []commonPrefix `xml:"CommonPrefixes,omitempty"`
+}
+
+type listBucketV1Result struct {
+	XMLName        xml.Name       `xml:"ListBucketResult"`
+	XMLNS          string         `xml:"xmlns,attr"`
+	Name           string         `xml:"Name"`
+	Prefix         string         `xml:"Prefix"`
+	Marker         string         `xml:"Marker"`
+	NextMarker     string         `xml:"NextMarker,omitempty"`
+	MaxKeys        int            `xml:"MaxKeys"`
+	Delimiter      string         `xml:"Delimiter,omitempty"`
+	IsTruncated    bool           `xml:"IsTruncated"`
+	EncodingType   string         `xml:"EncodingType,omitempty"`
+	Contents       []listContent  `xml:"Contents,omitempty"`
+	CommonPrefixes []commonPrefix `xml:"CommonPrefixes,omitempty"`
 }
 
 type listContent struct {
@@ -161,9 +238,9 @@ type continuationToken struct {
 	LastItem  string `json:"last_item"`
 }
 
-func (h *S3Handler) listObjectsV2(c *gin.Context, bucket string) {
+func (h *S3Handler) listObjectsV1(c *gin.Context, bucket string) {
 	query := c.Request.URL.Query()
-	request, tokenText, encodingType, apiError := parseListRequest(query, bucket)
+	request, marker, encodingType, apiError := parseListV1Request(query, bucket)
 	if apiError != nil {
 		s3base.WriteError(c, apiError)
 		return
@@ -173,7 +250,37 @@ func (h *S3Handler) listObjectsV2(c *gin.Context, bucket string) {
 		s3base.WriteError(c, s3base.InternalError(err))
 		return
 	}
-	response := &listBucketResult{
+	response := &listBucketV1Result{
+		XMLNS:          "http://s3.amazonaws.com/doc/2006-03-01/",
+		Name:           bucket,
+		Prefix:         encodeListValue(request.Prefix, encodingType),
+		Marker:         encodeListValue(marker, encodingType),
+		MaxKeys:        request.MaxKeys,
+		Delimiter:      encodeListValue(request.Delimiter, encodingType),
+		IsTruncated:    result.IsTruncated,
+		EncodingType:   encodingType,
+		Contents:       listContents(result.Items, encodingType, true),
+		CommonPrefixes: listCommonPrefixes(result.CommonPrefixes, encodingType),
+	}
+	if result.IsTruncated && request.Delimiter != "" {
+		response.NextMarker = encodeListValue(result.NextKey, encodingType)
+	}
+	c.XML(http.StatusOK, response)
+}
+
+func (h *S3Handler) listObjectsV2(c *gin.Context, bucket string) {
+	query := c.Request.URL.Query()
+	request, tokenText, encodingType, apiError := parseListV2Request(query, bucket)
+	if apiError != nil {
+		s3base.WriteError(c, apiError)
+		return
+	}
+	result, err := h.fmgr.ListS3Objects(c.Request.Context(), request)
+	if err != nil {
+		s3base.WriteError(c, s3base.InternalError(err))
+		return
+	}
+	response := &listBucketV2Result{
 		XMLNS:             "http://s3.amazonaws.com/doc/2006-03-01/",
 		Name:              bucket,
 		Prefix:            encodeListValue(request.Prefix, encodingType),
@@ -184,26 +291,8 @@ func (h *S3Handler) listObjectsV2(c *gin.Context, bucket string) {
 		ContinuationToken: tokenText,
 		StartAfter:        encodeListValue(request.StartAfter, encodingType),
 		EncodingType:      encodingType,
-		Contents:          make([]listContent, 0, len(result.Items)),
-		CommonPrefixes:    make([]commonPrefix, 0, len(result.CommonPrefixes)),
-	}
-	for _, item := range result.Items {
-		content := listContent{
-			Key:          encodeListValue(item.Key, encodingType),
-			LastModified: time.UnixMilli(item.LastModified).UTC().Format("2006-01-02T15:04:05.000Z"),
-			ETag:         item.ETag,
-			Size:         item.Size,
-			StorageClass: "STANDARD",
-		}
-		if request.FetchOwner {
-			content.Owner = &listOwner{ID: "tgfile", DisplayName: "tgfile"}
-		}
-		response.Contents = append(response.Contents, content)
-	}
-	for _, prefix := range result.CommonPrefixes {
-		response.CommonPrefixes = append(response.CommonPrefixes, commonPrefix{
-			Prefix: encodeListValue(prefix, encodingType),
-		})
+		Contents:          listContents(result.Items, encodingType, request.FetchOwner),
+		CommonPrefixes:    listCommonPrefixes(result.CommonPrefixes, encodingType),
 	}
 	if result.IsTruncated {
 		response.NextContinuationToken, err = encodeContinuationToken(continuationToken{
@@ -221,11 +310,65 @@ func (h *S3Handler) listObjectsV2(c *gin.Context, bucket string) {
 	c.XML(http.StatusOK, response)
 }
 
-func parseListRequest(
+func listContents(items []filemgr.S3ListItem, encodingType string, fetchOwner bool) []listContent {
+	contents := make([]listContent, 0, len(items))
+	for _, item := range items {
+		content := listContent{
+			Key:          encodeListValue(item.Key, encodingType),
+			LastModified: time.UnixMilli(item.LastModified).UTC().Format("2006-01-02T15:04:05.000Z"),
+			ETag:         item.ETag,
+			Size:         item.Size,
+			StorageClass: "STANDARD",
+		}
+		if fetchOwner {
+			content.Owner = &listOwner{ID: "tgfile", DisplayName: "tgfile"}
+		}
+		contents = append(contents, content)
+	}
+	return contents
+}
+
+func listCommonPrefixes(prefixes []string, encodingType string) []commonPrefix {
+	result := make([]commonPrefix, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		result = append(result, commonPrefix{
+			Prefix: encodeListValue(prefix, encodingType),
+		})
+	}
+	return result
+}
+
+func parseListV1Request(
 	query url.Values,
 	bucket string,
 ) (*filemgr.S3ListRequest, string, string, *s3base.APIError) {
-	if apiError := validateListSingletons(query); apiError != nil {
+	if apiError := validateListV1Singletons(query); apiError != nil {
+		return nil, "", "", apiError
+	}
+	delimiter, encodingType, apiError := parseListOptions(query)
+	if apiError != nil {
+		return nil, "", "", apiError
+	}
+	maxKeys, apiError := parseListMaxKeys(query.Get("max-keys"))
+	if apiError != nil {
+		return nil, "", "", apiError
+	}
+	marker := query.Get("marker")
+	return &filemgr.S3ListRequest{
+		Bucket:     bucket,
+		Prefix:     query.Get("prefix"),
+		Delimiter:  delimiter,
+		StartAfter: marker,
+		MaxKeys:    maxKeys,
+		FetchOwner: true,
+	}, marker, encodingType, nil
+}
+
+func parseListV2Request(
+	query url.Values,
+	bucket string,
+) (*filemgr.S3ListRequest, string, string, *s3base.APIError) {
+	if apiError := validateListV2Singletons(query); apiError != nil {
 		return nil, "", "", apiError
 	}
 	if query.Get("list-type") != "2" {
@@ -270,11 +413,21 @@ func parseListRequest(
 	return request, tokenText, encodingType, nil
 }
 
-func validateListSingletons(query url.Values) *s3base.APIError {
-	for _, singleton := range []string{
+func validateListV1Singletons(query url.Values) *s3base.APIError {
+	return validateListSingletons(query, []string{
+		"prefix", "delimiter", "marker", "max-keys", "encoding-type",
+	})
+}
+
+func validateListV2Singletons(query url.Values) *s3base.APIError {
+	return validateListSingletons(query, []string{
 		"list-type", "prefix", "delimiter", "max-keys", "start-after",
 		"continuation-token", "encoding-type", "fetch-owner",
-	} {
+	})
+}
+
+func validateListSingletons(query url.Values, singletons []string) *s3base.APIError {
+	for _, singleton := range singletons {
 		if len(query[singleton]) > 1 {
 			return s3base.NewError(
 				http.StatusBadRequest,

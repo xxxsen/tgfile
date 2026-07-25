@@ -114,8 +114,9 @@ func (s *Server) initAPI(router *gin.RouterGroup) {
 			bucketRouter.PUT("", s.s3.NotImplemented)
 			bucketRouter.DELETE("", s.s3.NotImplemented)
 			bucketRouter.POST("", s.s3.DeleteObjects)
-			bucketRouter.GET("/*object", s.s3.DownloadObject)
-			bucketRouter.HEAD("/*object", s.s3.HeadObject)
+			bucketRouter.GET("/*object", s.s3.GetBucketOrObject)
+			bucketRouter.HEAD("/*object", s.s3.HeadBucketOrObject)
+			bucketRouter.POST("/*object", s.s3.PostBucketOrObject)
 			bucketRouter.PUT("/*object", s.s3.UploadObject)
 			bucketRouter.DELETE("/*object", s.s3.DeleteObject)
 		}

@@ -6,10 +6,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/xml"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -102,6 +104,40 @@ func readResponse(t *testing.T, response *http.Response) []byte {
 	raw, err := io.ReadAll(response.Body)
 	require.NoError(t, err)
 	return raw
+}
+
+type listObjectsV1Response struct {
+	Name           string                 `xml:"Name"`
+	Prefix         string                 `xml:"Prefix"`
+	Marker         string                 `xml:"Marker"`
+	NextMarker     string                 `xml:"NextMarker"`
+	MaxKeys        int                    `xml:"MaxKeys"`
+	Delimiter      string                 `xml:"Delimiter"`
+	IsTruncated    bool                   `xml:"IsTruncated"`
+	EncodingType   string                 `xml:"EncodingType"`
+	Contents       []listObjectsV1Content `xml:"Contents"`
+	CommonPrefixes []struct {
+		Prefix string `xml:"Prefix"`
+	} `xml:"CommonPrefixes"`
+}
+
+type listObjectsV1Content struct {
+	Key          string `xml:"Key"`
+	LastModified string `xml:"LastModified"`
+	ETag         string `xml:"ETag"`
+	Size         int64  `xml:"Size"`
+	StorageClass string `xml:"StorageClass"`
+	Owner        *struct {
+		ID          string `xml:"ID"`
+		DisplayName string `xml:"DisplayName"`
+	} `xml:"Owner"`
+}
+
+func decodeListObjectsV1(t *testing.T, raw []byte) listObjectsV1Response {
+	t.Helper()
+	var result listObjectsV1Response
+	require.NoError(t, xml.Unmarshal(raw, &result))
+	return result
 }
 
 func TestS3PutGetHeadRangeAndOverwrite(t *testing.T) {
@@ -374,6 +410,227 @@ func TestS3ListCopyLogicalDeleteAndWorker(t *testing.T) {
 	))
 }
 
+func TestS3ListObjectsV1Compatibility(t *testing.T) {
+	environment := newIntegrationEnvironment(t)
+	client := environment.server.Client()
+	objects := map[string]string{
+		"alpha.txt":              "alpha",
+		"reports/space name.txt": "space",
+		"reports/sub/item.txt":   "nested",
+		"z-last.txt":             "last",
+	}
+	for key, content := range objects {
+		escapedKey := strings.ReplaceAll(url.PathEscape(key), "%2F", "/")
+		request := authenticatedRequest(
+			t,
+			http.MethodPut,
+			environment.server.URL+"/hackmd/"+escapedKey,
+			strings.NewReader(content),
+		)
+		response, err := client.Do(request)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, response.StatusCode)
+		_ = readResponse(t, response)
+	}
+
+	response, err := getResponse(t, client, environment.server.URL+"/hackmd/?delimiter=/")
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, response.StatusCode)
+	require.Contains(t, string(readResponse(t, response)), "AccessDenied")
+
+	request := authenticatedRequest(
+		t,
+		http.MethodGet,
+		environment.server.URL+"/hackmd/?delimiter=/",
+		nil,
+	)
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	root := decodeListObjectsV1(t, readResponse(t, response))
+	require.Equal(t, "hackmd", root.Name)
+	require.Empty(t, root.Prefix)
+	require.Empty(t, root.Marker)
+	require.Equal(t, "/", root.Delimiter)
+	require.Equal(t, 1000, root.MaxKeys)
+	require.False(t, root.IsTruncated)
+	require.Len(t, root.Contents, 2)
+	require.Equal(t, []string{"alpha.txt", "z-last.txt"}, []string{
+		root.Contents[0].Key,
+		root.Contents[1].Key,
+	})
+	require.NotNil(t, root.Contents[0].Owner)
+	require.Equal(t, "tgfile", root.Contents[0].Owner.ID)
+	require.Equal(t, "tgfile", root.Contents[0].Owner.DisplayName)
+	require.NotEmpty(t, root.Contents[0].LastModified)
+	require.NotEmpty(t, root.Contents[0].ETag)
+	require.Equal(t, int64(len(objects["alpha.txt"])), root.Contents[0].Size)
+	require.Equal(t, "STANDARD", root.Contents[0].StorageClass)
+	require.Len(t, root.CommonPrefixes, 1)
+	require.Equal(t, []string{"reports/"}, []string{root.CommonPrefixes[0].Prefix})
+
+	request = authenticatedRequest(t, http.MethodGet, environment.server.URL+"/hackmd/", nil)
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	trailingSlash := decodeListObjectsV1(t, readResponse(t, response))
+	require.Len(t, trailingSlash.Contents, len(objects))
+	require.Empty(t, trailingSlash.CommonPrefixes)
+
+	request = authenticatedRequest(t, http.MethodGet, environment.server.URL+"/hackmd", nil)
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Contains(t, string(readResponse(t, response)), "<LocationConstraint")
+
+	request = authenticatedRequest(
+		t,
+		http.MethodGet,
+		environment.server.URL+"/hackmd?prefix=reports/&delimiter=/",
+		nil,
+	)
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	reports := decodeListObjectsV1(t, readResponse(t, response))
+	require.Equal(t, "reports/", reports.Prefix)
+	require.Len(t, reports.Contents, 1)
+	require.Equal(t, []string{"reports/space name.txt"}, []string{reports.Contents[0].Key})
+	require.Len(t, reports.CommonPrefixes, 1)
+	require.Equal(t, []string{"reports/sub/"}, []string{reports.CommonPrefixes[0].Prefix})
+
+	request = authenticatedRequest(
+		t,
+		http.MethodGet,
+		environment.server.URL+"/hackmd/?prefix=reports/&encoding-type=url",
+		nil,
+	)
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	encoded := decodeListObjectsV1(t, readResponse(t, response))
+	require.Equal(t, "url", encoded.EncodingType)
+	require.Equal(t, "reports/", encoded.Prefix)
+	require.Len(t, encoded.Contents, 2)
+	require.Equal(t, []string{
+		"reports/space%20name.txt",
+		"reports/sub/item.txt",
+	}, []string{
+		encoded.Contents[0].Key,
+		encoded.Contents[1].Key,
+	})
+
+	marker := ""
+	expectedPages := []struct {
+		key          string
+		commonPrefix string
+		nextMarker   string
+		truncated    bool
+	}{
+		{key: "alpha.txt", nextMarker: "alpha.txt", truncated: true},
+		{commonPrefix: "reports/", nextMarker: "reports/", truncated: true},
+		{key: "z-last.txt"},
+	}
+	for _, expected := range expectedPages {
+		query := url.Values{"delimiter": {"/"}, "max-keys": {"1"}}
+		if marker != "" {
+			query.Set("marker", marker)
+		}
+		request = authenticatedRequest(
+			t,
+			http.MethodGet,
+			environment.server.URL+"/hackmd/?"+query.Encode(),
+			nil,
+		)
+		response, err = client.Do(request)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, response.StatusCode)
+		page := decodeListObjectsV1(t, readResponse(t, response))
+		require.Equal(t, marker, page.Marker)
+		require.Equal(t, expected.nextMarker, page.NextMarker)
+		require.Equal(t, expected.truncated, page.IsTruncated)
+		if expected.key == "" {
+			require.Empty(t, page.Contents)
+			require.Len(t, page.CommonPrefixes, 1)
+			require.Equal(t, expected.commonPrefix, page.CommonPrefixes[0].Prefix)
+		} else {
+			require.Empty(t, page.CommonPrefixes)
+			require.Len(t, page.Contents, 1)
+			require.Equal(t, expected.key, page.Contents[0].Key)
+		}
+		marker = page.NextMarker
+	}
+
+	request = authenticatedRequest(
+		t,
+		http.MethodGet,
+		environment.server.URL+"/hackmd/?prefix=missing/",
+		nil,
+	)
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	empty := decodeListObjectsV1(t, readResponse(t, response))
+	require.Empty(t, empty.Contents)
+	require.Empty(t, empty.CommonPrefixes)
+	require.False(t, empty.IsTruncated)
+
+	request = authenticatedRequest(
+		t,
+		http.MethodGet,
+		environment.server.URL+"/hackmd/?max-keys=0",
+		nil,
+	)
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	zeroMaxKeys := decodeListObjectsV1(t, readResponse(t, response))
+	require.Zero(t, zeroMaxKeys.MaxKeys)
+	require.Empty(t, zeroMaxKeys.Contents)
+	require.Empty(t, zeroMaxKeys.CommonPrefixes)
+	require.False(t, zeroMaxKeys.IsTruncated)
+
+	for _, target := range []string{
+		environment.server.URL + "/hackmd/?prefix=a&prefix=b",
+		environment.server.URL + "/hackmd/?delimiter=:",
+		environment.server.URL + "/hackmd/?max-keys=1001",
+	} {
+		request = authenticatedRequest(t, http.MethodGet, target, nil)
+		response, err = client.Do(request)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusBadRequest, response.StatusCode)
+		require.Contains(t, string(readResponse(t, response)), "InvalidArgument")
+	}
+
+	request = authenticatedRequest(
+		t,
+		http.MethodGet,
+		environment.server.URL+"/hackmd/?list-type=1",
+		nil,
+	)
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotImplemented, response.StatusCode)
+	require.Contains(t, string(readResponse(t, response)), "NotImplemented")
+
+	request = authenticatedRequest(
+		t,
+		http.MethodGet,
+		environment.server.URL+"/unknown/?delimiter=/",
+		nil,
+	)
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, response.StatusCode)
+	require.Contains(t, string(readResponse(t, response)), "NoSuchBucket")
+
+	request = authenticatedRequest(t, http.MethodHead, environment.server.URL+"/hackmd/", nil)
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Empty(t, readResponse(t, response))
+}
+
 func TestS3ACLUnknownBucketAndDeleteObjects(t *testing.T) {
 	environment := newIntegrationEnvironment(t)
 	client := environment.server.Client()
@@ -423,6 +680,31 @@ func TestS3ACLUnknownBucketAndDeleteObjects(t *testing.T) {
 	require.Contains(t, result, `xmlns="http://s3.amazonaws.com/doc/2006-03-01/"`)
 	require.Contains(t, result, "<Key>one</Key>")
 	require.Contains(t, result, "<Key>two</Key>")
+
+	request = authenticatedRequest(
+		t,
+		http.MethodPut,
+		environment.server.URL+"/private-data/three",
+		bytes.NewReader(nil),
+	)
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	_ = readResponse(t, response)
+
+	deleteXML = `<Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/">` +
+		`<Object><Key>three</Key></Object></Delete>`
+	request = authenticatedRequest(
+		t,
+		http.MethodPost,
+		environment.server.URL+"/private-data/?delete",
+		strings.NewReader(deleteXML),
+	)
+	request.Header.Set("Content-MD5", "9ViRvicg+u/y5r5gpMdVqA==")
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Contains(t, string(readResponse(t, response)), "<Key>three</Key>")
 }
 
 func TestS3HistoricalKeyCompatibilityCannotCrossBucketBoundary(t *testing.T) {
@@ -482,11 +764,22 @@ func TestS3UnsupportedObjectSubresourcesAreNotDispatchedAsObjectIO(t *testing.T)
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	_ = readResponse(t, response)
 
-	request = authenticatedRequest(t, http.MethodGet, objectURL+"?acl", nil)
-	response, err = client.Do(request)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusNotImplemented, response.StatusCode)
-	require.Contains(t, string(readResponse(t, response)), "NotImplemented")
+	for _, target := range []string{
+		objectURL + "?acl",
+		objectURL + "?policy",
+		objectURL + "?cors",
+		objectURL + "?versioning",
+		environment.server.URL + "/hackmd/?acl",
+		environment.server.URL + "/hackmd/?policy",
+		environment.server.URL + "/hackmd/?cors",
+		environment.server.URL + "/hackmd/?versioning",
+	} {
+		request = authenticatedRequest(t, http.MethodGet, target, nil)
+		response, err = client.Do(request)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusNotImplemented, response.StatusCode)
+		require.Contains(t, string(readResponse(t, response)), "NotImplemented")
+	}
 
 	request = authenticatedRequest(t, http.MethodPost, objectURL+"?uploads", nil)
 	response, err = client.Do(request)
@@ -495,6 +788,12 @@ func TestS3UnsupportedObjectSubresourcesAreNotDispatchedAsObjectIO(t *testing.T)
 	require.Contains(t, string(readResponse(t, response)), "NotImplemented")
 
 	response, err = getResponse(t, client, objectURL)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, []byte("content"), readResponse(t, response))
+
+	request = authenticatedRequest(t, http.MethodGet, objectURL+"?cache-bust=1", nil)
+	response, err = client.Do(request)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	require.Equal(t, []byte("content"), readResponse(t, response))

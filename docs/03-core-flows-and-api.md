@@ -11,6 +11,7 @@
 | ListBuckets | `GET /` | 必需 |
 | HeadBucket | `HEAD /{bucket}` | 必需 |
 | GetBucketLocation | `GET /{bucket}?location` 或 legacy bucket GET | 必需 |
+| ListObjects V1 | `GET /{bucket}/` 或不带 `list-type` 的列表 query | 必需 |
 | ListObjectsV2 | `GET /{bucket}?list-type=2` | 必需 |
 | GetObject / HeadObject | `GET/HEAD /{bucket}/{key}` | 由 bucket ACL 决定 |
 | PutObject | `PUT /{bucket}/{key}` | 必需 |
@@ -18,9 +19,15 @@
 | DeleteObject | `DELETE /{bucket}/{key}` | 必需 |
 | DeleteObjects | `POST /{bucket}?delete` | 必需 |
 
+`GET`、`HEAD` 和 `POST` bucket 操作同时接受 `/{bucket}` 与 `/{bucket}/`，尾斜杠不得被
+解释为空对象 key。精确的无 query `GET /{bucket}` 保留旧 LocationConstraint 响应；
+`GET /{bucket}/` 表示 ListObjects V1。DeleteObjects 同时接受
+`POST /{bucket}?delete` 和 `POST /{bucket}/?delete`。
+
 不实现 bucket 创建/删除、对象 ACL、版本控制、multipart upload、tagging、lifecycle 和
-SelectObjectContent。相关 bucket 操作返回 NotImplemented；`x-amz-acl` 和 grant header
-返回 AccessControlListNotSupported。
+SelectObjectContent。未实现的标准 bucket/object subresource 在鉴权后稳定返回
+NotImplemented，不能进入普通对象 I/O，也不能因空对象 key 返回 InvalidObjectName；
+`x-amz-acl` 和 grant header 返回 AccessControlListNotSupported。
 
 ## 2. SigV4 与请求完整性
 
@@ -112,17 +119,24 @@ ETag 列表只接受 `*` 或合法逗号分隔 tag；畸形值返回 InvalidArgu
 private bucket 在查询 Mapping 前拒绝匿名请求；public-read bucket 仅允许匿名对象 GET/HEAD。
 提交了错误凭据的请求不会降级为匿名。
 
-## 5. ListObjectsV2
+## 5. ListObjects V1 与 V2
 
-支持 `prefix`、空 delimiter 或 `/`、`max-keys` 0..1000、`start-after`、
+ListObjects V1 用于兼容仍使用旧列表协议的客户端。支持 `prefix`、空 delimiter 或 `/`、
+`marker`、`max-keys` 0..1000 和 `encoding-type=url`。响应包含 V1 的 Marker，并在 delimiter
+分页时返回 NextMarker；没有 delimiter 时客户端可以使用当前页最后一个 Key 继续请求。
+V1 Contents 始终包含稳定 Owner。
+
+ListObjects V2 支持 `prefix`、空 delimiter 或 `/`、`max-keys` 0..1000、`start-after`、
 `continuation-token`、`encoding-type=url` 和 `fetch-owner`。重复单值参数、无效组合和
 不支持的值返回 InvalidArgument。
 
-SQLite 递归 CTE 只扫描配置 bucket 路径，prefix 使用转义后的参数化 LIKE。delimiter
-投影产生去重 CommonPrefixes，结果按 key 排序并只读取 `max-keys + 1` 项。
+V1 与 V2 复用同一个 FileManager 列表实现。SQLite 递归 CTE 只扫描配置 bucket 路径，
+prefix 使用转义后的参数化 LIKE。delimiter 投影产生去重 CommonPrefixes，结果按 key
+排序并只读取 `max-keys + 1` 项。列表始终要求认证，即使 bucket 是 public-read。
 
-continuation token 是严格解码的 Base64URL JSON，绑定版本、bucket、prefix、delimiter 和
-最后一项；未知字段、超长值或与当前请求不匹配都返回 InvalidToken。
+V2 continuation token 是严格解码的 Base64URL JSON，绑定版本、bucket、prefix、delimiter
+和最后一项；未知字段、超长值或与当前请求不匹配都返回 InvalidToken。V1 marker 和 V2
+start-after/continuation token 最终都映射为同一严格大于起点的有序查询。
 
 ## 6. CopyObject
 
