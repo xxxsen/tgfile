@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -57,54 +56,6 @@ func TestAuditCommand(t *testing.T) {
 	require.Equal(t, "ok", report.QuickCheck)
 }
 
-func TestMigrateDefaultPrefixCommand(t *testing.T) {
-	databaseFile, configFile := createMaintenanceCLIConfig(t)
-	database, err := sql.Open("sqlite", databaseFile)
-	require.NoError(t, err)
-	_, err = database.ExecContext(t.Context(), `
-INSERT INTO tg_file_mapping_tab (
-    entry_id, parent_entry_id, ref_data, file_kind,
-    ctime, mtime, file_size, file_mode, file_name
-) VALUES
-    (1, 0, '', 1, 100, 200, 0, 420, '/'),
-    (2, 1, '', 1, 100, 200, 0, 420, 'defauls');`)
-	require.NoError(t, err)
-	require.NoError(t, database.Close())
-
-	code, stdout, stderr := executeForTest(
-		t,
-		"migrate-default-prefix",
-		"--config="+configFile,
-		"--direction=forward",
-		"--dry-run=true",
-	)
-	require.Zero(t, code, stderr)
-	require.Contains(t, stdout, `"dry_run": true`)
-
-	code, stdout, stderr = executeForTest(
-		t,
-		"migrate-default-prefix",
-		"--config="+configFile,
-		"--direction=forward",
-		"--dry-run=false",
-	)
-	require.Zero(t, code, stderr)
-	require.Contains(t, stdout, `"changed_rows": 1`)
-
-	database, err = sql.Open("sqlite", databaseFile)
-	require.NoError(t, err)
-	defer database.Close()
-	var name string
-	require.NoError(
-		t,
-		database.QueryRowContext(
-			t.Context(),
-			"SELECT file_name FROM tg_file_mapping_tab WHERE entry_id = 2;",
-		).Scan(&name),
-	)
-	require.Equal(t, "defaults", name)
-}
-
 func TestCheckKeyCommandExitCodes(t *testing.T) {
 	code, stdout, stderr := executeForTest(
 		t,
@@ -138,8 +89,15 @@ func TestRootCommandRequiresSubcommand(t *testing.T) {
 func TestRootCommandHelpListsOnlyBusinessCommands(t *testing.T) {
 	code, stdout, stderr := executeForTest(t, "--help")
 	require.Zero(t, code, stderr)
-	for _, command := range []string{"serve", "audit", "migrate-default-prefix", "check-key"} {
+	for _, command := range []string{"serve", "audit", "check-key"} {
 		require.Contains(t, stdout, command)
 	}
+	require.NotContains(t, stdout, "migrate-default-prefix")
 	require.NotContains(t, stdout, "completion")
+}
+
+func TestRetiredMigrationCommandIsUnavailable(t *testing.T) {
+	code, _, stderr := executeForTest(t, "migrate-default-prefix", "--help")
+	require.Equal(t, 1, code)
+	require.Contains(t, stderr, `unknown command "migrate-default-prefix"`)
 }

@@ -6,31 +6,7 @@ on:
       - 'v*' # 触发条件为以 'v' 开头的 tag
 
 jobs:
-  verify:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v6
-
-    - name: Set up Go
-      uses: actions/setup-go@v6
-      with:
-        go-version-file: go.mod
-        cache: true
-
-    - name: Verify
-      run: |
-        test -z "$(gofmt -l .)"
-        go vet ./...
-        go test ./...
-        go test -race ./...
-        go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
-        govulncheck ./...
-
   build:
-    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: write

@@ -93,9 +93,8 @@ aws --endpoint-url http://127.0.0.1:9901 \
 
 ### 离线维护命令
 
-离线维护子命令不会启动 HTTP 服务、Telegram、缓存或上传逻辑。生产环境执行数据库迁移前，
-必须先停止所有 tgfile 实例并备份 SQLite 数据库及其 `-wal`、`-shm` 文件；完整的单次
-停服上线和回滚步骤见 `docs/02-safe-fix-implementation-plan.md` 第 7、8 节。
+离线维护子命令不会启动 HTTP 服务、Telegram、缓存或上传逻辑。审计生产数据库前仍建议
+备份 SQLite 数据库及其 `-wal`、`-shm` 文件，并将报告保存到受限目录。
 
 只读审计：
 
@@ -111,24 +110,6 @@ aws --endpoint-url http://127.0.0.1:9901 \
 ./tgfile check-key \
   --key='0123456789abcdef-example.txt'
 ```
-
-将内部目录从 `/defauls` 修正为 `/defaults` 时，先执行只读预检，确认输出为
-`source_count=1`、`target_count=0`、`source_is_directory=true`，再执行正式迁移：
-
-```shell
-./tgfile migrate-default-prefix \
-  --config=/config/config.json \
-  --direction=forward \
-  --dry-run=true
-
-./tgfile migrate-default-prefix \
-  --config=/config/config.json \
-  --direction=forward \
-  --dry-run=false
-```
-
-迁移是单事务、单行目录重命名，不提供 `/defauls` 兼容读取。旧镜像必须配旧路径，
-新镜像必须配新路径；回滚前使用 `--direction=reverse` 按相同步骤先预检再迁回。
 
 ### 本地开发
 

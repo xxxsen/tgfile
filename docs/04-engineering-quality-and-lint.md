@@ -26,7 +26,7 @@
 
 1. 存量 S3 GET/HEAD、Range 和文件直链读取优先保持兼容。
 2. 不得自动删除 Telegram 消息、文件块、Draft、分片或无引用文件。
-3. `/defauls` 仅允许出现在审计和正反迁移逻辑中，正常路径只使用 `/defaults`。
+3. 默认上传根目录固定为 `/defaults`，运行时代码不得增加历史路径 fallback。
 4. 短期工作目录不持久化正式文档，正式文档必须进入 `docs/`。
 5. 代码交付前必须通过 `make check`。
 
@@ -41,8 +41,8 @@
   `nonamedreturns`；
 - 工程边界：`depguard`、`forbidigo`、`wrapcheck`、`gochecknoinits`。
 
-历史数据库路径 `defauls` 是必须保留的真实值，因此仅在 `misspell` 中配置精确忽略；
-该规则不改变任何运行时代码或迁移方向。
+生产迁移完成后，历史路径字符串已从 Go 源码移除，`misspell` 的临时忽略规则也同步
+删除。
 
 ### 2.3 Makefile
 
@@ -95,7 +95,7 @@ make check
 - 不修改 SQLite schema、表数据和字段编码；
 - 不修改 file_id、FileKey、分片顺序、S3 路径或外部直链 key；
 - 存量 MD5 继续使用原格式，只作为兼容校验值，不作为安全哈希；
-- `/defauls` forward/reverse 迁移字符串保持原样；
+- 一次性路径迁移和反向回滚代码在生产迁移验证后退休；
 - Telegram、localfile 和 mem 的 BlockIO 注册方式保持不变；
 - 本轮 lint 整改不新增任何生产前置数据迁移。
 
@@ -107,6 +107,7 @@ make check
 2. `docs/02-safe-fix-implementation-plan.md`
 3. `docs/03-implementation-verification.md`
 4. `docs/04-engineering-quality-and-lint.md`
+5. `docs/05-one-time-migration-retirement.md`
 
 源码、README 和正式文档不再引用临时工作路径。
 
@@ -132,6 +133,6 @@ make check GO=/tmp/codex-go1.25.12.GvW9HE/go/bin/go
 
 ## 6. 生产影响
 
-本文件所述 lint 整改本身不要求生产数据迁移，也不增加上线前置命令。生产上线仍必须
-完整执行 `docs/02-safe-fix-implementation-plan.md` 第 7～9 节，尤其是停服、SQLite
-备份、只读审计、`/defauls` forward 迁移和存量 S3/直链样本验证。
+本文件所述 lint 整改本身不要求生产数据迁移。首次生产迁移已经完成，
+`docs/02-safe-fix-implementation-plan.md` 现仅作为历史上线记录；后续版本不得重复
+执行其中的一次性路径迁移。

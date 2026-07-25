@@ -4,10 +4,12 @@
 审查范围：仓库内 92 个 Go 文件（约 6,880 行，含测试）、构建脚本、Dockerfile、GitHub Actions、README。  
 审查方式：核心链路走读、边界条件分析、`go vet ./...`、`go test ./...`（在临时 Windows/Go 1.25 环境中执行）。
 实施状态：核心链路修复已完成，见 `docs/03-implementation-verification.md`。
+一次性路径迁移能力已在生产迁移完成后退休，见
+`docs/05-one-time-migration-retirement.md`。
 
 ## 1. 结论摘要
 
-项目的整体分层是清楚的：HTTP/S3/WebDAV 协议层通过 `filemgr` 统一访问文件，元数据落 SQLite，文件块由 `blockio` 接入 Telegram、本地文件或内存；L1/L2 缓存也与底层存储解耦。目录操作已有相对丰富的测试，S3 HEAD、数据库兼容迁移等近期功能也有针对性用例。
+项目的整体分层是清楚的：HTTP/S3/WebDAV 协议层通过 `filemgr` 统一访问文件，元数据落 SQLite，文件块由 `blockio` 接入 Telegram、本地文件或内存；L1/L2 缓存也与底层存储解耦。目录操作已有相对丰富的测试，S3 HEAD、数据库审计等近期功能也有针对性用例。
 
 当前主要风险集中在“上传完整性、凭据保护和长期运行可靠性”：
 
@@ -75,8 +77,9 @@ HTTP / S3 / WebDAV / Backup
 
 建议：
 
-使用 Cobra 拆分为 `serve`、`audit`、`migrate-default-prefix` 和 `check-key` 子命令。
-每个子命令只注册自身参数，根命令不承载业务 flag。
+上线版本先使用 Cobra 拆分服务、审计、一次性迁移和 key 校验；生产迁移完成后退休
+一次性迁移命令。当前保留 `serve`、`audit` 和 `check-key`，每个子命令只注册自身
+参数，根命令不承载业务 flag。
 
 验收用例：
 

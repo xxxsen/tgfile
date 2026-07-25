@@ -5,6 +5,11 @@
 线上主要链路：S3 PUT 上传、S3 GET/HEAD、`/file/download/:key` 文件直链下载。  
 实施状态：C-01～C-11 已完成，逐项结果见 `docs/03-implementation-verification.md`。  
 
+> 归档说明（2026-07-25）：本文件是 v0.0.33 首次上线时的停服迁移手册。生产迁移已
+> 完成并验证，一次性 `migrate-default-prefix`、反向迁移和旧路径审计字段已从后续
+> 代码中退休。本文中的迁移命令仅用于还原当时的操作记录，不能作为当前版本命令手册。
+> 当前维护方式及退休边界见 `docs/05-one-time-migration-retirement.md`。
+
 ## 1. 结论
 
 本轮只改造线上实际使用的核心链路。

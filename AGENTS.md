@@ -53,7 +53,7 @@ make check                  # 格式、vet、test、race、lint 全量门禁
 - 自动化测试不得连接生产配置、生产数据库、Telegram 或外部 S3 服务。
 - HTTP 测试使用 `httptest`；允许 loopback，不依赖预先运行的本地服务。
 - 每个修复至少覆盖正常、异常和关键边界路径。
-- 数据迁移测试必须验证 dry-run、前置条件、提交后状态和 reverse/恢复路径。
+- 新增数据迁移时，测试必须验证 dry-run、前置条件、提交后状态和备份恢复路径。
 
 ## 4. Lint 规范
 
@@ -69,12 +69,10 @@ make check                  # 格式、vet、test、race、lint 全量门禁
 - `entity/` 和 `server/model/` 是数据模型层，不得依赖业务实现包。
 - `cmd/` 是组装入口，其他包不得反向依赖 `cmd`。
 - `filemgr` 负责文件与路径语义；handler 不得绕过它直接修改业务表。
-- `audit`、`migrate-default-prefix` 和 `check-key` 子命令不得初始化 Telegram、
-  HTTP 服务或缓存。
+- `audit` 和 `check-key` 子命令不得初始化 Telegram、HTTP 服务或缓存。
 - 只读维护命令必须用 SQLite 只读模式，不能调用会建表或迁移 schema 的初始化逻辑。
 - S3 已存在对象保持 409 语义，不得在没有新设计和迁移方案时改为覆盖。
-- `/defauls` 仅允许存在于审计和 forward/reverse 迁移代码；正常读写路径只使用
-  `/defaults`。
+- 默认上传根目录固定为 `/defaults`；运行时代码不得增加历史路径 fallback。
 - 外部直链 key、file_id、Telegram FileKey、分片顺序和存量 MD5 不得静默改写。
 
 ## 6. 安全与日志

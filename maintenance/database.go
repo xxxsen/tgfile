@@ -11,8 +11,6 @@ import (
 	_ "github.com/glebarez/go-sqlite" // Register the SQLite database/sql driver.
 )
 
-const defaultDatabaseTimeout = 5 * time.Second
-
 func openDatabase(ctx context.Context, file string, readOnly bool) (*sql.DB, error) {
 	absolute, err := filepath.Abs(file)
 	if err != nil {
