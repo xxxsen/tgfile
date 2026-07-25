@@ -21,8 +21,7 @@ tgfile 是一个 Go 文件服务，将文件切块后存储到可插拔 BlockIO 
 - SQLite 保存文件、分片和路径映射元数据；
 - Telegram 是主要 BlockIO 后端。
 
-WebDAV、备份和静态目录仍存在，但不是当前主要生产链路。tgc 客户端和服务端
-`/file/multipart/*` API 已删除，不得重新引入。
+WebDAV、备份和静态目录仍存在，但不是当前主要生产链路。
 
 ## 2. 文档规范
 
@@ -70,7 +69,8 @@ make check                  # 格式、vet、test、race、lint 全量门禁
 - `entity/` 和 `server/model/` 是数据模型层，不得依赖业务实现包。
 - `cmd/` 是组装入口，其他包不得反向依赖 `cmd`。
 - `filemgr` 负责文件与路径语义；handler 不得绕过它直接修改业务表。
-- `maintenance` 命令不得初始化 Telegram、HTTP 服务或缓存。
+- `audit`、`migrate-default-prefix` 和 `check-key` 子命令不得初始化 Telegram、
+  HTTP 服务或缓存。
 - 只读维护命令必须用 SQLite 只读模式，不能调用会建表或迁移 schema 的初始化逻辑。
 - S3 已存在对象保持 409 语义，不得在没有新设计和迁移方案时改为覆盖。
 - `/defauls` 仅允许存在于审计和 forward/reverse 迁移代码；正常读写路径只使用

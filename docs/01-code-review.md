@@ -9,13 +9,16 @@
 
 项目的整体分层是清楚的：HTTP/S3/WebDAV 协议层通过 `filemgr` 统一访问文件，元数据落 SQLite，文件块由 `blockio` 接入 Telegram、本地文件或内存；L1/L2 缓存也与底层存储解耦。目录操作已有相对丰富的测试，S3 HEAD、数据库兼容迁移等近期功能也有针对性用例。
 
-当前主要风险集中在“上传状态与输入可信度”：
+当前主要风险集中在“上传完整性、凭据保护和长期运行可靠性”：
 
-1. 分块上传的 `upload_key` 只是可编辑的 Base64 JSON，服务端又不核对所有者、文件状态、分片编号与大小。任意已认证用户可以构造其他 `file_id`，替换已有文件的分片或为其创建新公开链接。多用户部署下属于高危完整性问题。
-2. 完成上传时没有校验分片是否齐全、连续、大小是否匹配声明值，也没有校验实际读取字节数。异常请求或传输提前结束后仍可能把文件标记为 Ready。
-3. 服务启动时会把包含 Bot Token 和全部用户密码的配置对象写入日志。
-4. S3/WebDAV 覆盖上传不是原子替换：先上传数据，再创建链接；链接已存在时返回错误，刚上传的数据成为孤儿。底层存储又没有删除接口，长期运行会持续积累不可回收数据。
-5. 测试没有形成可靠的 CI 闭环：部分测试依赖固定本地目录或外部运行中的服务，缓存测试还暴露了同步语义与 Ristretto 异步写入不一致的问题。
+1. 普通上传依赖请求声明的文件大小，原实现没有验证 Reader 是否提前结束，也没有精确
+   限制末片长度。
+2. 服务启动时会把包含 Bot Token 和全部用户密码的配置对象写入日志。
+3. S3/WebDAV 覆盖上传不是原子替换：先上传数据，再创建链接；链接已存在时返回错误，
+   刚上传的数据成为孤儿。
+4. 底层存储没有删除接口，失败上传和无引用文件缺少完整生命周期管理。
+5. 测试没有形成可靠的 CI 闭环，缓存测试还暴露了同步语义与 Ristretto 异步写入
+   不一致的问题。
 
 建议先完成 P0/P1 项，再扩展协议能力或做性能优化。
 
@@ -24,9 +27,9 @@
 主要调用链如下：
 
 ```text
-tgc CLI / HTTP / S3 / WebDAV / Backup
-                    │
-                    ▼
+HTTP / S3 / WebDAV / Backup
+              │
+              ▼
               filemgr.IFileManager
               ├── 文件状态与分片：fileDao / filePartDao
               ├── 路径与目录：fileMappingDao / directory
@@ -56,72 +59,61 @@ tgc CLI / HTTP / S3 / WebDAV / Backup
 - P1：明显影响可靠性、安全边界或长期运行，建议近期完成。
 - P2：协议兼容性、性能、可维护性和工程质量改进。
 
-### F-01 [P0] 分块上传会话可伪造，可改写任意可猜测的文件
+### F-01 [P2] 服务启动和维护操作混用同一个 flag 入口
 
 证据：
 
-- `server/model/file.go:66-87`：`upload_key` 是 `MultiPartUploadContext` 的 Base64 JSON，没有签名或服务端会话记录。
-- `server/handler/file/multipart_upload.go:47-63`：上传分片时直接信任 key 中的 `FileId`。
-- `filemgr/file_manager_impl.go:133-147`：写分片时不检查文件所有者、FileState 或期望分片范围。
-- `dao/file_part_dao.go:52-79`：相同 `(file_id, file_part_id)` 会覆盖原 `file_key`。
-- `server/handler/file/multipart_upload.go:68-83`：完成接口也直接信任 key 中的文件名、大小和 `FileId`。
+- 原 `cmd` 入口同时注册服务配置、审计输出、迁移方向、dry-run 和 key 校验参数。
+- `-maintenance` 再通过字符串选择三种完全不同的离线操作。
+- 不同操作的参数可以同时出现，命令帮助无法准确表达哪些参数属于哪项操作。
 
 影响：
 
-- 已认证用户可伪造别人的 `file_id`，替换其分片，从而破坏所有引用该文件的链接。
-- 可为已有文件创建攻击者指定文件名、声明大小的新链接。
-- Base64 只编码、不提供真实性或不可篡改性；即使当前主要是单用户部署，也容易因客户端错误造成错误关联。
+- 运维容易把迁移、审计和服务启动参数混用。
+- 无法为各操作单独定义必填参数、帮助信息和退出码。
+- 后续新增维护功能会继续扩大根入口的条件分支。
 
 建议：
 
-1. 新增服务端 `upload_session`：保存随机不可猜测 session ID、owner、file_id、expected_size、block_size、expected_parts、state、expires_at。
-2. `upload_key` 只返回随机 session ID；最低限度也应使用 HMAC 签名并包含 owner、过期时间，但服务端会话更便于幂等与恢复。
-3. Part/Finish 都要核对当前认证用户和 session owner。
-4. 仅允许 `INIT/UPLOADING` 状态写分片，Ready 文件禁止再写。
-5. 完成操作使用 Compare-And-Set：只有 `UPLOADING -> READY` 能成功，重复 Finish 返回同一结果。
+使用 Cobra 拆分为 `serve`、`audit`、`migrate-default-prefix` 和 `check-key` 子命令。
+每个子命令只注册自身参数，根命令不承载业务 flag。
 
 验收用例：
 
-- 修改 key 中任一字段后请求返回 400/403。
-- 用户 A 不能上传或完成用户 B 的 session。
-- Ready 文件不能覆盖分片。
-- 过期 session 不可继续写入。
+- 根命令未指定子命令时返回明确错误。
+- `audit` 不接受 `check-key` 的参数。
+- 每个子命令的帮助只展示自身参数。
+- Docker 默认启动和开发脚本显式使用 `serve`。
 
-### F-02 [P0] 上传完成缺少分片、尺寸和实际字节数校验
+### F-02 [P0] 上传缺少尺寸和实际字节数校验
 
 证据：
 
-- `server/handler/file/multipart_upload.go:18-35`：`file_size` 未限制负数、零值、上限。
-- `filemgr/file_manager_impl.go:120-126`：负数先转换为 `uint64` 参与分片数计算。
-- `filemgr/file_manager_impl.go:133-145`：`partid` 从 `int64` 直接截断为 `int32`，也不记录实际分片大小。
-- `filemgr/file_manager_impl.go:151-184`：Finish 只汇总现有分片 MD5，不检查数量、编号连续性、总大小或文件状态。
-- `filemgr/file_manager_impl.go:187-205`：普通上传按声明大小循环，但每片使用完整 `MaxFileSize()`，不检查 Reader 是否提前 EOF，也不限制最后一片为“剩余大小”。
+- `filemgr/file_manager_impl.go`：原实现直接按声明大小计算分片，未先拒绝负数、
+  非正 block size 和过大的分片数量。
+- 普通上传原来每片使用完整 `MaxFileSize()`，不检查 Reader 是否提前 EOF，也不限制
+  最后一片为“剩余大小”。
 - `server/handler/backup/import.go:73-80`：归档头中的 `hdr.Size` 同样被直接信任。
 
 影响：
 
-- 缺片、重复片、负分片 ID、超大分片、短读都可能形成 Ready 文件。
+- 超大声明、异常 block size 或短读都可能形成错误状态或资源消耗。
 - 声明大小与实际数据不一致时，下载、Range 和缓存行为不可预测；空块配合非零声明大小还可能反复回源。
 - 超大声明值可能产生极多上传循环或数据库垃圾。
 
 建议：
 
-1. 配置并校验：单文件最大值、分片最大值、最大分片数、非负大小、`0 <= part_id < expected_parts`。
-2. 分片表增加 `part_size`；上传时用计数 Reader 记录真实大小。
-3. 普通上传每片限制为 `min(block_size, remaining)`，用 `io.CopyN` 或计数器确保实际读取值等于声明值，并决定是否拒绝额外数据。
-4. Finish 在一个事务中校验：
-   - 文件存在且状态允许完成；
-   - 分片数等于 expected_parts；
-   - ID 从 0 连续；
-   - 每个非末片大小等于 block_size；
-   - 分片总大小等于 expected_size。
-5. `MarkFileReady` 检查 RowsAffected，并带原状态条件，不能让不存在的 file_id“完成成功”。
+1. 校验非负文件大小、正 block size 和最大分片数。
+2. 普通上传每片限制为 `min(block_size, remaining)`。
+3. 使用计数 Reader 确保实际读取值等于声明值。
+4. 短读时不得把文件标记为 Ready，也不得创建路径 mapping。
+5. `MarkFileReady` 检查 RowsAffected，并带原状态条件。
 
 ### F-03 [P0] 启动日志泄露 Bot Token 和用户密码
 
 证据：
 
-- `cmd/cmd.go:31`：`logger.Info("recv config", zap.Any("config", c))` 输出整个配置。
+- 原单体命令入口使用 `logger.Info("recv config", zap.Any("config", c))` 输出整个配置。
 - `config/config.go:36-47`：配置包含 `BotInfo` 和 `UserInfo`；Telegram Token 位于 `BotInfo`，密码位于 `UserInfo`。
 
 影响：
@@ -319,23 +311,24 @@ tgc CLI / HTTP / S3 / WebDAV / Backup
 2. 测试先 `require.NoError` 再使用返回值，避免一个断言失败引发二次 panic。
 3. S3 端到端测试用 `httptest.Server` 自包含；确需外部服务的测试加 build tag 或显式 integration job。
 4. 新增 PR CI：`gofmt -l`、`go vet ./...`、`go test ./...`、`go test -race ./...`、`govulncheck ./...`。
-5. 对 Multipart、key parser、短读、超长输入、覆盖上传、备份损坏、并发缓存增加表驱动和 fuzz 测试。
+5. 对 key parser、短读、超长输入、覆盖上传、备份损坏、并发缓存增加表驱动和
+   fuzz 测试。
 
-### F-13 [P2] tgc 客户端会放大内存，部分请求不响应取消
+### F-13 [P2] 错误链和资源关闭处理不完整
 
 证据：
 
-- `tgc/client/impl.go:76-100`：每个分片先完整写入 `bytes.Buffer` 再发送，默认 10 并发、20 MiB 分片时仅请求体就可能约占 200 MiB。
-- `tgc/client/impl.go:93`：Part 请求使用 `http.NewRequest`，没有绑定传入的 context。
-- `cmd/tgc/cmd/upload.go:31-37`：已经接收 ctx，却再次使用 `context.Background()`。
-- `tgc/tgc.go:67-69`：`errgroup.SetLimit` 直接使用配置；线程数为 0 时提交任务会阻塞。
+- 多个 DAO、文件流和协议 handler 直接返回外部错误，缺少操作上下文。
+- 备份导出在遍历回调中延迟关闭文件，文件数量大时会持续占用句柄。
+- gzip、tar、HTTP body、数据库 Rows 和临时文件清理存在未检查的关闭错误。
+- 部分整数转换没有先验证范围。
 
 建议：
 
-- 使用 `io.Pipe` 流式构造 multipart，请求通过 `NewRequestWithContext` 发送。
-- CLI 使用 `cmd.Context()`，捕获 Ctrl+C 后取消所有分片。
-- 校验 `thread >= 1` 并设置合理上限。
-- 错误响应读取有限长度的 body 和 request ID，便于诊断。
+- 使用 `%w` 保留错误原因链，并为跨层操作补充明确上下文。
+- 文件和归档流在最小作用域内关闭，必要时使用 `errors.Join` 合并业务和关闭错误。
+- 数据库查询统一检查 `Rows.Err()` 并关闭 Rows。
+- 所有窄化整数转换先做上下界校验。
 
 ### F-14 [P2] 配置缺少集中校验和安全默认值
 
@@ -410,11 +403,10 @@ tgc CLI / HTTP / S3 / WebDAV / Backup
 
 1. 删除敏感配置日志并轮换已暴露密钥。
 2. 修复公开 key parser panic。
-3. 引入服务端 upload session、owner/state 校验和过期时间。
-4. 校验 file size、part ID、part size、part count 和实际读入字节数。
-5. 修复分片重传时 MD5 未更新。
+3. 校验 file size、block size、part count 和实际读入字节数。
+4. 修复分片记录更新时 MD5 未同步的问题。
 
-完成标准：畸形/伪造请求不能 panic、不能改写其他文件、不能生成声明与内容不一致的 Ready 文件。
+完成标准：畸形请求不能 panic，短读和异常大小不能生成声明与内容不一致的 Ready 文件。
 
 ### 第二阶段：保证文件生命周期和协议可靠性
 
@@ -439,10 +431,8 @@ tgc CLI / HTTP / S3 / WebDAV / Backup
 | 测试场景 | 预期 |
 |---|---|
 | `a-x`、`-xx`、超长及随机 file key | 4xx，永不 panic |
-| 修改 upload session 的 file_id/size/filename | 400/403 |
-| 用户 A 使用用户 B 的 session | 403 |
-| 负 file_size、负/溢出 part_id、超大 part | 400 |
-| 缺少中间分片或末片过短后 Finish | 409/422，文件保持非 Ready |
+| 负 file_size、无效 block size、超大 part count | 明确拒绝 |
+| 末片过短 | 文件保持非 Ready |
 | Reader 比声明值短或长 | 明确拒绝或按已声明策略处理，不产生坏文件 |
 | 同一 part_id 重传不同内容 | 内容和 MD5 同步更新，旧块进入回收 |
 | S3/WebDAV 覆盖已存在文件 | 原子成功，返回正确状态，旧文件可回收 |
@@ -453,4 +443,7 @@ tgc CLI / HTTP / S3 / WebDAV / Backup
 
 ## 6. 总体评价
 
-项目已经具备可继续演进的分层基础，目录数据库和多协议入口也说明核心模型有复用价值。当前短板不是“代码组织需要重写”，而是上传状态机、安全边界、失败补偿和工程验证还没有跟上协议数量。优先围绕 upload session 和文件生命周期收紧不变量，可以在不推翻现有架构的前提下显著提高安全性与可靠性。
+项目已经具备可继续演进的分层基础，目录数据库和多协议入口也说明核心模型有复用价值。
+当前短板不是“代码组织需要重写”，而是上传完整性、安全边界、失败补偿和工程验证
+还没有跟上协议数量。优先围绕文件生命周期收紧不变量，可以在不推翻现有架构的前提下
+显著提高安全性与可靠性。

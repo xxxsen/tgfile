@@ -7,7 +7,7 @@
 
 ## 1. 结论
 
-本轮只改造线上实际使用的核心链路，并删除没有使用价值且扩大攻击面的 tgc/分块上传功能。
+本轮只改造线上实际使用的核心链路。
 
 本方案不会批量修改或重编码存量文件块。唯一会主动修改历史业务数据的操作是将内部目录 `/defauls` 重命名为 `/defaults`；该操作在停服窗口内完成，不实现新旧路径双读，并提供严格预检、事务迁移和反向回滚。
 
@@ -17,10 +17,9 @@
 2. 加固 S3 PUT 共用的 `CreateFile` 数据完整性。
 3. 修复直链 key 的公开 panic。
 4. 停服迁移 `/defauls/` 到 `/defaults/`，外部直链 key 保持不变。
-5. 删除 tgc 客户端和对应服务端 multipart API。
-6. 清理 tgc 发布 Action、依赖和文档。
-7. 修复敏感日志、Telegram 超时、HTTP 生命周期和读取缓存。
-8. 建立可重复的 S3/直链测试和 PR CI。
+5. 将服务启动、审计、路径迁移和 key 校验拆分为独立子命令。
+6. 修复敏感日志、Telegram 超时、HTTP 生命周期和读取缓存。
+7. 建立可重复的 S3/直链测试和 PR CI。
 
 WebDAV、备份导入导出、静态目录展示不属于本轮核心改造；保留现状，不在同一次上线中做结构性调整。
 
@@ -38,9 +37,8 @@ WebDAV、备份导入导出、静态目录展示不属于本轮核心改造；�
 8. 不改变外部 `/file/download/:key` 中的 key。
 9. 不改变当前公开 GET/HEAD 和 public cache 行为。
 10. S3 PUT 写已存在对象暂时继续返回冲突，不在本轮自动覆盖存量对象。
-11. 删除 tgc 和 `/file/multipart/*` 是明确接受的 API 不兼容，不涉及存量数据迁移。
-12. `/defauls/` 不做过渡期兼容；必须保证“旧镜像 + 旧路径”或“新镜像 + 新路径”成对使用。
-13. 所有修复在同一个停服窗口一次性上线，不拆分生产发布批次。
+11. `/defauls/` 不做过渡期兼容；必须保证“旧镜像 + 旧路径”或“新镜像 + 新路径”成对使用。
+12. 所有修复在同一个停服窗口一次性上线，不拆分生产发布批次。
 
 ## 3. 修复项与历史数据影响
 
@@ -50,7 +48,7 @@ WebDAV、备份导入导出、静态目录展示不属于本轮核心改造；�
 | C-02 | 配置日志脱敏 | 无 | 无 |
 | C-03 | 直链 key 严格校验、防 panic | 不改数据；非正式别名可能失效 | 上线前验证真实 key 样本 |
 | C-04 | `/defauls/` -> `/defaults/` | 修改目录根映射名称 | 必须按第 7 节迁移 |
-| C-05 | 删除 tgc 和 multipart API | 不改数据；旧客户端/API 失效 | 使用 S3 PUT 替代 |
+| C-05 | Cobra 子命令拆分 | 无 | 更新启动和维护命令 |
 | C-06 | 加固 `CreateFile` 实际字节数和分块边界 | 只影响新上传 | 无历史回填 |
 | C-07 | S3 PUT 错误语义和孤儿审计 | 不改历史数据 | 不自动清理 |
 | C-08 | Telegram 请求超时与取消 | 不改数据 | 无 |
@@ -64,13 +62,12 @@ WebDAV、备份导入导出、静态目录展示不属于本轮核心改造；�
 
 #### 命令
 
-服务端二进制增加：
+服务端二进制提供：
 
 ```shell
-tgfile \
-  -config=/config/config.json \
-  -maintenance=audit \
-  -output=/tmp/tgfile-audit.json
+tgfile audit \
+  --config=/config/config.json \
+  --output=/tmp/tgfile-audit.json
 ```
 
 #### 实现约束
@@ -131,7 +128,7 @@ tgfile \
 
 #### 代码落点
 
-- `cmd/cmd.go`
+- `cmd/serve.go`
 - `config/config.go`
 
 #### 修改
@@ -237,14 +234,13 @@ const defaultUploadPrefix = "/defaults/"
 
 #### 离线可逆迁移命令
 
-增加：
+执行：
 
 ```shell
-tgfile \
-  -config=/config/config.json \
-  -maintenance=migrate-default-prefix \
-  -direction=forward \
-  -dry-run=true
+tgfile migrate-default-prefix \
+  --config=/config/config.json \
+  --direction=forward \
+  --dry-run=true
 ```
 
 支持：
@@ -336,129 +332,51 @@ file_name: defauls -> defaults
 4. reverse 后使用旧代码验证再次一致。
 5. 双目录冲突时数据库零变化。
 
-### C-05 删除 tgc 和 multipart 上传
+### C-05 使用 Cobra 拆分命令
 
-#### 删除范围
-
-删除目录：
-
-```text
-cmd/tgc/
-tgc/
-```
-
-共删除：
+原入口把服务启动、审计、路径迁移和 key 校验参数注册在同一个 flag 集合中，再通过
+字符串分支选择操作。改造后根命令不承载业务参数，固定提供：
 
 ```text
-cmd/tgc/main.go
-cmd/tgc/cmd/root.go
-cmd/tgc/cmd/upload.go
-cmd/tgc/config/config.go
-tgc/config.go
-tgc/tgc.go
-tgc/client/client.go
-tgc/client/config.go
-tgc/client/constant.go
-tgc/client/impl.go
+tgfile serve
+tgfile audit
+tgfile migrate-default-prefix
+tgfile check-key
 ```
 
-删除服务端 multipart API：
+#### 参数归属
 
-```text
-POST /file/multipart/begin
-POST /file/multipart/part
-POST /file/multipart/end
+- `serve`：只接受 `--config`；
+- `audit`：只接受 `--config`、`--output`；
+- `migrate-default-prefix`：只接受 `--config`、`--direction`、`--dry-run`；
+- `check-key`：只接受 `--key`。
+
+根命令未指定子命令时返回退出码 2。参数解析错误、缺少必填参数、迁移前置条件不满足
+以及非法 key 返回退出码 2；运行期 I/O 或数据库错误返回退出码 1。
+
+#### 部署和开发入口
+
+容器保持 `/bin/tgfile` 为 ENTRYPOINT，并将 `serve` 设为默认 CMD。Compose 显式使用：
+
+```yaml
+command: serve --config=/config/config.json
 ```
 
-代码修改：
-
-1. 删除 `server/handler/file/multipart_upload.go`。
-2. 从 `server/server.go` 删除 multipart router。
-3. 从 `server/model/file.go` 删除以下只供 multipart 使用的类型：
-   - BeginUploadRequest/Response；
-   - PartUploadRequest/Response；
-   - FinishUploadRequest/Response；
-   - MultiPartUploadContext；
-   - Encode/Decode。
-4. `filemgr` 内部的 CreateFileDraft/CreateFilePart/FinishFileCreate 暂时保留，因为 `CreateFile` 仍复用这些底层步骤。
-
-#### GitHub Action 和依赖
-
-修改 `.github/workflows/build_release.yml`：
-
-删除：
+开发脚本使用：
 
 ```shell
-./build_release.sh ${{matrix.go-os}} ${{matrix.go-arch}} tgc ./cmd/tgc
+go run ./cmd serve --config=/path/to/config.json
 ```
 
-发布产物只保留 `tgfile`。
-
-修改 README：
-
-1. 删除客户端配置章节。
-2. 删除 `/etc/tgc`、`TGC_CONFIG`、`tgc upload` 和 `go install .../cmd/tgc`。
-3. 明确推荐 S3 上传方式。
-
-执行：
-
-```shell
-go mod tidy
-```
-
-从 `go.mod` 的直接依赖中移除：
-
-- `golang.org/x/sync`；
-- `github.com/spf13/cobra`。
-
-由 `go mod tidy` 自动清理只被 Cobra/tgc 引用的间接依赖和校验记录；如果其他依赖仍间接需要 `golang.org/x/sync`，允许它以 `// indirect` 形式保留，不手工删除 `go.sum` 条目。
-
-`github.com/dustin/go-humanize` 仍被服务端启动日志使用，不删除。
-
-#### API 不兼容
-
-部署后：
-
-- tgc 二进制不再发布；
-- `go install github.com/xxxsen/tgfile/cmd/tgc@...` 不再可用；
-- `/file/multipart/*` 返回 404；
-- 尚未完成的 multipart Draft 无法继续。
-
-这些变化不修改任何 Ready 文件。
-
-#### 替代方式
-
-统一使用 S3：
-
-```shell
-aws \
-  --endpoint-url http://your-host:9901 \
-  s3 cp ./local-file s3://your-bucket/path/to/object
-```
-
-#### 历史 Draft 处理
-
-上线前审计：
-
-```sql
-SELECT file_id, file_size, file_part_count, ctime, mtime
-FROM tg_file_tab
-WHERE file_state = 1;
-```
-
-处理规则：
-
-1. 不自动删除。
-2. 如果确认没有重要进行中上传，只把清单保存在迁移报告。
-3. 本轮不删除 Draft 和分片，避免错误清理共享/有效块。
-4. 后续单独设计只针对确认清单的 GC。
+离线维护命令覆盖容器默认 CMD 后可以直接执行，不初始化 HTTP 服务、Telegram 或缓存。
 
 #### 验证
 
-- `rg 'cmd/tgc|github.com/xxxsen/tgfile/tgc|tgc upload'` 在代码、Action 和 README 中无有效引用。
-- `go list ./...` 不再包含 tgc 包。
-- release workflow 只生成 tgfile 压缩包。
-- S3 PUT/GET 和直链 GET 回归通过。
+- 每个子命令的 `--help` 只展示自身参数；
+- `audit --key=value` 等跨命令参数返回 unknown flag；
+- 根命令不带子命令时拒绝执行；
+- audit、forward dry-run、正式迁移和 key 校验命令测试通过；
+- Docker 默认启动和 `make dev` 均显式进入 `serve`。
 
 ### C-06 加固 S3 PUT 共用的 CreateFile
 
@@ -492,7 +410,8 @@ part_size = min(block_size, size - uploaded_size)
 9. 所有分片成功后才调用 FinishFileCreate。
 10. 零字节文件继续允许 0 分片。
 
-本轮不新增 `file_part_size` 数据库列，因为 multipart 已删除，CreateFile 在单个请求内可以完整验证，不需要对历史数据回填。
+本轮不新增 `file_part_size` 数据库列；CreateFile 在单个请求内可以验证实际读取字节数，
+不需要对历史数据回填。
 
 #### HTTP/S3 输入
 
@@ -708,7 +627,7 @@ ReadTimeout、WriteTimeout 保持 0，避免大文件存量读取被统一时限
 6. `/defauls/` 离线 forward、reverse，以及新旧代码与对应路径的配对验证。
 7. 禁用缓存后的后端读取。
 8. Telegram 超时和取消。
-9. tgc/multipart 路由和发布物已删除。
+9. Cobra 子命令参数隔离和退出码符合 C-05。
 
 #### PR CI
 
@@ -832,11 +751,10 @@ file_size
 ### 7.2 执行 forward
 
 ```shell
-tgfile \
-  -config=/config/config.json \
-  -maintenance=migrate-default-prefix \
-  -direction=forward \
-  -dry-run=true
+tgfile migrate-default-prefix \
+  --config=/config/config.json \
+  --direction=forward \
+  --dry-run=true
 ```
 
 仅当：
@@ -852,11 +770,10 @@ source_is_directory=true
 时执行：
 
 ```shell
-tgfile \
-  -config=/config/config.json \
-  -maintenance=migrate-default-prefix \
-  -direction=forward \
-  -dry-run=false
+tgfile migrate-default-prefix \
+  --config=/config/config.json \
+  --direction=forward \
+  --dry-run=false
 ```
 
 命令必须输出 `changed_rows=1` 和迁移前后的同一个 `entry_id`；否则视为失败。
@@ -885,12 +802,11 @@ tgfile \
 5. 安装并验证 `sqlite3`、`sha256sum`、`curl`、AWS CLI。
 6. 确认数据库、配置、Compose 文件的绝对路径和可用磁盘空间。
 7. 验证备份盘剩余空间至少为数据库文件及 WAL 总大小的 2 倍。
-8. 从最近 14 天访问日志确认没有 `/file/multipart/*` 调用；如有调用，先确认调用方已停用。
-9. 查询 `file_state=1` 的 Draft 清单并归档，不删除。
-10. 选取至少 20 个存量直链和 20 个 S3 对象；不足时全量。
-11. 记录直链/S3 样本的 Content-Length、ETag/MD5（存在时）、完整或 Range SHA-256。
-12. 备份当前配置和部署文件；准备包含新 Token/密码的正式配置，以及旧镜像可读取、使用相同新凭据的回滚配置。
-13. 明确上线负责人、验证人、回滚负责人和最长停服时间。
+8. 查询 `file_state=1` 的 Draft 清单并归档，不删除。
+9. 选取至少 20 个存量直链和 20 个 S3 对象；不足时全量。
+10. 记录直链/S3 样本的 Content-Length、ETag/MD5（存在时）、完整或 Range SHA-256。
+11. 备份当前配置和部署文件；准备包含新 Token/密码的正式配置，以及旧镜像可读取、使用相同新凭据的回滚配置。
+12. 明确上线负责人、验证人、回滚负责人和最长停服时间。
 
 执行前设置并人工复核以下变量；路径必须为绝对路径：
 
@@ -954,7 +870,7 @@ cp --preserve=mode,timestamps "$TGFILE_COMPOSE_FILE" "$TGFILE_BACKUP_DIR/docker-
 
 `quick_check` 输出不是 `ok` 时立即取消上线，不执行迁移。
 
-6. 使用新镜像的只读维护模式保存审计：
+6. 使用新镜像的 `audit` 子命令保存只读审计：
 
 ```shell
 docker run --rm \
@@ -962,9 +878,9 @@ docker run --rm \
   -v "$TGFILE_DATA_DIR:/data" \
   -v "$TGFILE_BACKUP_DIR:/maintenance" \
   "$TGFILE_NEW_IMAGE" \
-  -config=/config/config.json \
-  -maintenance=audit \
-  -output=/maintenance/audit-before.json
+  audit \
+  --config=/config/config.json \
+  --output=/maintenance/audit-before.json
 ```
 
 7. 按第 7.1 节保存表计数和 `/defauls` 根目录行。确认：
@@ -1006,10 +922,10 @@ docker run --rm \
   -v "$TGFILE_CONFIG_DIR:/config:ro" \
   -v "$TGFILE_DATA_DIR:/data" \
   "$TGFILE_NEW_IMAGE" \
-  -config=/config/config.json \
-  -maintenance=migrate-default-prefix \
-  -direction=forward \
-  -dry-run=true
+  migrate-default-prefix \
+  --config=/config/config.json \
+  --direction=forward \
+  --dry-run=true
 ```
 
 2. 输出满足第 7.2 节的四个前置条件后执行正式迁移：
@@ -1019,10 +935,10 @@ docker run --rm \
   -v "$TGFILE_CONFIG_DIR:/config:ro" \
   -v "$TGFILE_DATA_DIR:/data" \
   "$TGFILE_NEW_IMAGE" \
-  -config=/config/config.json \
-  -maintenance=migrate-default-prefix \
-  -direction=forward \
-  -dry-run=false
+  migrate-default-prefix \
+  --config=/config/config.json \
+  --direction=forward \
+  --dry-run=false
 ```
 
 3. 再次执行 `PRAGMA quick_check` 和第 7.3 节的计数对比，并保存迁移后 audit：
@@ -1033,9 +949,9 @@ docker run --rm \
   -v "$TGFILE_DATA_DIR:/data" \
   -v "$TGFILE_BACKUP_DIR:/maintenance" \
   "$TGFILE_NEW_IMAGE" \
-  -config=/config/config.json \
-  -maintenance=audit \
-  -output=/maintenance/audit-after.json
+  audit \
+  --config=/config/config.json \
+  --output=/maintenance/audit-after.json
 ```
 
 4. 只有所有结果一致，才允许进入启动步骤。
@@ -1065,11 +981,10 @@ docker compose -f "$TGFILE_COMPOSE_FILE" up -d --no-deps "$TGFILE_SERVICE"
 3. 对一个全新、带发布编号的 S3 key 执行小文件 PUT -> HEAD -> GET，内容 hash 一致。
 4. 对该已存在 key 再次 PUT，必须返回 409，原内容不变。
 5. 畸形直链 key 返回 400，服务无 panic。
-6. `/file/multipart/begin|part|end` 均返回 404。
-7. 执行 audit，`quick_check=ok`，历史异常数量不增加。
-8. 检查 Telegram、HTTP、缓存错误率和进程资源。
-9. 网关重新开放 S3 PUT；不恢复已删除的 multipart 入口。
-10. 归档必要的上线日志后，按日志系统保留策略清理升级前可能含旧 Token/密码的历史日志。
+6. 执行 audit，`quick_check=ok`，历史异常数量不增加。
+7. 检查 Telegram、HTTP、缓存错误率和进程资源。
+8. 网关重新开放 S3 PUT。
+9. 归档必要的上线日志后，按日志系统保留策略清理升级前可能含旧 Token/密码的历史日志。
 
 生产 S3 冒烟对象不自动删除，记录其 key、file_id 和 hash，后续纳入明确的 GC 流程。
 
@@ -1108,8 +1023,6 @@ sqlite3 "$TGFILE_DB" "PRAGMA quick_check;"
 
 如果上线前移走了持久化 L2 缓存，回滚时优先保持缓存禁用或使用空目录；数据库和后端块可独立完成读取验证后，才允许恢复旧缓存目录。
 
-tgc/multipart 若因紧急情况需要临时恢复，只能随旧镜像一起回滚；它们没有独立数据迁移步骤。
-
 ## 10. 最终验收标准
 
 必须全部满足：
@@ -1120,7 +1033,7 @@ tgc/multipart 若因紧急情况需要临时恢复，只能随旧镜像一起回
 4. S3 PUT/GET/HEAD、多块和 Range 测试通过。
 5. 直链 canonical key 正常，畸形 key 永不 panic。
 6. 停服执行 `/defauls/` forward/reverse 后，原 URL 和内容 hash 不变。
-7. tgc 代码、multipart route、README 和 release 构建全部清理。
+7. Cobra 子命令参数隔离、帮助和退出码验证通过。
 8. S3 已存在路径 PUT 不调用 BlockIO、不覆盖内容。
 9. 短读不能生成 Ready 文件映射。
 10. 禁用或清空缓存后存量文件仍可读取。
@@ -1131,7 +1044,7 @@ tgc/multipart 若因紧急情况需要临时恢复，只能随旧镜像一起回
 ## 11. 推荐 PR 拆分
 
 1. PR-1：C-01、C-02、C-03、测试基础。
-2. PR-2：C-05 删除 tgc/multipart、清理 Action/README/依赖。
+2. PR-2：C-05 Cobra 子命令拆分、Docker/开发入口和命令测试。
 3. PR-3：C-06、C-07，完成 S3 上传核心加固。
 4. PR-4：C-08、C-09。
 5. PR-5：C-10。

@@ -185,7 +185,7 @@ trap cleanup INT TERM EXIT
 echo "[tgfile] starting server with config=$CONFIG_PATH"
 (
   cd "$ROOT"
-  exec "$GO" run ./cmd -config="$CONFIG_PATH"
+  exec "$GO" run ./cmd serve --config="$CONFIG_PATH"
 ) &
 server_pid="$!"
 server_started="$(proc_start_time "$server_pid")"

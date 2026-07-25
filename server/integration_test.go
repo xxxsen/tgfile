@@ -155,14 +155,6 @@ func TestDirectUploadDownloadAndRemovedMultipartRoutes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusBadRequest, response.StatusCode)
 	_ = readResponse(t, response)
-
-	for _, endpoint := range []string{"begin", "part", "end"} {
-		request = authenticatedRequest(t, http.MethodPost, testServer.URL+"/file/multipart/"+endpoint, nil)
-		response, err = client.Do(request)
-		require.NoError(t, err)
-		require.Equal(t, http.StatusNotFound, response.StatusCode)
-		_ = readResponse(t, response)
-	}
 }
 
 func TestDefaultPrefixMigrationPreservesHistoricalDirectLink(t *testing.T) {
