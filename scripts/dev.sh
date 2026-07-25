@@ -137,9 +137,13 @@ generate_config() {
   },
   "s3": {
     "enable": true,
-    "bucket": [
-      "$BUCKET"
-    ]
+    "buckets": [
+      {
+        "name": "$BUCKET",
+        "acl": "public-read"
+      }
+    ],
+    "max_object_size": 5368709120
   },
   "rotate_stream": 0,
   "webdav": {

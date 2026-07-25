@@ -5,7 +5,9 @@ import (
 	"crypto/md5" //nolint:gosec // Persisted legacy checksum format; not used for security.
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"time"
@@ -13,17 +15,31 @@ import (
 	"github.com/xxxsen/tgfile/blockio"
 	"github.com/xxxsen/tgfile/dao"
 	"github.com/xxxsen/tgfile/dao/cache"
+	"github.com/xxxsen/tgfile/directory"
 	"github.com/xxxsen/tgfile/entity"
 
 	"github.com/xxxsen/common/database"
+	"github.com/xxxsen/common/idgen"
 	"github.com/xxxsen/common/logutil"
 	"go.uber.org/zap"
 )
+
+var errInvalidUploadDeleteReference = errors.New("upload part returned an invalid deletion reference")
+
+// MD5CompatibilitySize is the digest size required by persisted and S3 compatibility fields.
+const MD5CompatibilitySize = md5.Size
+
+// NewMD5CompatibilityHash returns the protocol compatibility hash used by legacy storage and S3.
+func NewMD5CompatibilityHash() hash.Hash {
+	return md5.New() //nolint:gosec // Persisted legacy and S3 protocol fields require MD5 compatibility.
+}
 
 type defaultFileManager struct {
 	fileDao        dao.IFileDao
 	filePartDao    dao.IFilePartDao
 	fileMappingDao dao.IFileMappingDao
+	dbc            database.IDatabase
+	objectDir      directory.ITransactionalDirectory
 	bkio           blockio.IBlockIO
 	ioc            IFileIOCache
 }
@@ -202,18 +218,35 @@ func (d *defaultFileManager) CreateFilePart(ctx context.Context, fileid uint64, 
 	if partid < 0 || partid > maxFilePartCount {
 		return fmt.Errorf("%w: %d", ErrInvalidFilePart, partid)
 	}
-	md5v := md5.New() //nolint:gosec // Persisted legacy checksum format; not used for security.
+	md5v := NewMD5CompatibilityHash()
 	r = io.TeeReader(r, md5v)
-	fileKey, err := d.bkio.Upload(ctx, r)
+	upload, err := d.bkio.Upload(ctx, r)
 	if err != nil {
 		return fmt.Errorf("upload part failed, err:%w", err)
+	}
+	if upload == nil || upload.FileKey == "" || upload.DeleteRef == "" || upload.UploadedAt <= 0 {
+		return errInvalidUploadDeleteReference
 	}
 	if _, err := d.filePartDao.CreateFilePart(ctx, &entity.CreateFilePartRequest{
 		FileId:      fileid,
 		FilePartId:  int32(partid),
-		FileKey:     fileKey,
+		FileKey:     upload.FileKey,
 		FilePartMd5: hex.EncodeToString(md5v.Sum(nil)),
+		BackendKind: d.bkio.Name(),
+		DeleteRef:   upload.DeleteRef,
+		UploadedAt:  upload.UploadedAt,
 	}); err != nil {
+		compensationContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), deleteTimeout)
+		deleteErr := d.bkio.DeleteBlocks(compensationContext, []string{upload.DeleteRef})
+		cancel()
+		if deleteErr != nil {
+			logutil.GetLogger(ctx).Error(
+				"compensate uploaded block failed",
+				zap.Error(deleteErr),
+				zap.Uint64("file_id", fileid),
+				zap.Int64("part_id", partid),
+			)
+		}
 		return fmt.Errorf("create file part record: %w", err)
 	}
 	return nil
@@ -232,7 +265,7 @@ func (d *defaultFileManager) FinishFileCreate(ctx context.Context, fileid uint64
 		md5v = fps.List[0].FilePartMd5
 	}
 	if len(fps.List) > 1 {
-		h := md5.New() //nolint:gosec // Persisted legacy checksum format; not used for security.
+		h := NewMD5CompatibilityHash()
 		for _, item := range fps.List {
 			_, _ = h.Write([]byte(item.FilePartMd5))
 		}
@@ -332,17 +365,39 @@ func (d *defaultFileManager) internalGetFileMapping(
 	return rsp.Item, true, nil
 }
 
-func (d *defaultFileManager) cleanUnRefFileIdList(ctx context.Context, fidlist []uint64) error {
+func (d *defaultFileManager) cleanUnRefFileIdList(ctx context.Context, fidlist []uint64) (int64, error) {
+	var cleaned int64
 	for _, fid := range fidlist {
+		hasDeleteState, err := d.fileHasDeleteState(ctx, fid)
+		if err != nil {
+			return cleaned, err
+		}
+		if hasDeleteState {
+			continue
+		}
 		if _, err := d.filePartDao.DeleteFilePart(ctx, &entity.DeleteFilePartRequest{FileId: []uint64{fid}}); err != nil {
-			return fmt.Errorf("delete parts for file %d: %w", fid, err)
+			return cleaned, fmt.Errorf("delete parts for file %d: %w", fid, err)
 		}
 		if _, err := d.fileDao.DeleteFile(ctx, &entity.DeleteFileRequest{FileId: []uint64{fid}}); err != nil {
-			return fmt.Errorf("delete file %d: %w", fid, err)
+			return cleaned, fmt.Errorf("delete file %d: %w", fid, err)
 		}
+		cleaned++
 		logutil.GetLogger(ctx).Info("purge file succ", zap.Uint64("file_id", fid))
 	}
-	return nil
+	return cleaned, nil
+}
+
+func (d *defaultFileManager) fileHasDeleteState(ctx context.Context, fileID uint64) (bool, error) {
+	var count int64
+	if err := queryRow(
+		ctx,
+		d.dbc,
+		"SELECT COUNT(*) FROM tg_file_part_delete_state_tab WHERE file_id = ?",
+		fileID,
+	).Scan(&count); err != nil {
+		return false, fmt.Errorf("count file delete states: %w", err)
+	}
+	return count != 0, nil
 }
 
 func (d *defaultFileManager) readUnRefFileIdList(ctx context.Context, limitMtime int64) ([]uint64, error) {
@@ -390,17 +445,24 @@ func (d *defaultFileManager) PurgeFile(ctx context.Context, before *int64) (int6
 	if err != nil {
 		return 0, fmt.Errorf("read un-ref fid list failed, err:%w", err)
 	}
-	if err := d.cleanUnRefFileIdList(ctx, fidList); err != nil {
+	cleaned, err := d.cleanUnRefFileIdList(ctx, fidList)
+	if err != nil {
 		return 0, fmt.Errorf("clean un-ref fid list failed, err:%w", err)
 	}
-	return int64(len(fidList)), nil
+	return cleaned, nil
 }
 
 func NewFileManager(dbc database.IDatabase, bkio blockio.IBlockIO, ioc IFileIOCache) IFileManager {
+	objectDir, err := directory.NewDBDirectory(dbc, "tg_file_mapping_tab", idgen.Default().NextId)
+	if err != nil {
+		panic(err)
+	}
 	return &defaultFileManager{
 		fileDao:        cache.NewFileDao(dao.NewFileDao(dbc)),
 		filePartDao:    cache.NewFilePartDao(dao.NewFilePartDao(dbc)),
 		fileMappingDao: dao.NewFileMappingDao(dbc),
+		dbc:            dbc,
+		objectDir:      objectDir,
 		bkio:           bkio,
 		ioc:            ioc,
 	}

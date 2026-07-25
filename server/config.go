@@ -3,8 +3,7 @@ package server
 import "github.com/xxxsen/tgfile/filemgr"
 
 type config struct {
-	s3Enable     bool
-	s3Buckets    []string
+	s3           S3Options
 	userMap      map[string]string
 	webdavEnable bool
 	webdavRoot   string
@@ -13,10 +12,27 @@ type config struct {
 
 type Option func(c *config)
 
-func WithEnableS3(enable bool, bks []string) Option {
+type BucketACL string
+
+const (
+	BucketACLPrivate    BucketACL = "private"
+	BucketACLPublicRead BucketACL = "public-read"
+)
+
+type S3BucketOptions struct {
+	Name string
+	ACL  BucketACL
+}
+
+type S3Options struct {
+	Enabled       bool
+	Buckets       []S3BucketOptions
+	MaxObjectSize int64
+}
+
+func WithS3(options S3Options) Option {
 	return func(c *config) {
-		c.s3Enable = enable
-		c.s3Buckets = bks
+		c.s3 = options
 	}
 }
 

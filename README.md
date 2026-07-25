@@ -1,187 +1,184 @@
-tgfile
-===
+# tgfile
 
-简易文件服务器, 将telegram当成无限存储使用。
-
-基本原理: 文件上传的时候, 将文件切成多个块(单个块20M)并上传至telegram, 本地仅存储这块在telegram对应的文件id。
+tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块上传到 Telegram，SQLite
+保存文件、分片、路径、S3 元数据和可删除 message 引用；对外提供 S3、文件直链、WebDAV
+和逻辑备份接口。
 
 ## 配置
 
-### 服务端
+下面是 Telegram + S3 的最小完整示例：
 
-**基础配置:**
-
-```jsonc
+```json
 {
-	"bind": ":9901", //监听地址
-	"log_info": { //日志信息
-		"console": true,
-		"level": "debug"
-	},
-	"db_file": "/data/data.db", //索引存储位置
-	"bot_info": { //用于存储文件块的机器人配置
-		"chatid": 12345, //用户自己的chatid, 通过其他机器人获取到自己的chatid, 然后自己再主动跟机器人发起会话, 后面上传的文件会发给这个chatid进行存储 
-		"token": "abc"
-	},
-	"user_info": { //用户信息, 上传接口需要鉴权
-		"abc": "123"
-	},
-	"s3": {
-		"enable": true, //启用s3协议支持, 这里配置的是要开启的s3 bucket名
-		"bucket":[ 
-			"hackmd"
-		]
-	},
-	"webdav": { //启用webdav支持
-		"enable": true,
-		"root": "/"    //指定映射到底层存储的路径, 与接口上的'/webdav'不是一个东西
-	}
-	//其他配置项
+  "bind": ":9901",
+  "log_info": {
+    "console": true,
+    "level": "info"
+  },
+  "db_file": "/data/data.db",
+  "bot_kind": "telegram",
+  "bot_config": {
+    "chatid": 12345,
+    "token": "telegram-bot-token",
+    "upload_min_interval_ms": 1000
+  },
+  "user_info": {
+    "access-key": "secret-key"
+  },
+  "s3": {
+    "enable": true,
+    "buckets": [
+      {
+        "name": "private-data",
+        "acl": "private"
+      },
+      {
+        "name": "public-assets",
+        "acl": "public-read"
+      }
+    ],
+    "max_object_size": 5368709120
+  },
+  "webdav": {
+    "enable": false,
+    "root": "/"
+  },
+  "io_cache": {
+    "enable_l1_cache": true,
+    "l1_cache_size": 16777216,
+    "l1_key_size_limit": 4096,
+    "enable_l2_cache": true,
+    "l2_cache_size": 5368709120,
+    "l2_key_size_limit": 524288,
+    "l2_cache_dir": "/cache"
+  }
 }
 ```
 
-**io缓存:**
+bucket ACL：
 
-由于底层对接的是网络io(目前为telegram), 速率相对较慢, 一个小文件, 获取链接+下载完成大概需要1~2s的时间, 为了加快小文件下载过程, 可以考虑加上缓存配置
+- `private`：所有 S3 操作都需要认证；
+- `public-read`：仅对象 GET/HEAD 可匿名，List、PUT、Copy 和 Delete 仍需认证。
 
-```jsonc
-{ 
-    "io_cache": { //与`bind`同级
-        "enable_l1_cache": true, //启用l1缓存
-        "l1_cache_size": 16777216, //l1缓存占用(内存), 16M
-        "l1_key_size_limit": 4096, //4K, 文件大小小于该值才可以被加入l1缓存
-        "enable_l2_cache": true, //启用l2缓存
-        "l2_cache_size": 5368709120, //l2缓存占用(磁盘), 5G
-        "l2_key_size_limit": 524288, //512K, 文件大小小于该值才可以被加入l2缓存
-        "l2_cache_dir": "/tmp/tgfile-cache" //l2缓存的数据存储目录
-    }
-}
+同一实例的 Telegram 上传请求串行执行，相邻上传的开始时间至少间隔配置值；删除请求也
+串行执行，相邻删除的开始时间至少间隔一秒。因此 `bot_config.upload_min_interval_ms`
+不能小于 `1000`。配置不会兼容旧的单一 `s3.bucket` 字段，bucket 必须显式写入
+`s3.buckets` 并指定 ACL。
+
+启动前可执行无副作用校验；该命令不会初始化日志、SQLite、Telegram、缓存或 HTTP：
+
+```bash
+./tgfile check-config --config=/config/config.json
 ```
 
 ## 运行
 
-**服务端**使用docker运行
+Docker Compose 示例：
 
-```
+```yaml
 services:
   tgfile:
     image: xxxsen/tgfile:latest
-    container_name: "tgfile"
+    container_name: tgfile
     restart: always
     volumes:
-      - "./config:/config"
-      - "./data:/data"
+      - ./config:/config:ro
+      - ./data:/data
+      - ./cache:/cache
     expose:
-      - 9901
+      - "9901"
     command: serve --config=/config/config.json
 ```
 
-- config目录: 存储配置文件
-- data目录: 存储索引信息
+首次启动和升级启动都会根据嵌入式 `migrations/NNNN_name.sql` 更新 SQLite。无法识别的
+旧 schema、migration checksum 变化或 schema 漂移会安全失败，不会重建业务数据。
 
-文件上传统一使用 S3 接口。下面示例中的 access key 和 secret key 对应服务端
-`user_info` 中的用户名和密码：
+## S3 使用
 
-```shell
-AWS_ACCESS_KEY_ID=abc \
-AWS_SECRET_ACCESS_KEY=123 \
-aws --endpoint-url http://127.0.0.1:9901 \
-  s3 cp ./README.md s3://hackmd/README.md
+`user_info` 的 key/value 分别作为 access key 和 secret key：
+
+```bash
+export AWS_ACCESS_KEY_ID=access-key
+export AWS_SECRET_ACCESS_KEY=secret-key
+export AWS_DEFAULT_REGION=us-east-1
+
+aws --endpoint-url https://your-tgfile.example \
+  s3 cp ./README.md s3://private-data/README.md
+
+aws --endpoint-url https://your-tgfile.example \
+  s3api head-object --bucket private-data --key README.md
+
+aws --endpoint-url https://your-tgfile.example \
+  s3api copy-object \
+  --bucket private-data \
+  --copy-source private-data/README.md \
+  --key archive/README.md
+
+aws --endpoint-url https://your-tgfile.example \
+  s3api delete-object --bucket private-data --key archive/README.md
 ```
 
-可以通过相同 endpoint 的 `s3 cp`、`s3api head-object` 读取文件和元数据。
+支持的 S3 能力：
 
-### 离线维护命令
+- ListBuckets、HeadBucket、GetBucketLocation；
+- ListObjectsV2（prefix、delimiter、分页、URL encoding）；
+- PutObject 标准覆盖与条件写；
+- GetObject、HeadObject、Range 和 HTTP 条件请求；
+- CopyObject COPY/REPLACE；
+- DeleteObject、DeleteObjects；
+- SigV4 header、presigned URL、signed/unsigned aws-chunked trailer；
+- Content-MD5 以及 CRC32、CRC32C、CRC64NVME、SHA1、SHA256 checksum。
 
-离线维护子命令不会启动 HTTP 服务、Telegram、缓存或上传逻辑。审计生产数据库前仍建议
-备份 SQLite 数据库及其 `-wal`、`-shm` 文件，并将报告保存到受限目录。
+不支持 bucket 创建/删除、对象 ACL、版本控制、multipart upload、tagging 和 lifecycle。
 
-只读审计：
+显式 S3 删除或覆盖移除内容的最后一个路径引用后，后台 worker 会在 Telegram 时限内尝试
+删除对应 message。逻辑删除成功仍保留 File、Part 和状态记录用于审计。
 
-```shell
+## 其他接口
+
+| 路由 | 方法 | 认证 | 说明 |
+|---|---|---|---|
+| `/file/upload` | POST | Basic | 直链上传并返回稳定 key |
+| `/file/download/:key` | GET | 匿名 | 直链下载，支持 Range |
+| `/file/meta/:key` | GET | 匿名 | 直链元数据 |
+| `/file/purge` | POST | Basic | 清理没有删除状态的旧无引用元数据 |
+| `/backup/export` | GET | Basic | 导出逻辑文件树 tar.gz |
+| `/backup/import` | POST | Basic | 导入逻辑文件树 |
+| `/static/*` | GET | Basic | 浏览目录树 |
+| `/webdav/*` | WebDAV | Basic | 映射 `webdav.root` |
+
+## 离线维护
+
+只读审计不会执行 migration 或启动在线依赖：
+
+```bash
 ./tgfile audit \
   --config=/config/config.json \
   --output=/maintenance/audit.json
 ```
 
-检查一个历史直链 key 是否符合正式格式：
+检查直链 key：
 
-```shell
-./tgfile check-key \
-  --key='0123456789abcdef-example.txt'
+```bash
+./tgfile check-key --key='0123456789abcdef-example.txt'
 ```
 
-### 本地开发
+## 本地开发
 
-安装 Go 1.25.12 后，可通过下面的命令快速启动本地测试服务器：
+项目使用 Go 1.25.12：
 
-```shell
+```bash
 make dev
-```
-
-默认服务地址为 `http://127.0.0.1:9901`，S3 bucket 为 `hackmd`，开发账号为
-`dev / dev-secret`。开发服务使用 `.dev-data/` 下独立的 SQLite 数据库和本地文件块，
-不会连接 Telegram，也不会读取或修改正式配置。按 `Ctrl+C` 会停止服务，开发数据会保留。
-
-可以通过 `TGFILE_DEV_HOST`、`TGFILE_DEV_PORT`、`TGFILE_DEV_DATA_DIR`、`TGFILE_DEV_BUCKET`、
-`TGFILE_DEV_USERNAME` 和 `TGFILE_DEV_PASSWORD` 覆盖默认值。也可以执行
-`make dev CONFIG=path/to/config.json` 使用自定义配置；此时若配置使用了其他端口，需要同时
-设置 `TGFILE_DEV_PORT`，以便启动脚本进行就绪检测。
-
-提交代码前执行完整质量门禁：
-
-```shell
 make install-golangci-lint
 make check
 ```
+
+`make dev` 默认使用 `.dev-data/` 中的 localfile 和 SQLite，不连接 Telegram。开发参数可由
+`TGFILE_DEV_HOST`、`TGFILE_DEV_PORT`、`TGFILE_DEV_DATA_DIR`、`TGFILE_DEV_BUCKET`、
+`TGFILE_DEV_USERNAME` 和 `TGFILE_DEV_PASSWORD` 覆盖。
 
 ## 设计文档
 
 - [系统架构](docs/01-architecture.md)
 - [数据与存储模型](docs/02-data-and-storage-model.md)
 - [核心流程与接口设计](docs/03-core-flows-and-api.md)
-
-## 接口信息
-
-**基础接口**
-
-|API|Method|鉴权|备注|
-|---|---|---|---|
-|/file/upload|POST|true|文件上传|
-|/file/download/:key|GET|false|下载文件, key通过/file/upload获取|
-|/file/meta/:key|GET|false|获取文件信息, key通过/file/upload获取|
-
-**备份接口**
-
-|API|Method|鉴权|备注|
-|---|---|---|---|
-|/backup/export|GET|true|将当前存储的所有文件打包成tar.gz并导出|
-|/backup/import|POST|true|将export导出的tar.gz文件导入到新的实例中|
-
-**文件枚举**
-
-|API|Method|鉴权|备注|
-|---|---|---|---|
-|/static|GET|true|展示目录文件列表, 类似`python3 -m http.server 8000`|
-
-**S3接口**
-
-目前S3接口实现了基本的GetObject/HeadObject/PutObject接口。
-
-|API|Method|鉴权|备注|
-|---|---|---|---|
-|/:bucket|GET|false|获取bucket信息, 没实际作用|
-|/:bucket/:object|PUT|true|文件上传|
-|/:bucket/:object|GET|false|文件下载|
-|/:bucket/:object|HEAD|false|获取文件元数据，不读取文件内容|
-
-**Webdav接口**
-
-|API|Method|鉴权|备注|
-|---|---|---|---|
-|/webdav|GET/...|true|起始路径为'/webdav', 具体底层映射到哪个路径, 由配置的root决定|
-
-可以通过下面命令验证:
-```shell
-curl -X PROPFIND -v https://your_username_here:your_pwd_here@your_host_here.com/webdav/ -L
-```

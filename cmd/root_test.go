@@ -89,11 +89,36 @@ func TestRootCommandRequiresSubcommand(t *testing.T) {
 func TestRootCommandHelpListsOnlyBusinessCommands(t *testing.T) {
 	code, stdout, stderr := executeForTest(t, "--help")
 	require.Zero(t, code, stderr)
-	for _, command := range []string{"serve", "audit", "check-key"} {
+	for _, command := range []string{"serve", "audit", "check-key", "check-config"} {
 		require.Contains(t, stdout, command)
 	}
 	require.NotContains(t, stdout, "migrate-default-prefix")
 	require.NotContains(t, stdout, "completion")
+}
+
+func TestCheckConfigHasNoDatabaseOrNetworkSideEffects(t *testing.T) {
+	directory := t.TempDir()
+	databaseFile := filepath.Join(directory, "must-not-be-created.db")
+	configFile := filepath.Join(directory, "config.json")
+	token := t.Name()
+	require.NoError(t, os.WriteFile(configFile, []byte(fmt.Sprintf(`{
+		"db_file":%q,
+		"bot_kind":"telegram",
+		"bot_config":{"chatid":1,"token":%q,"upload_min_interval_ms":1000},
+		"s3":{
+			"enable":true,
+			"buckets":[{"name":"private-data","acl":"private"}],
+			"max_object_size":5368709120
+		}
+	}`, databaseFile, token)), 0o600))
+
+	code, stdout, stderr := executeForTest(t, "check-config", "--config="+configFile)
+
+	require.Zero(t, code, stderr)
+	require.Empty(t, stdout)
+	require.Empty(t, stderr)
+	require.NoFileExists(t, databaseFile)
+	require.NotContains(t, stdout+stderr, token)
 }
 
 func TestRetiredMigrationCommandIsUnavailable(t *testing.T) {

@@ -1,10 +1,15 @@
 package directory
 
-import "context"
+import (
+	"context"
+
+	"github.com/xxxsen/common/database"
+)
 
 type DirectoryScanCallbackFunc func(ctx context.Context, res []IDirectoryEntry) (bool, error)
 
 type IDirectoryEntryIdentity interface {
+	EntryID() uint64
 	RefData() string
 	Name() string
 	IsDir() bool
@@ -39,4 +44,38 @@ type IDirectoryReader interface {
 type IDirectory interface {
 	IDirectoryWriter
 	IDirectoryReader
+}
+
+type ITransactionReader interface {
+	Stat(ctx context.Context, filename string) (IDirectoryEntry, bool, error)
+}
+
+type ITransactionMutation interface {
+	Create(ctx context.Context, filename string, size int64, refdata string) (IDirectoryEntry, error)
+	Remove(ctx context.Context, filename string) ([]IDirectoryEntry, error)
+	Touch(ctx context.Context, filename string, mtime int64) error
+}
+
+type ITransactionTransfer interface {
+	Copy(ctx context.Context, source, destination string, overwrite bool) ([]EntryCopy, []IDirectoryEntry, error)
+	Move(ctx context.Context, source, destination string, overwrite bool) ([]IDirectoryEntry, error)
+}
+
+type ITransaction interface {
+	ITransactionReader
+	ITransactionMutation
+	ITransactionTransfer
+	QueryExecer() database.IQueryExecer
+}
+
+type EntryCopy struct {
+	Source      IDirectoryEntry
+	Destination IDirectoryEntry
+}
+
+type TransactionFunc func(ctx context.Context, tx ITransaction) error
+
+type ITransactionalDirectory interface {
+	IDirectory
+	WithTransaction(ctx context.Context, callback TransactionFunc) error
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/xxxsen/common/utils"
 
@@ -16,7 +17,10 @@ import (
 	"github.com/google/uuid"
 )
 
-var errInvalidBlockValue = errors.New("invalid in-memory block value")
+var (
+	errInvalidBlockValue          = errors.New("invalid in-memory block value")
+	errEmptyMemoryDeleteReference = errors.New("empty in-memory delete reference")
+)
 
 type memBlockIO struct {
 	bksize int64
@@ -27,14 +31,14 @@ func (m *memBlockIO) MaxFileSize() int64 {
 	return m.bksize
 }
 
-func (m *memBlockIO) Upload(_ context.Context, r io.Reader) (string, error) {
+func (m *memBlockIO) Upload(_ context.Context, r io.Reader) (*blockio.UploadResult, error) {
 	raw, err := io.ReadAll(r)
 	if err != nil {
-		return "", fmt.Errorf("read block content: %w", err)
+		return nil, fmt.Errorf("read block content: %w", err)
 	}
 	key := uuid.NewString()
 	m.m.Store(key, raw)
-	return key, nil
+	return &blockio.UploadResult{FileKey: key, DeleteRef: key, UploadedAt: time.Now().UnixMilli()}, nil
 }
 
 func (m *memBlockIO) Download(_ context.Context, filekey string, pos int64) (io.ReadCloser, error) {
@@ -54,6 +58,16 @@ func (m *memBlockIO) Download(_ context.Context, filekey string, pos int64) (io.
 
 func (m *memBlockIO) Name() string {
 	return "mem"
+}
+
+func (m *memBlockIO) DeleteBlocks(_ context.Context, deleteRefs []string) error {
+	for _, ref := range deleteRefs {
+		if ref == "" {
+			return errEmptyMemoryDeleteReference
+		}
+		m.m.Delete(ref)
+	}
+	return nil
 }
 
 func New(bksize int64) (blockio.IBlockIO, error) {

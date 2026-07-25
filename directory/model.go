@@ -21,6 +21,10 @@ func (e *directoryEntryTab) RefData() string {
 	return e.RefData_
 }
 
+func (e *directoryEntryTab) EntryID() uint64 {
+	return e.EntryId_
+}
+
 func (e *directoryEntryTab) Name() string {
 	return e.FileName_
 }

@@ -6,17 +6,31 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"time"
 )
 
 var ErrTypeNotFound = errors.New("block io type not found")
 
-// IBlockIO 文件系统仅做简单的上传下载操作, 指定位置下载等能力交给外部实现
-// 这样后续扩展/调试都会相对容易
+// IBlockIO stores opaque blocks and deletes only the backend references
+// returned by Upload. File and mapping semantics remain in FileManager.
 type IBlockIO interface {
 	Name() string
 	MaxFileSize() int64
-	Upload(ctx context.Context, r io.Reader) (string, error)
+	Upload(ctx context.Context, r io.Reader) (*UploadResult, error)
 	Download(ctx context.Context, filekey string, pos int64) (io.ReadCloser, error)
+	DeleteBlocks(ctx context.Context, deleteRefs []string) error
+}
+
+type UploadResult struct {
+	FileKey    string
+	DeleteRef  string
+	UploadedAt int64
+}
+
+type DeleteFailure interface {
+	error
+	DeleteStatusCode() int
+	DeleteRetryAfter() time.Duration
 }
 
 type CreateFunc func(args any) (IBlockIO, error)

@@ -8,8 +8,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	_ "github.com/xxxsen/common/webapi/auth"
-
 	"github.com/xxxsen/tgfile/blockio"
 	_ "github.com/xxxsen/tgfile/blockio/register"
 	"github.com/xxxsen/tgfile/config"
@@ -35,6 +33,9 @@ func newServeCommand(ctx context.Context) *cobra.Command {
 			serviceConfig, err := config.Parse(configFile)
 			if err != nil {
 				return fmt.Errorf("parse config: %w", err)
+			}
+			if err := serviceConfig.Validate(); err != nil {
+				return fmt.Errorf("validate config: %w", err)
 			}
 			ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 			defer stop()
@@ -100,7 +101,7 @@ func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger 
 	appLogger.Info(
 		"-- s3 feature",
 		zap.Bool("enable", serviceConfig.S3.Enable),
-		zap.Strings("buckets", serviceConfig.S3.Bucket),
+		zap.Strings("buckets", serviceConfig.S3.BucketNames()),
 	)
 	appLogger.Info(
 		"-- webdav feature",
@@ -120,7 +121,7 @@ func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger 
 	)
 	httpServer, err := server.New(
 		serviceConfig.Bind,
-		server.WithEnableS3(serviceConfig.S3.Enable, serviceConfig.S3.Bucket),
+		server.WithS3(toServerS3Options(serviceConfig.S3)),
 		server.WithUser(serviceConfig.UserInfo),
 		server.WithEnableWebdav(serviceConfig.Webdav.Enable, serviceConfig.Webdav.Root),
 		server.WithFileManager(fileManager),
@@ -129,10 +130,39 @@ func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger 
 		return fmt.Errorf("init server: %w", err)
 	}
 	appLogger.Info("init server succ, start it...")
-	if err := httpServer.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+	runContext, cancel := context.WithCancel(ctx)
+	workerDone := make(chan error, 1)
+	go func() {
+		workerDone <- fileManager.RunBlockDeleteWorker(runContext)
+	}()
+	if err := httpServer.Run(runContext); err != nil && !errors.Is(err, context.Canceled) {
+		cancel()
+		workerErr := <-workerDone
+		return errors.Join(fmt.Errorf("serve HTTP: %w", err), workerErr)
+	}
+	cancel()
+	if err := <-workerDone; err != nil {
+		return fmt.Errorf("run block delete worker: %w", err)
+	}
+	if err := runContext.Err(); err != nil && !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("serve HTTP: %w", err)
 	}
 	return nil
+}
+
+func toServerS3Options(input config.S3Config) server.S3Options {
+	buckets := make([]server.S3BucketOptions, 0, len(input.Buckets))
+	for _, bucket := range input.Buckets {
+		buckets = append(buckets, server.S3BucketOptions{
+			Name: bucket.Name,
+			ACL:  server.BucketACL(bucket.ACL),
+		})
+	}
+	return server.S3Options{
+		Enabled:       input.Enable,
+		Buckets:       buckets,
+		MaxObjectSize: input.MaxObjectSize,
+	}
 }
 
 func buildFileManager(ctx context.Context, serviceConfig *config.Config) (filemgr.IFileManager, error) {

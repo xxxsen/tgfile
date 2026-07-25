@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -22,13 +23,17 @@ func (f *fakeIO) MaxFileSize() int64 {
 	return 1024 * 1024 * 1024
 }
 
-func (f *fakeIO) Upload(_ context.Context, r io.Reader) (string, error) {
+func (f *fakeIO) Upload(_ context.Context, r io.Reader) (*UploadResult, error) {
 	raw, err := io.ReadAll(r)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	f.data = raw
-	return "test", nil
+	return &UploadResult{FileKey: "test", DeleteRef: "test", UploadedAt: time.Now().UnixMilli()}, nil
+}
+
+func (f *fakeIO) DeleteBlocks(_ context.Context, _ []string) error {
+	return nil
 }
 
 func (f *fakeIO) Download(_ context.Context, filekey string, pos int64) (io.ReadCloser, error) {
@@ -65,7 +70,7 @@ func TestRotateIO(t *testing.T) {
 		}
 		for i := 0; i < 10; i++ {
 			randpos := int64((i*7919 + rotateVal) % maxBytes)
-			rc, err := stream.Download(ctx, key, randpos)
+			rc, err := stream.Download(ctx, key.FileKey, randpos)
 			assert.NoError(t, err)
 			down, err := io.ReadAll(rc)
 			assert.NoError(t, err)

@@ -26,13 +26,13 @@ func (r *rotateIO) MaxFileSize() int64 {
 	return r.impl.MaxFileSize()
 }
 
-func (r *rotateIO) Upload(ctx context.Context, reader io.Reader) (string, error) {
+func (r *rotateIO) Upload(ctx context.Context, reader io.Reader) (*UploadResult, error) {
 	reader = newRotateReadCloser(io.NopCloser(reader), r.rotateVal)
-	key, err := r.impl.Upload(ctx, reader)
+	result, err := r.impl.Upload(ctx, reader)
 	if err != nil {
-		return "", fmt.Errorf("upload rotated block: %w", err)
+		return nil, fmt.Errorf("upload rotated block: %w", err)
 	}
-	return key, nil
+	return result, nil
 }
 
 func (r *rotateIO) Download(ctx context.Context, filekey string, pos int64) (io.ReadCloser, error) {
@@ -42,6 +42,13 @@ func (r *rotateIO) Download(ctx context.Context, filekey string, pos int64) (io.
 	}
 	rc = newRotateReadCloser(rc, -r.rotateVal)
 	return rc, nil
+}
+
+func (r *rotateIO) DeleteBlocks(ctx context.Context, deleteRefs []string) error {
+	if err := r.impl.DeleteBlocks(ctx, deleteRefs); err != nil {
+		return fmt.Errorf("delete rotated blocks: %w", err)
+	}
+	return nil
 }
 
 type rotateReadCloser struct {

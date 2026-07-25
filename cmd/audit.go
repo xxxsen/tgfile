@@ -20,11 +20,14 @@ func newAuditCommand(ctx context.Context) *cobra.Command {
 			if outputFile == "" {
 				return usageError("audit requires --output")
 			}
-			databaseFile, err := maintenance.DatabaseFileFromConfig(configFile)
+			auditConfig, err := maintenance.ReadAuditConfig(configFile)
 			if err != nil {
 				return fmt.Errorf("read audit config: %w", err)
 			}
-			report, err := maintenance.Audit(ctx, databaseFile)
+			report, err := maintenance.AuditWithOptions(ctx, auditConfig.DatabaseFile, maintenance.AuditOptions{
+				S3Buckets:   auditConfig.S3Buckets,
+				BackendKind: auditConfig.BackendKind,
+			})
 			if err != nil {
 				return fmt.Errorf("audit database: %w", err)
 			}
