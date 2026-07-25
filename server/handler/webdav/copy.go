@@ -19,7 +19,11 @@ func (h *WebdavHandler) handleCopy(c *gin.Context) {
 		return
 	}
 	if err := h.fmgr.CopyFileLink(ctx, src, dst, isOverWrite); err != nil {
-		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("rename link failed, src:%s, dst:%s, err:%w", src, dst, err))
+		proxyutil.FailStatus(
+			c,
+			http.StatusInternalServerError,
+			fmt.Errorf("copy link from %q to %q: %w", src, dst, err),
+		)
 		return
 	}
 	c.Status(http.StatusCreated)

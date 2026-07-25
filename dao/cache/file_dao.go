@@ -2,9 +2,11 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	lru "github.com/hashicorp/golang-lru/v2/expirable"
+
 	"github.com/xxxsen/tgfile/cacheapi"
 	cachewrap "github.com/xxxsen/tgfile/cacheapi/adaptor"
 	"github.com/xxxsen/tgfile/dao"
@@ -29,27 +31,44 @@ func NewFileDao(impl dao.IFileDao) dao.IFileDao {
 	}
 }
 
-func (f *fileDao) MarkFileReady(ctx context.Context, req *entity.MarkFileReadyRequest) (*entity.MarkFileReadyResponse, error) {
-	defer f.cache.Del(ctx, req.FileID)
-	return f.IFileDao.MarkFileReady(ctx, req)
+func (f *fileDao) MarkFileReady(
+	ctx context.Context,
+	req *entity.MarkFileReadyRequest,
+) (*entity.MarkFileReadyResponse, error) {
+	defer func() {
+		_ = f.cache.Del(ctx, req.FileID)
+	}()
+	response, err := f.IFileDao.MarkFileReady(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("mark cached file ready: %w", err)
+	}
+	return response, nil
 }
 
-func (f *fileDao) GetFileInfo(ctx context.Context, req *entity.GetFileInfoRequest) (*entity.GetFileInfoResponse, error) {
-	m, err := cacheapi.LoadMany(ctx, f.cache, req.FileIds, func(ctx context.Context, miss []uint64) (map[uint64]*entity.FileInfoItem, error) {
-		res, err := f.IFileDao.GetFileInfo(ctx, &entity.GetFileInfoRequest{
-			FileIds: miss,
-		})
-		if err != nil {
-			return nil, err
-		}
-		rs := make(map[uint64]*entity.FileInfoItem, len(res.List))
-		for _, item := range res.List {
-			rs[item.FileId] = item
-		}
-		return rs, nil
-	})
+func (f *fileDao) GetFileInfo(
+	ctx context.Context,
+	req *entity.GetFileInfoRequest,
+) (*entity.GetFileInfoResponse, error) {
+	m, err := cacheapi.LoadMany(
+		ctx,
+		f.cache,
+		req.FileIds,
+		func(ctx context.Context, miss []uint64) (map[uint64]*entity.FileInfoItem, error) {
+			res, err := f.IFileDao.GetFileInfo(ctx, &entity.GetFileInfoRequest{
+				FileIds: miss,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("read uncached file metadata: %w", err)
+			}
+			rs := make(map[uint64]*entity.FileInfoItem, len(res.List))
+			for _, item := range res.List {
+				rs[item.FileId] = item
+			}
+			return rs, nil
+		},
+	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load file metadata cache: %w", err)
 	}
 	rsp := &entity.GetFileInfoResponse{}
 	for _, fid := range req.FileIds {
@@ -69,5 +88,9 @@ func (f *fileDao) DeleteFile(ctx context.Context, req *entity.DeleteFileRequest)
 		}
 	}()
 
-	return f.IFileDao.DeleteFile(ctx, req)
+	response, err := f.IFileDao.DeleteFile(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("delete cached file metadata: %w", err)
+	}
+	return response, nil
 }

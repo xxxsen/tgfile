@@ -6,5 +6,5 @@ const (
 )
 
 const (
-	defaultEntryFileMode = 0755
+	defaultEntryFileMode = 0o755
 )

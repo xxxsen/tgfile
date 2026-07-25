@@ -4,11 +4,13 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 
 	"github.com/xxxsen/common/webapi/proxyutil"
+
 	"github.com/xxxsen/tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
@@ -16,20 +18,30 @@ import (
 	"go.uber.org/zap"
 )
 
-func (h *BackupHandler) Import(c *gin.Context, ctx context.Context, request interface{}) {
-	req := request.(*model.ImportRequest)
+var (
+	errInvalidImportRequest   = errors.New("invalid import request")
+	errMissingImportStatistic = errors.New("import statistic entry is missing")
+)
+
+func (h *BackupHandler) Import(ctx context.Context, c *gin.Context, request any) {
+	req, ok := request.(*model.ImportRequest)
+	if !ok {
+		proxyutil.FailJson(c, http.StatusInternalServerError, errInvalidImportRequest)
+		return
+	}
 	header := req.File
 	file, err := header.Open()
 	if err != nil {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("open file for import fail, err:%w", err))
 		return
 	}
+	defer logCloseError(ctx, file, "close backup import file")
 	gzReader, err := gzip.NewReader(file)
 	if err != nil {
 		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("treat file as gz stream fail, err:%w", err))
 		return
 	}
-	defer gzReader.Close()
+	defer logCloseError(ctx, gzReader, "close backup gzip reader")
 	// 创建 TAR Reader 解析 tar 结构
 	tarReader := tar.NewReader(gzReader)
 	var retErr error
@@ -64,10 +76,20 @@ func (h *BackupHandler) Import(c *gin.Context, ctx context.Context, request inte
 		return
 	}
 	if !containStatisticFile {
-		proxyutil.FailJson(c, http.StatusBadRequest, fmt.Errorf("no found %s in import file, may be export function not finish", defaultStatisticFileName))
+		proxyutil.FailJson(
+			c,
+			http.StatusBadRequest,
+			fmt.Errorf("%w: %s", errMissingImportStatistic, defaultStatisticFileName),
+		)
 		return
 	}
-	proxyutil.SuccessJson(c, map[string]interface{}{})
+	proxyutil.SuccessJson(c, map[string]any{})
+}
+
+func logCloseError(ctx context.Context, closer io.Closer, message string) {
+	if err := closer.Close(); err != nil {
+		logutil.GetLogger(ctx).Error(message, zap.Error(err))
+	}
 }
 
 func (h *BackupHandler) importOneFile(ctx context.Context, hdr *tar.Header, r *tar.Reader) error {

@@ -33,9 +33,12 @@ func (f *filePartDaoImpl) table() string {
 	return "tg_file_part_tab"
 }
 
-func (f *filePartDaoImpl) CreateFilePart(ctx context.Context, req *entity.CreateFilePartRequest) (*entity.CreateFilePartResponse, error) {
+func (f *filePartDaoImpl) CreateFilePart(
+	ctx context.Context,
+	req *entity.CreateFilePartRequest,
+) (*entity.CreateFilePartResponse, error) {
 	now := time.Now().UnixMilli()
-	data := []map[string]interface{}{
+	data := []map[string]any{
 		{
 			"file_id":       req.FileId,
 			"file_part_id":  req.FilePartId,
@@ -47,31 +50,31 @@ func (f *filePartDaoImpl) CreateFilePart(ctx context.Context, req *entity.Create
 	}
 	sql, args, err := builder.BuildInsert(f.table(), data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build file part insert: %w", err)
 	}
 	_, insertErr := f.dbc.ExecContext(ctx, sql, args...)
 	if insertErr == nil {
-		return nil, insertErr
+		return &entity.CreateFilePartResponse{}, nil
 	}
-	where := map[string]interface{}{
+	where := map[string]any{
 		"file_id":      req.FileId,
 		"file_part_id": req.FilePartId,
 	}
-	update := map[string]interface{}{
+	update := map[string]any{
 		"file_key": req.FileKey,
 		"mtime":    now,
 	}
 	sql, args, err = builder.BuildUpdate(f.table(), where, update)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build duplicate file part update: %w", err)
 	}
 	rs, err := f.dbc.ExecContext(ctx, sql, args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("update duplicate file part: %w", err)
 	}
 	affect, err := rs.RowsAffected()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read updated file part row count: %w", err)
 	}
 	if affect == 0 {
 		return nil, fmt.Errorf("insert on duplicate key update no affect rows, insert err:%w", insertErr)
@@ -79,43 +82,51 @@ func (f *filePartDaoImpl) CreateFilePart(ctx context.Context, req *entity.Create
 	return &entity.CreateFilePartResponse{}, nil
 }
 
-func (f *filePartDaoImpl) GetFilePartInfo(ctx context.Context, req *entity.GetFilePartInfoRequest) (*entity.GetFilePartInfoResponse, error) {
-	where := map[string]interface{}{
+func (f *filePartDaoImpl) GetFilePartInfo(
+	ctx context.Context,
+	req *entity.GetFilePartInfoRequest,
+) (*entity.GetFilePartInfoResponse, error) {
+	where := map[string]any{
 		"file_id":      req.FileId,
 		"file_part_id": req.FilePartId,
 	}
 
 	rs := make([]*entity.FilePartInfoItem, 0, len(req.FilePartId))
 	if err := dbkit.SimpleQuery(ctx, f.dbc, f.table(), where, &rs, dbkit.ScanWithTagName("json")); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query file part info: %w", err)
 	}
 	return &entity.GetFilePartInfoResponse{List: rs}, nil
-
 }
 
-func (f *filePartDaoImpl) DeleteFilePart(ctx context.Context, req *entity.DeleteFilePartRequest) (*entity.DeleteFilePartResponse, error) {
-	where := map[string]interface{}{
+func (f *filePartDaoImpl) DeleteFilePart(
+	ctx context.Context,
+	req *entity.DeleteFilePartRequest,
+) (*entity.DeleteFilePartResponse, error) {
+	where := map[string]any{
 		"file_id in": req.FileId,
 	}
 	sql, args, err := builder.BuildDelete(f.table(), where)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build file part delete: %w", err)
 	}
 	if _, err := f.dbc.ExecContext(ctx, sql, args...); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("delete file parts: %w", err)
 	}
 	return &entity.DeleteFilePartResponse{}, nil
 }
 
-func (f *filePartDaoImpl) ListFilePart(ctx context.Context, req *entity.ListFilePartRequest) (*entity.ListFilePartResponse, error) {
-	where := map[string]interface{}{
+func (f *filePartDaoImpl) ListFilePart(
+	ctx context.Context,
+	req *entity.ListFilePartRequest,
+) (*entity.ListFilePartResponse, error) {
+	where := map[string]any{
 		"file_id": req.FileId,
-		//"_limit":   []uint{uint(req.Offset), uint(req.Limit)}, //不折腾, 简单做, 正常来说都不会有性能问题
+		// "_limit":   []uint{uint(req.Offset), uint(req.Limit)}, //不折腾, 简单做, 正常来说都不会有性能问题
 		"_orderby": "file_part_id asc",
 	}
 	rs := make([]*entity.FilePartInfoItem, 0, 32)
 	if err := dbkit.SimpleQuery(ctx, f.dbc, f.table(), where, &rs, dbkit.ScanWithTagName("json")); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list file parts: %w", err)
 	}
 	return &entity.ListFilePartResponse{List: rs}, nil
 }

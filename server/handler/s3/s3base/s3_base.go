@@ -17,7 +17,7 @@ type S3ErrorMessage struct {
 	Message    string   `xml:"Message"`
 	Key        string   `xml:"Key"`
 	BucketName string   `xml:"BucketName"`
-	Resouce    string   `xml:"Resource"`
+	Resource   string   `xml:"Resource"`
 	RequestId  string   `xml:"RequestId"`
 	HostId     string   `xml:"HostId"`
 }
@@ -49,15 +49,25 @@ func WriteError(c *gin.Context, statuscode int, err error) {
 	traceid := logError(c, statuscode, err)
 	code := ErrInternalService
 	message := "We encountered an internal error. Please try again."
-	if statuscode == http.StatusNotFound {
+	switch statuscode {
+	case http.StatusNotFound:
 		code = ErrFileNotFound
 		message = "The specified key does not exist."
+	case http.StatusConflict:
+		code = ErrOperationAborted
+		message = "A conflicting operation is already in progress or the object already exists."
+	case http.StatusLengthRequired:
+		code = ErrMissingContentSize
+		message = "You must provide the Content-Length HTTP header."
+	case http.StatusBadRequest:
+		code = ErrInvalidRequest
+		message = "The request is invalid."
 	}
 	e := &S3ErrorMessage{
 		Code:      code,
 		Message:   message,
 		Key:       strings.TrimPrefix(c.Param("object"), "/"),
-		Resouce:   c.Request.URL.Path,
+		Resource:  c.Request.URL.Path,
 		RequestId: traceid,
 		HostId:    traceid,
 	}

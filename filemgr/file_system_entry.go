@@ -2,6 +2,7 @@ package filemgr
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -24,7 +25,12 @@ type fileSystemFileEntry struct {
 	fullName       string
 }
 
-func newFileSystemEntry(ctx context.Context, fmgr IFileManager, fullName string, ent *entity.FileLinkMeta) *fileSystemFileEntry {
+func newFileSystemEntry(
+	ctx context.Context,
+	fmgr IFileManager,
+	fullName string,
+	ent *entity.FileLinkMeta,
+) *fileSystemFileEntry {
 	return &fileSystemFileEntry{
 		fmgr:     fmgr,
 		ctx:      ctx,
@@ -45,31 +51,45 @@ func (f *fileSystemFileEntry) tryInitStream() {
 
 func (f *fileSystemFileEntry) Seek(offset int64, whence int) (int64, error) {
 	if f.ent.IsDir {
-		return 0, fmt.Errorf("unable to seek on dir")
+		return 0, ErrDirectoryIO
 	}
 	f.tryInitStream()
 	if f.initErr != nil {
-		return 0, f.initErr
+		return 0, fmt.Errorf("open file system entry: %w", f.initErr)
 	}
-	return f.stream.Seek(offset, whence)
+	position, err := f.stream.Seek(offset, whence)
+	if err != nil {
+		return position, fmt.Errorf("seek file system entry: %w", err)
+	}
+	return position, nil
 }
 
 func (f *fileSystemFileEntry) Read(p0 []byte) (int, error) {
 	if f.ent.IsDir {
-		return 0, fmt.Errorf("unable to read on dir")
+		return 0, ErrDirectoryIO
 	}
 	f.tryInitStream()
 	if f.initErr != nil {
-		return 0, f.initErr
+		return 0, fmt.Errorf("open file system entry: %w", f.initErr)
 	}
-	return f.stream.Read(p0)
+	read, err := f.stream.Read(p0)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return read, fmt.Errorf("read file system entry: %w", err)
+	}
+	if errors.Is(err, io.EOF) {
+		return read, io.EOF
+	}
+	return read, nil
 }
 
 func (f *fileSystemFileEntry) Close() error {
 	if f.stream == nil {
 		return nil
 	}
-	return f.stream.Close()
+	if err := f.stream.Close(); err != nil {
+		return fmt.Errorf("close file system entry: %w", err)
+	}
+	return nil
 }
 
 func (f *fileSystemFileEntry) Name() string {
@@ -90,11 +110,11 @@ func (f *fileSystemFileEntry) Info() (fs.FileInfo, error) {
 
 func (f *fileSystemFileEntry) ReadDir(n int) ([]fs.DirEntry, error) {
 	if !f.ent.IsDir {
-		return nil, fmt.Errorf("unable to read dir on file")
+		return nil, ErrNotDirectory
 	}
 	ents, err := internalReadDir(f.ctx, f.fmgr, f.fullName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read directory %q: %w", f.fullName, err)
 	}
 	if n <= 0 || len(ents) < n {
 		return ents, nil
@@ -116,7 +136,7 @@ func internalReadDir(ctx context.Context, fmgr IFileManager, root string) ([]os.
 		return true, nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("walk directory %q: %w", root, err)
 	}
 	return ents, nil
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/xxxsen/common/webapi/proxyutil"
+
 	"github.com/xxxsen/tgfile/server/httpkit"
 
 	"github.com/gin-gonic/gin"
@@ -30,7 +31,7 @@ func (h *FileHandler) FileDownload(c *gin.Context) {
 		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("open file failed, err:%w", err))
 		return
 	}
-	defer file.Close()
+	defer logCloseError(ctx, file, "close downloaded file")
 	httpkit.SetDefaultDownloadHeader(c, finfo)
 	http.ServeContent(c.Writer, c.Request, strconv.Quote(finfo.FileName), time.UnixMilli(finfo.Mtime), file)
 }

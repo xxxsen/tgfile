@@ -3,22 +3,35 @@ package webdav
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
 	"strings"
 
+	"github.com/xxxsen/common/logutil"
 	"github.com/xxxsen/common/webapi/proxyutil"
+
 	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/server/model"
 
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+)
+
+var (
+	errUnsupportedMethod    = errors.New("unsupported WebDAV method")
+	errDestinationWebRoot   = errors.New("destination is outside WebDAV root")
+	errDirectoryStream      = errors.New("cannot open a stream on a directory")
+	errMKCOLBody            = errors.New("MKCOL request must not contain a body")
+	errPropertyPatchMissing = errors.New("PROPPATCH is not implemented")
 )
 
 func (h *WebdavHandler) Handler(c *gin.Context) {
-	//davRoot: 指定映射到底层存储的路径, 对文件的任何操作均会拼接这个路径
-	//webRoot: 指定外部gin处理的路径
+	// davRoot: 指定映射到底层存储的路径, 对文件的任何操作均会拼接这个路径
+	// webRoot: 指定外部gin处理的路径
 
 	switch c.Request.Method {
 	case http.MethodGet:
@@ -42,9 +55,12 @@ func (h *WebdavHandler) Handler(c *gin.Context) {
 	case "OPTIONS":
 		h.handleOption(c)
 	default:
-		proxyutil.FailStatus(c, http.StatusForbidden, fmt.Errorf("unsupported method:%s", c.Request.Method))
+		proxyutil.FailStatus(
+			c,
+			http.StatusForbidden,
+			fmt.Errorf("%w: %s", errUnsupportedMethod, c.Request.Method),
+		)
 	}
-
 }
 
 type WebdavHandler struct {
@@ -64,16 +80,16 @@ func (h *WebdavHandler) tryBuildDstPath(c *gin.Context) (string, error) {
 	link := c.GetHeader("Destination")
 	uri, err := url.Parse(link)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("parse WebDAV destination %q: %w", link, err)
 	}
 	if !strings.HasPrefix(uri.Path, h.webRoot) {
-		return "", fmt.Errorf("no webroot in dst path, dst:%s", link)
+		return "", fmt.Errorf("%w: %s", errDestinationWebRoot, link)
 	}
 	p := strings.TrimPrefix(uri.Path, h.webRoot)
 	return path.Join(h.davRoot, path.Clean(p)), nil
 }
 
-func NewWebdavHandler(fmgr filemgr.IFileManager, davRoot string, webRoot string) *WebdavHandler {
+func NewWebdavHandler(fmgr filemgr.IFileManager, davRoot, webRoot string) *WebdavHandler {
 	if len(strings.TrimSpace(davRoot)) == 0 {
 		davRoot = "/"
 	}
@@ -91,7 +107,7 @@ func NewWebdavHandler(fmgr filemgr.IFileManager, davRoot string, webRoot string)
 
 func (h *WebdavHandler) initWebdav(root string) error {
 	if err := h.fmgr.CreateFileLink(context.Background(), root, 0, 0, true); err != nil {
-		return err
+		return fmt.Errorf("create WebDAV root %q: %w", root, err)
 	}
 	return nil
 }
@@ -99,11 +115,17 @@ func (h *WebdavHandler) initWebdav(root string) error {
 func (h *WebdavHandler) writeDavResponse(c *gin.Context, res *model.Multistatus) error {
 	c.Status(http.StatusMultiStatus)
 	if _, err := c.Writer.Write([]byte(xml.Header)); err != nil {
-		return err
+		return fmt.Errorf("write WebDAV XML header: %w", err)
 	}
 	raw, _ := xml.Marshal(res)
 	if _, err := c.Writer.Write(raw); err != nil {
-		return err
+		return fmt.Errorf("write WebDAV XML body: %w", err)
 	}
 	return nil
+}
+
+func logCloseError(ctx context.Context, closer io.Closer, message string) {
+	if err := closer.Close(); err != nil {
+		logutil.GetLogger(ctx).Error(message, zap.Error(err))
+	}
 }

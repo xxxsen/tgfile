@@ -3,6 +3,7 @@ package filemgr
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -28,7 +29,12 @@ type defaultFsIO struct {
 	tmpReader io.ReadCloser
 }
 
-func newFileStream(ctx context.Context, bkio blockio.IBlockIO, b2f BlockIdToFileKeyConvertFunc, fsize int64) io.ReadSeekCloser {
+func newFileStream(
+	ctx context.Context,
+	bkio blockio.IBlockIO,
+	b2f BlockIdToFileKeyConvertFunc,
+	fsize int64,
+) io.ReadSeekCloser {
 	return &defaultFsIO{
 		ctx:    ctx,
 		bkio:   bkio,
@@ -39,7 +45,7 @@ func newFileStream(ctx context.Context, bkio blockio.IBlockIO, b2f BlockIdToFile
 }
 
 func (f *defaultFsIO) calcOffset(offset int64, whence int) int64 {
-	cur := int64(f.cursor)
+	cur := f.cursor
 	switch whence {
 	case io.SeekStart:
 		cur = offset
@@ -53,7 +59,7 @@ func (f *defaultFsIO) calcOffset(offset int64, whence int) int64 {
 
 func (f *defaultFsIO) Seek(offset int64, whence int) (int64, error) {
 	if !f.isOpen {
-		return 0, fmt.Errorf("file not in open state")
+		return 0, ErrFileNotOpen
 	}
 	if f.tmpReader != nil {
 		_ = f.tmpReader.Close()
@@ -61,10 +67,10 @@ func (f *defaultFsIO) Seek(offset int64, whence int) (int64, error) {
 	}
 	cur := f.calcOffset(offset, whence)
 	if cur < 0 {
-		return 0, fmt.Errorf("invalid offset, cur:%d", cur)
+		return 0, fmt.Errorf("%w: %d", ErrInvalidOffset, cur)
 	}
 	if cur > f.fsize {
-		return f.fsize, fmt.Errorf("seek over file size, cur:%d, fsz:%d", cur, f.fsize)
+		return f.fsize, fmt.Errorf("%w: offset=%d size=%d", ErrSeekPastEnd, cur, f.fsize)
 	}
 	f.cursor = cur
 	return cur, nil
@@ -75,53 +81,75 @@ func (f *defaultFsIO) retryGetDownloadStream(ctx context.Context, filekey string
 	if err := retry.RetryDo(ctx, 3, 1*time.Second, func(ctx context.Context) error {
 		var err error
 		rc, err = f.bkio.Download(ctx, filekey, pos)
-		return err
+		if err != nil {
+			return fmt.Errorf("download file block: %w", err)
+		}
+		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("retry get stream final failed, err:%w", err)
 	}
 	return rc, nil
-
 }
 
-func (f *defaultFsIO) Read(b []byte) (n int, err error) {
-	defer func() {
-		if err != nil && err != io.EOF {
-			logutil.GetLogger(f.ctx).Error("read file stream failed", zap.Error(err), zap.Int64("cursor", f.cursor), zap.Int64("fsize", f.fsize))
-		}
-	}()
+func (f *defaultFsIO) Read(b []byte) (int, error) {
+	n, err := f.read(b)
+	if err != nil && !errors.Is(err, io.EOF) {
+		logutil.GetLogger(f.ctx).Error(
+			"read file stream failed",
+			zap.Error(err),
+			zap.Int64("cursor", f.cursor),
+			zap.Int64("fsize", f.fsize),
+		)
+	}
+	return n, err
+}
+
+func (f *defaultFsIO) read(b []byte) (int, error) {
 	if !f.isOpen {
-		return 0, fmt.Errorf("file not in open state")
+		return 0, ErrFileNotOpen
 	}
 	if f.tmpReader == nil {
-		//如果cursor已经到了文件末尾, 那么直接返回EOF
-		if f.cursor == f.fsize {
-			return 0, io.EOF
+		if err := f.openCurrentPart(); err != nil {
+			return 0, err
 		}
-		//重新计算当前的位置
-		blkid := f.cursor / f.bkio.MaxFileSize()
-		pos := f.cursor % f.bkio.MaxFileSize()
-		filekey, err := f.b2f(f.ctx, int32(blkid))
-		if err != nil {
-			return 0, fmt.Errorf("unable to convert blockid:%d to fileid, err:%w", blkid, err)
-		}
-		rc, err := f.retryGetDownloadStream(f.ctx, filekey, pos)
-		if err != nil {
-			return 0, fmt.Errorf("open stream fail, err:%w", err)
-		}
-		f.tmpReader = rc
 	}
-	n, err = f.tmpReader.Read(b)
-	if err != nil && err != io.EOF {
-		return 0, err
+	n, err := f.tmpReader.Read(b)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return n, fmt.Errorf("read file part stream: %w", err)
 	}
 	if n > 0 {
 		f.cursor += int64(n)
 	}
-	if err == io.EOF {
+	if errors.Is(err, io.EOF) {
 		_ = f.tmpReader.Close()
 		f.tmpReader = nil
 	}
 	return n, nil
+}
+
+func (f *defaultFsIO) openCurrentPart() error {
+	if f.cursor == f.fsize {
+		return io.EOF
+	}
+	blockSize := f.bkio.MaxFileSize()
+	if blockSize <= 0 {
+		return fmt.Errorf("%w: %d", ErrInvalidBlockSize, blockSize)
+	}
+	blockID := f.cursor / blockSize
+	position := f.cursor % blockSize
+	if blockID < 0 || blockID > maxFilePartCount {
+		return fmt.Errorf("%w: %d", ErrInvalidFilePart, blockID)
+	}
+	fileKey, err := f.b2f(f.ctx, int32(blockID))
+	if err != nil {
+		return fmt.Errorf("convert block id %d to file key: %w", blockID, err)
+	}
+	reader, err := f.retryGetDownloadStream(f.ctx, fileKey, position)
+	if err != nil {
+		return fmt.Errorf("open file part stream: %w", err)
+	}
+	f.tmpReader = reader
+	return nil
 }
 
 func (f *defaultFsIO) Close() error {
@@ -131,7 +159,10 @@ func (f *defaultFsIO) Close() error {
 		f.tmpReader = nil
 	}
 	f.isOpen = false
-	return err
+	if err != nil {
+		return fmt.Errorf("close file part stream: %w", err)
+	}
+	return nil
 }
 
 type bytesStream struct {

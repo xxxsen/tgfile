@@ -2,6 +2,7 @@ package blockio
 
 import (
 	"context"
+	"fmt"
 	"io"
 )
 
@@ -25,17 +26,21 @@ func (r *rotateIO) MaxFileSize() int64 {
 	return r.impl.MaxFileSize()
 }
 
-func (rt *rotateIO) Upload(ctx context.Context, r io.Reader) (string, error) {
-	r = newRotateReadCloser(io.NopCloser(r), rt.rotateVal)
-	return rt.impl.Upload(ctx, r)
+func (r *rotateIO) Upload(ctx context.Context, reader io.Reader) (string, error) {
+	reader = newRotateReadCloser(io.NopCloser(reader), r.rotateVal)
+	key, err := r.impl.Upload(ctx, reader)
+	if err != nil {
+		return "", fmt.Errorf("upload rotated block: %w", err)
+	}
+	return key, nil
 }
 
-func (rt *rotateIO) Download(ctx context.Context, filekey string, pos int64) (io.ReadCloser, error) {
-	rc, err := rt.impl.Download(ctx, filekey, pos)
+func (r *rotateIO) Download(ctx context.Context, filekey string, pos int64) (io.ReadCloser, error) {
+	rc, err := r.impl.Download(ctx, filekey, pos)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("download rotated block: %w", err)
 	}
-	rc = newRotateReadCloser(rc, -1*rt.rotateVal)
+	rc = newRotateReadCloser(rc, -r.rotateVal)
 	return rc, nil
 }
 
@@ -45,6 +50,10 @@ type rotateReadCloser struct {
 }
 
 func newRotateReadCloser(rc io.ReadCloser, val int) io.ReadCloser {
+	val %= 256
+	if val < 0 {
+		val += 256
+	}
 	return rotateReadCloser{
 		rc:  rc,
 		val: val,
@@ -55,12 +64,21 @@ func (r rotateReadCloser) Read(p []byte) (int, error) {
 	n, err := r.rc.Read(p)
 	if n > 0 {
 		for i := 0; i < n; i++ {
-			p[i] = uint8((int(p[i]) + r.val) % 256)
+			p[i] = byte((int(p[i]) + r.val) % 256) //nolint:gosec // Expression is normalized to [0, 255].
 		}
 	}
-	return n, err
+	if err != nil && err != io.EOF {
+		return n, fmt.Errorf("read rotated block: %w", err)
+	}
+	if err == io.EOF {
+		return n, io.EOF
+	}
+	return n, nil
 }
 
 func (r rotateReadCloser) Close() error {
-	return r.rc.Close()
+	if err := r.rc.Close(); err != nil {
+		return fmt.Errorf("close rotated block: %w", err)
+	}
+	return nil
 }

@@ -17,30 +17,30 @@ func (e *directoryEntryTab) ToDirectoyEntry() IDirectoryEntry {
 	return e
 }
 
-func (d *directoryEntryTab) RefData() string {
-	return d.RefData_
+func (e *directoryEntryTab) RefData() string {
+	return e.RefData_
 }
 
-func (d *directoryEntryTab) Name() string {
-	return d.FileName_
+func (e *directoryEntryTab) Name() string {
+	return e.FileName_
 }
 
-func (d *directoryEntryTab) Ctime() int64 {
-	return d.Ctime_
+func (e *directoryEntryTab) Ctime() int64 {
+	return e.Ctime_
 }
 
-func (d *directoryEntryTab) Mtime() int64 {
-	return d.Mtime_
+func (e *directoryEntryTab) Mtime() int64 {
+	return e.Mtime_
 }
 
-func (d *directoryEntryTab) Mode() uint32 {
-	return d.FileMode_
+func (e *directoryEntryTab) Mode() uint32 {
+	return e.FileMode_
 }
 
-func (d *directoryEntryTab) Size() int64 {
-	return d.FileSize_
+func (e *directoryEntryTab) Size() int64 {
+	return e.FileSize_
 }
 
-func (d *directoryEntryTab) IsDir() bool {
-	return d.FileKind_ == defaultFileKindDir
+func (e *directoryEntryTab) IsDir() bool {
+	return e.FileKind_ == defaultFileKindDir
 }

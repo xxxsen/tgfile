@@ -58,27 +58,6 @@ tgfile
 }
 ```
 
-### 客户端
-
-非必要配置, 如果想在本地通过命令行上传文件才需要客户端配置, 用户也可以通过其他方式进行文件上传, 如s3, webdav.
-
-```jsonc
-{
-    "schema": "http",
-    "host": "abc.example.com:9901", 
-    "access_key": "aaa", //用户名
-    "secret_key": "1111", //密码,
-    "thread": 5,  //指定上传时分块上传的线程数
-    "timeout": 600 //连接超时时间
-}
-```
-
-客户端搜索配置会在下面几个路径下搜索, 优先级由高到低
-
-- 用户自己指定的配置, 通过--config传入
-- /etc/tgc/tgc_config.json (windows则为c:/tgc/tgc_config.json)
-- 基于环境变量 TGC_CONFIG 指定
-
 ## 运行
 
 **服务端**使用docker运行
@@ -100,20 +79,64 @@ services:
 - config目录: 存储配置文件
 - data目录: 存储索引信息
 
-对于**客户端**, 直接二进制运行, 可以通过release下载二进制文件, 或者通过`go install github.com/xxxsen/tgfile/cmd/tgc@latest` 安装最新的版本。
-
-在`/etc/tgc`(如果是windows则路径为:`C:/tgc`)下创建tgc_config.json 配置, 之后执行下面命令即可进行文件上传。
+文件上传统一使用 S3 接口。下面示例中的 access key 和 secret key 对应服务端
+`user_info` 中的用户名和密码：
 
 ```shell
-# 如果下载回来的文件名不为tgc, 建议重命名为tgc, 通过go install安装则名字为`tgc`
-tgc upload --file=./README.md
+AWS_ACCESS_KEY_ID=abc \
+AWS_SECRET_ACCESS_KEY=123 \
+aws --endpoint-url http://127.0.0.1:9901 \
+  s3 cp ./README.md s3://hackmd/README.md
 ```
 
-上传完成后, 会返回一个链接, 通过链接即可下载刚刚上传的文件。
+可以通过相同 endpoint 的 `s3 cp`、`s3api head-object` 读取文件和元数据。
+
+### 离线维护命令
+
+维护模式不会启动 HTTP 服务、Telegram、缓存或上传逻辑。生产环境执行数据库迁移前，
+必须先停止所有 tgfile 实例并备份 SQLite 数据库及其 `-wal`、`-shm` 文件；完整的单次
+停服上线和回滚步骤见 `docs/02-safe-fix-implementation-plan.md` 第 7、8 节。
+
+只读审计：
+
+```shell
+./tgfile \
+  -config=/config/config.json \
+  -maintenance=audit \
+  -output=/maintenance/audit.json
+```
+
+检查一个历史直链 key 是否符合正式格式：
+
+```shell
+./tgfile \
+  -maintenance=check-key \
+  -key='0123456789abcdef-example.txt'
+```
+
+将内部目录从 `/defauls` 修正为 `/defaults` 时，先执行只读预检，确认输出为
+`source_count=1`、`target_count=0`、`source_is_directory=true`，再执行正式迁移：
+
+```shell
+./tgfile \
+  -config=/config/config.json \
+  -maintenance=migrate-default-prefix \
+  -direction=forward \
+  -dry-run=true
+
+./tgfile \
+  -config=/config/config.json \
+  -maintenance=migrate-default-prefix \
+  -direction=forward \
+  -dry-run=false
+```
+
+迁移是单事务、单行目录重命名，不提供 `/defauls` 兼容读取。旧镜像必须配旧路径，
+新镜像必须配新路径；回滚前使用 `-direction=reverse` 按相同步骤先预检再迁回。
 
 ### 本地开发
 
-安装 Go 1.25 后，可通过下面的命令快速启动本地测试服务器：
+安装 Go 1.25.12 后，可通过下面的命令快速启动本地测试服务器：
 
 ```shell
 make dev
@@ -127,6 +150,13 @@ make dev
 `TGFILE_DEV_USERNAME` 和 `TGFILE_DEV_PASSWORD` 覆盖默认值。也可以执行
 `make dev CONFIG=path/to/config.json` 使用自定义配置；此时若配置使用了其他端口，需要同时
 设置 `TGFILE_DEV_PORT`，以便启动脚本进行就绪检测。
+
+提交代码前执行完整质量门禁：
+
+```shell
+make install-golangci-lint
+make check
+```
 
 ## 接口信息
 

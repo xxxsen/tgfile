@@ -25,5 +25,4 @@ type CreateFileLinkRequest struct {
 	IsDir    bool
 }
 
-type CreateFileLinkResponse struct {
-}
+type CreateFileLinkResponse struct{}

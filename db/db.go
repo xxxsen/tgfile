@@ -9,9 +9,7 @@ import (
 	"github.com/xxxsen/common/database/sqlite"
 )
 
-var (
-	dbClient database.IDatabase
-)
+var dbClient database.IDatabase
 
 var sqllist = []struct {
 	name string
@@ -83,7 +81,9 @@ func ensureFilePartMD5Column(ctx context.Context, db database.IDatabase) error {
 	if err != nil {
 		return fmt.Errorf("inspect tg_file_part_tab failed: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		_ = rows.Close()
+	}()
 
 	for rows.Next() {
 		var (
@@ -117,7 +117,23 @@ func ensureFilePartMD5Column(ctx context.Context, db database.IDatabase) error {
 }
 
 func InitDB(file string) error {
-	ctx := context.Background()
+	return InitDBContext(context.Background(), file)
+}
+
+func InitDBContext(ctx context.Context, file string) error {
+	db, err := OpenContext(ctx, file)
+	if err != nil {
+		return err
+	}
+	dbClient = db
+	return nil
+}
+
+func Open(file string) (database.IDatabase, error) {
+	return OpenContext(context.Background(), file)
+}
+
+func OpenContext(ctx context.Context, file string) (database.IDatabase, error) {
 	db, err := sqlite.New(file, func(db database.IDatabase) error {
 		for _, item := range sqllist {
 			if _, err := db.ExecContext(ctx, item.sql); err != nil {
@@ -127,12 +143,23 @@ func InitDB(file string) error {
 		return ensureFilePartMD5Column(ctx, db)
 	})
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("open SQLite database: %w", err)
 	}
-	dbClient = db
-	return nil
+	return db, nil
 }
 
 func GetClient() database.IDatabase {
 	return dbClient
+}
+
+func Close() error {
+	if dbClient == nil {
+		return nil
+	}
+	err := dbClient.Close()
+	dbClient = nil
+	if err != nil {
+		return fmt.Errorf("close SQLite database: %w", err)
+	}
+	return nil
 }

@@ -48,7 +48,7 @@ func (h *FileHandler) GetMetaInfo(c *gin.Context) {
 			Ctime:         info.Ctime,
 			Mtime:         info.Mtime,
 			Md5:           fidinfo.Md5Sum,
-			FilePartCount: int32(fidinfo.FilePartCount),
+			FilePartCount: fidinfo.FilePartCount,
 		},
 	})
 }

@@ -3,10 +3,12 @@ package cacheapi
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 var (
 	ErrCacheKeyNotExist = errors.New("cache key not exist")
+	ErrCacheSetRejected = errors.New("cache set rejected")
 )
 
 type ICacheGetter[K comparable, V any] interface {
@@ -33,11 +35,16 @@ type ICacheLoader[K comparable, V any] interface {
 
 type LoadCacheCallbackFunc[K comparable, V any] func(ctx context.Context, miss []K) (map[K]V, error)
 
-func Load[K comparable, V any](ctx context.Context, c ICacheLoader[K, V], k K, cb LoadCacheCallbackFunc[K, V]) (V, error) {
+func Load[K comparable, V any](
+	ctx context.Context,
+	c ICacheLoader[K, V],
+	k K,
+	cb LoadCacheCallbackFunc[K, V],
+) (V, error) {
 	var defaultV V
 	rs, err := LoadMany(ctx, c, []K{k}, cb)
 	if err != nil {
-		return defaultV, err
+		return defaultV, fmt.Errorf("load cache key: %w", err)
 	}
 	v, ok := rs[k]
 	if !ok {
@@ -46,7 +53,12 @@ func Load[K comparable, V any](ctx context.Context, c ICacheLoader[K, V], k K, c
 	return v, nil
 }
 
-func LoadMany[K comparable, V any](ctx context.Context, c ICacheLoader[K, V], ks []K, cb LoadCacheCallbackFunc[K, V]) (map[K]V, error) {
+func LoadMany[K comparable, V any](
+	ctx context.Context,
+	c ICacheLoader[K, V],
+	ks []K,
+	cb LoadCacheCallbackFunc[K, V],
+) (map[K]V, error) {
 	m := make(map[K]V, len(ks))
 	miss := make([]K, 0, len(ks))
 	for _, k := range ks {
@@ -56,7 +68,7 @@ func LoadMany[K comparable, V any](ctx context.Context, c ICacheLoader[K, V], ks
 				miss = append(miss, k)
 				continue
 			}
-			return nil, err
+			return nil, fmt.Errorf("read cache key: %w", err)
 		}
 		m[k] = v
 	}
@@ -65,7 +77,7 @@ func LoadMany[K comparable, V any](ctx context.Context, c ICacheLoader[K, V], ks
 	}
 	rs, err := cb(ctx, miss)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load missing cache keys: %w", err)
 	}
 	for k, v := range rs {
 		m[k] = v

@@ -2,8 +2,7 @@ package model
 
 import "mime/multipart"
 
-type ExportRequest struct {
-}
+type ExportRequest struct{}
 
 type ImportRequest struct {
 	File *multipart.FileHeader `form:"file" binding:"required"`

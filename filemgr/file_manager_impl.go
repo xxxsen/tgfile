@@ -2,7 +2,7 @@ package filemgr
 
 import (
 	"context"
-	"crypto/md5"
+	"crypto/md5" //nolint:gosec // Persisted legacy checksum format; not used for security.
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -28,14 +28,42 @@ type defaultFileManager struct {
 	ioc            IFileIOCache
 }
 
-func (d *defaultFileManager) CreateFileLink(ctx context.Context, link string, fileid uint64, size int64, isDir bool) error {
+const maxFilePartCount int64 = 100_000
+
+type countingReader struct {
+	reader io.Reader
+	count  int64
+}
+
+func (c *countingReader) Read(buffer []byte) (int, error) {
+	read, err := c.reader.Read(buffer)
+	c.count += int64(read)
+	if err != nil && err != io.EOF {
+		return read, fmt.Errorf("read counted file content: %w", err)
+	}
+	if err == io.EOF {
+		return read, io.EOF
+	}
+	return read, nil
+}
+
+func (d *defaultFileManager) CreateFileLink(
+	ctx context.Context,
+	link string,
+	fileid uint64,
+	size int64,
+	isDir bool,
+) error {
 	_, err := d.fileMappingDao.CreateFileLink(ctx, &entity.CreateFileLinkRequest{
 		FileName: link,
 		FileId:   fileid,
 		FileSize: size,
 		IsDir:    isDir,
 	})
-	return err
+	if err != nil {
+		return fmt.Errorf("create file link %q: %w", link, err)
+	}
+	return nil
 }
 
 func (d *defaultFileManager) StatFileLink(ctx context.Context, link string) (*entity.FileLinkMeta, error) {
@@ -44,43 +72,66 @@ func (d *defaultFileManager) StatFileLink(ctx context.Context, link string) (*en
 		return nil, fmt.Errorf("open mapping failed, err:%w", err)
 	}
 	if !ok {
-		return nil, fmt.Errorf("link not found")
+		return nil, fmt.Errorf("link not found: %w", os.ErrNotExist)
 	}
 	return fid, nil
 }
 
 func (d *defaultFileManager) WalkFileLink(ctx context.Context, prefix string, cb WalkLinkFunc) error {
-	return d.fileMappingDao.IterFileLink(ctx, prefix, func(ctx context.Context, name string, ent *entity.FileLinkMeta) (bool, error) {
-		return cb(ctx, name, ent)
-	})
+	callback := func(
+		ctx context.Context,
+		name string,
+		entry *entity.FileLinkMeta,
+	) (bool, error) {
+		return cb(ctx, name, entry)
+	}
+	err := d.fileMappingDao.IterFileLink(ctx, prefix, callback)
+	if err != nil {
+		return fmt.Errorf("walk file links under %q: %w", prefix, err)
+	}
+	return nil
 }
 
 func (d *defaultFileManager) RemoveFileLink(ctx context.Context, link string) error {
-	return d.fileMappingDao.RemoveFileLink(ctx, link)
+	if err := d.fileMappingDao.RemoveFileLink(ctx, link); err != nil {
+		return fmt.Errorf("remove file link %q: %w", link, err)
+	}
+	return nil
 }
 
 func (d *defaultFileManager) RenameFileLink(ctx context.Context, src, dst string, isOverwrite bool) error {
-	return d.fileMappingDao.RenameFileLink(ctx, src, dst, isOverwrite)
+	if err := d.fileMappingDao.RenameFileLink(ctx, src, dst, isOverwrite); err != nil {
+		return fmt.Errorf("rename file link %q to %q: %w", src, dst, err)
+	}
+	return nil
 }
 
 func (d *defaultFileManager) CopyFileLink(ctx context.Context, src, dst string, isOverwrite bool) error {
-	return d.fileMappingDao.CopyFileLink(ctx, src, dst, isOverwrite)
+	if err := d.fileMappingDao.CopyFileLink(ctx, src, dst, isOverwrite); err != nil {
+		return fmt.Errorf("copy file link %q to %q: %w", src, dst, err)
+	}
+	return nil
 }
 
-func (d *defaultFileManager) lowlevelIOStream(bkio blockio.IBlockIO, fileid uint64, filesize int64) func(ctx context.Context) (io.ReadSeekCloser, error) {
+func (d *defaultFileManager) lowlevelIOStream(
+	bkio blockio.IBlockIO,
+	fileid uint64,
+	filesize int64,
+) func(ctx context.Context) (io.ReadSeekCloser, error) {
 	return func(ctx context.Context) (io.ReadSeekCloser, error) {
-		return newFileStream(ctx, bkio, func(ctx context.Context, blkid int32) (fk string, err error) {
-			defer func() {
-				if err != nil {
-					logutil.GetLogger(ctx).Error("convert blockid to filekey failed", zap.Error(err), zap.Uint64("file_id", fileid), zap.Int32("blkid", blkid))
-				}
-			}()
+		return newFileStream(ctx, bkio, func(ctx context.Context, blkid int32) (string, error) {
 			pinfo, ok, err := d.internalGetFilePartInfo(ctx, fileid, blkid)
 			if err != nil {
+				logutil.GetLogger(ctx).Error(
+					"convert blockid to filekey failed",
+					zap.Error(err),
+					zap.Uint64("file_id", fileid),
+					zap.Int32("blkid", blkid),
+				)
 				return "", fmt.Errorf("read file part info failed, err:%w", err)
 			}
 			if !ok {
-				return "", fmt.Errorf("partid:%d not found", blkid)
+				return "", fmt.Errorf("%w: %d", ErrFilePartNotFound, blkid)
 			}
 			return pinfo.FileKey, nil
 		}, filesize), nil
@@ -90,7 +141,7 @@ func (d *defaultFileManager) lowlevelIOStream(bkio blockio.IBlockIO, fileid uint
 func (d *defaultFileManager) StatFile(ctx context.Context, fileid uint64) (*entity.FileMeta, error) {
 	finfo, ok, err := d.internalGetFileInfo(ctx, fileid)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("stat file %d: %w", fileid, err)
 	}
 	if !ok {
 		return nil, os.ErrNotExist
@@ -101,37 +152,57 @@ func (d *defaultFileManager) StatFile(ctx context.Context, fileid uint64) (*enti
 func (d *defaultFileManager) OpenFile(ctx context.Context, fileid uint64) (io.ReadSeekCloser, error) {
 	finfo, ok, err := d.internalGetFileInfo(ctx, fileid)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open file %d metadata: %w", fileid, err)
 	}
 	if !ok {
 		return nil, os.ErrNotExist
 	}
 	rsc, err := d.ioc.Load(ctx, fileid, finfo.FileSize, d.lowlevelIOStream(d.bkio, fileid, finfo.FileSize))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open file %d content: %w", fileid, err)
 	}
 	return rsc, nil
 }
 
-func (d *defaultFileManager) internalCalcFileBlockCount(sz uint64, blksz uint64) int {
-	return int((sz + blksz - 1) / blksz)
+func calculateFileBlockCount(size, blockSize int64) (int64, error) {
+	if size < 0 {
+		return 0, fmt.Errorf("%w: %d", ErrInvalidFileSize, size)
+	}
+	if blockSize <= 0 {
+		return 0, fmt.Errorf("%w: %d", ErrInvalidBlockSize, blockSize)
+	}
+	if size == 0 {
+		return 0, nil
+	}
+	count := 1 + (size-1)/blockSize
+	if count > maxFilePartCount {
+		return 0, fmt.Errorf("%w: %d exceeds %d", ErrTooManyFileParts, count, maxFilePartCount)
+	}
+	return count, nil
 }
 
 func (d *defaultFileManager) CreateFileDraft(ctx context.Context, size int64) (uint64, int64, error) {
-	blkcnt := d.internalCalcFileBlockCount(uint64(size), uint64(d.bkio.MaxFileSize()))
-
-	rs, err := d.fileDao.CreateFileDraft(ctx, &entity.CreateFileDraftRequest{
-		FileSize:      size,
-		FilePartCount: int32(blkcnt),
-	})
+	blockSize := d.bkio.MaxFileSize()
+	blockCount, err := calculateFileBlockCount(size, blockSize)
 	if err != nil {
 		return 0, 0, err
 	}
-	return rs.FileId, d.bkio.MaxFileSize(), nil
+
+	rs, err := d.fileDao.CreateFileDraft(ctx, &entity.CreateFileDraftRequest{
+		FileSize:      size,
+		FilePartCount: int32(blockCount), //nolint:gosec // calculateFileBlockCount caps this at 100,000.
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("create file draft: %w", err)
+	}
+	return rs.FileId, blockSize, nil
 }
 
 func (d *defaultFileManager) CreateFilePart(ctx context.Context, fileid uint64, partid int64, r io.Reader) error {
-	md5v := md5.New()
+	if partid < 0 || partid > maxFilePartCount {
+		return fmt.Errorf("%w: %d", ErrInvalidFilePart, partid)
+	}
+	md5v := md5.New() //nolint:gosec // Persisted legacy checksum format; not used for security.
 	r = io.TeeReader(r, md5v)
 	fileKey, err := d.bkio.Upload(ctx, r)
 	if err != nil {
@@ -143,25 +214,25 @@ func (d *defaultFileManager) CreateFilePart(ctx context.Context, fileid uint64, 
 		FileKey:     fileKey,
 		FilePartMd5: hex.EncodeToString(md5v.Sum(nil)),
 	}); err != nil {
-		return err
+		return fmt.Errorf("create file part record: %w", err)
 	}
 	return nil
 }
 
 func (d *defaultFileManager) FinishFileCreate(ctx context.Context, fileid uint64) error {
-	//从filepart list中抽取所有的filekey, 基于filekey构建md5
+	// 从filepart list中抽取所有的filekey, 基于filekey构建md5
 	fps, err := d.filePartDao.ListFilePart(ctx, &entity.ListFilePartRequest{
 		FileId: fileid,
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("list file parts: %w", err)
 	}
-	var md5v = ""
+	md5v := ""
 	if len(fps.List) == 1 {
 		md5v = fps.List[0].FilePartMd5
 	}
 	if len(fps.List) > 1 {
-		h := md5.New()
+		h := md5.New() //nolint:gosec // Persisted legacy checksum format; not used for security.
 		for _, item := range fps.List {
 			_, _ = h.Write([]byte(item.FilePartMd5))
 		}
@@ -172,14 +243,14 @@ func (d *defaultFileManager) FinishFileCreate(ctx context.Context, fileid uint64
 	}
 	raw, err := json.Marshal(ext)
 	if err != nil {
-		return err
+		return fmt.Errorf("encode file extension info: %w", err)
 	}
 
 	if _, err := d.fileDao.MarkFileReady(ctx, &entity.MarkFileReadyRequest{
 		FileID:  fileid,
 		Extinfo: string(raw),
 	}); err != nil {
-		return err
+		return fmt.Errorf("mark file ready: %w", err)
 	}
 	return nil
 }
@@ -189,15 +260,21 @@ func (d *defaultFileManager) CreateFile(ctx context.Context, size int64, reader 
 	if err != nil {
 		return 0, err
 	}
-	if blksize == 0 {
-		return 0, fmt.Errorf("invalid block size:0")
+	blockCount, err := calculateFileBlockCount(size, blksize)
+	if err != nil {
+		return 0, err
 	}
-	blkcnt := d.internalCalcFileBlockCount(uint64(size), uint64(blksize))
-	for i := 0; i < blkcnt; i++ {
-		r := io.LimitReader(reader, d.bkio.MaxFileSize())
-		if err := d.CreateFilePart(ctx, fileid, int64(i), r); err != nil {
+	var uploadedSize int64
+	for partID := int64(0); partID < blockCount; partID++ {
+		partSize := min(blksize, size-uploadedSize)
+		counted := &countingReader{reader: io.LimitReader(reader, partSize)}
+		if err := d.CreateFilePart(ctx, fileid, partID, counted); err != nil {
 			return 0, fmt.Errorf("create part record failed, err:%w", err)
 		}
+		if counted.count != partSize {
+			return 0, fmt.Errorf("%w: part=%d expected=%d actual=%d", ErrFileShortRead, partID, partSize, counted.count)
+		}
+		uploadedSize += counted.count
 	}
 	if err := d.FinishFileCreate(ctx, fileid); err != nil {
 		return 0, fmt.Errorf("finish create file failed, err:%w", err)
@@ -205,12 +282,15 @@ func (d *defaultFileManager) CreateFile(ctx context.Context, size int64, reader 
 	return fileid, nil
 }
 
-func (d *defaultFileManager) internalGetFileInfo(ctx context.Context, fileid uint64) (*entity.FileInfoItem, bool, error) {
+func (d *defaultFileManager) internalGetFileInfo(
+	ctx context.Context,
+	fileid uint64,
+) (*entity.FileInfoItem, bool, error) {
 	rs, err := d.fileDao.GetFileInfo(ctx, &entity.GetFileInfoRequest{
 		FileIds: []uint64{fileid},
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("query file %d: %w", fileid, err)
 	}
 	if len(rs.List) == 0 {
 		return nil, false, nil
@@ -218,13 +298,17 @@ func (d *defaultFileManager) internalGetFileInfo(ctx context.Context, fileid uin
 	return rs.List[0], true, nil
 }
 
-func (d *defaultFileManager) internalGetFilePartInfo(ctx context.Context, fileid uint64, partid int32) (*entity.FilePartInfoItem, bool, error) {
+func (d *defaultFileManager) internalGetFilePartInfo(
+	ctx context.Context,
+	fileid uint64,
+	partid int32,
+) (*entity.FilePartInfoItem, bool, error) {
 	rs, err := d.filePartDao.GetFilePartInfo(ctx, &entity.GetFilePartInfoRequest{
 		FileId:     fileid,
 		FilePartId: []int32{partid},
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("query file %d part %d: %w", fileid, partid, err)
 	}
 	if len(rs.List) == 0 {
 		return nil, false, nil
@@ -232,12 +316,15 @@ func (d *defaultFileManager) internalGetFilePartInfo(ctx context.Context, fileid
 	return rs.List[0], true, nil
 }
 
-func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filename string) (*entity.FileLinkMeta, bool, error) {
+func (d *defaultFileManager) internalGetFileMapping(
+	ctx context.Context,
+	filename string,
+) (*entity.FileLinkMeta, bool, error) {
 	rsp, ok, err := d.fileMappingDao.GetFileLinkMeta(ctx, &entity.GetFileLinkMetaRequest{
 		FileName: filename,
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("query file link %q: %w", filename, err)
 	}
 	if !ok {
 		return nil, false, nil
@@ -248,10 +335,10 @@ func (d *defaultFileManager) internalGetFileMapping(ctx context.Context, filenam
 func (d *defaultFileManager) cleanUnRefFileIdList(ctx context.Context, fidlist []uint64) error {
 	for _, fid := range fidlist {
 		if _, err := d.filePartDao.DeleteFilePart(ctx, &entity.DeleteFilePartRequest{FileId: []uint64{fid}}); err != nil {
-			return err
+			return fmt.Errorf("delete parts for file %d: %w", fid, err)
 		}
 		if _, err := d.fileDao.DeleteFile(ctx, &entity.DeleteFileRequest{FileId: []uint64{fid}}); err != nil {
-			return err
+			return fmt.Errorf("delete file %d: %w", fid, err)
 		}
 		logutil.GetLogger(ctx).Info("purge file succ", zap.Uint64("file_id", fid))
 	}
@@ -259,9 +346,9 @@ func (d *defaultFileManager) cleanUnRefFileIdList(ctx context.Context, fidlist [
 }
 
 func (d *defaultFileManager) readUnRefFileIdList(ctx context.Context, limitMtime int64) ([]uint64, error) {
-	var defaultBatch int64 = 2000
+	const defaultBatch uint = 2000
 	fidMap := make(map[uint64]struct{}, 64)
-	if err := d.fileDao.ScanFile(ctx, defaultBatch, func(ctx context.Context, res []*entity.FileInfoItem) (bool, error) {
+	if err := d.fileDao.ScanFile(ctx, defaultBatch, func(_ context.Context, res []*entity.FileInfoItem) (bool, error) {
 		for _, item := range res {
 			if item.Mtime >= limitMtime {
 				continue
@@ -270,18 +357,19 @@ func (d *defaultFileManager) readUnRefFileIdList(ctx context.Context, limitMtime
 		}
 		return true, nil
 	}); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scan files for unreferenced ids: %w", err)
 	}
 	if len(fidMap) == 0 {
 		return nil, nil
 	}
-	if err := d.fileMappingDao.ScanFileLink(ctx, defaultBatch, func(ctx context.Context, res []*entity.FileLinkMeta) (bool, error) {
+	removeReferences := func(_ context.Context, res []*entity.FileLinkMeta) (bool, error) {
 		for _, item := range res {
 			delete(fidMap, item.FileId)
 		}
 		return true, nil
-	}); err != nil {
-		return nil, err
+	}
+	if err := d.fileMappingDao.ScanFileLink(ctx, defaultBatch, removeReferences); err != nil {
+		return nil, fmt.Errorf("scan links for referenced file ids: %w", err)
 	}
 	if len(fidMap) == 0 {
 		return nil, nil
@@ -294,7 +382,7 @@ func (d *defaultFileManager) readUnRefFileIdList(ctx context.Context, limitMtime
 }
 
 func (d *defaultFileManager) PurgeFile(ctx context.Context, before *int64) (int64, error) {
-	limitMtime := time.Now().AddDate(0, 0, -1).UnixMilli() //mtime 在一天之前的数据才进行清理
+	limitMtime := time.Now().AddDate(0, 0, -1).UnixMilli() // mtime 在一天之前的数据才进行清理
 	if before != nil {
 		limitMtime = *before
 	}
