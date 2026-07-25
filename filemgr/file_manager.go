@@ -64,11 +64,18 @@ type ILinkManager interface {
 	ILinkWriter
 }
 
-type IFileManager interface {
-	IFileStorage
+type IProtocolManager interface {
 	ILinkManager
 	IS3ObjectManager
+	IS3MultipartManager
+}
+
+type IFileManager interface {
+	IFileStorage
+	IProtocolManager
+	DiscardUnpublishedFile(ctx context.Context, fileid uint64) error
 	RunBlockDeleteWorker(ctx context.Context) error
+	RunMultipartCleanupWorker(context.Context) error
 }
 
 type S3ObjectInfo struct {

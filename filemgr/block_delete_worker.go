@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/xxxsen/tgfile/blockio"
@@ -167,7 +166,7 @@ func claimDeleteCandidate(
 	now time.Time,
 ) (bool, error) {
 	nowMillis := now.UnixMilli()
-	referenced, err := fileHasMapping(ctx, tx, work.fileID)
+	referenced, err := fileHasLiveReference(ctx, tx, work.fileID)
 	if err != nil {
 		return false, err
 	}
@@ -203,19 +202,6 @@ WHERE file_id = ? AND file_part_id = ? AND delete_state = 'pending'`,
 		return false, fmt.Errorf("read block delete claim count: %w", err)
 	}
 	return count == 1, nil
-}
-
-func fileHasMapping(ctx context.Context, queryer database.IQueryer, fileID uint64) (bool, error) {
-	var count int64
-	if err := queryRow(
-		ctx,
-		queryer,
-		"SELECT COUNT(*) FROM tg_file_mapping_tab WHERE ref_data = ?",
-		strconv.FormatUint(fileID, 10),
-	).Scan(&count); err != nil {
-		return false, fmt.Errorf("count block delete file mappings: %w", err)
-	}
-	return count != 0, nil
 }
 
 func restoreFileDeleteState(

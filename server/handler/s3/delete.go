@@ -32,6 +32,10 @@ const (
 )
 
 func (h *S3Handler) DeleteObject(c *gin.Context) {
+	if hasQueryKey(c.Request.URL.Query(), "uploadId") {
+		h.AbortMultipartUpload(c)
+		return
+	}
 	if h.rejectUnsupportedObjectQuery(c) {
 		return
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/xxxsen/common/logutil"
 	"github.com/xxxsen/common/webapi/proxyutil"
@@ -38,7 +39,14 @@ func (h *FileHandler) FileUpload(ctx context.Context, c *gin.Context, request an
 	}
 	path, key := h.buildFileKeyLink(header.Filename, fileid)
 	if err := h.m.CreateFileLink(ctx, path, fileid, header.Size, false); err != nil {
-		proxyutil.FailJson(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
+		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		cleanupErr := h.m.DiscardUnpublishedFile(cleanupContext, fileid)
+		cancel()
+		proxyutil.FailJson(
+			c,
+			http.StatusInternalServerError,
+			fmt.Errorf("create link failed: %w", errors.Join(err, cleanupErr)),
+		)
 		return
 	}
 

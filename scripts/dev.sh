@@ -143,7 +143,8 @@ generate_config() {
         "acl": "public-read"
       }
     ],
-    "max_object_size": 5368709120
+    "max_object_size": 5368709120,
+    "multipart_expire_hours": 24
   },
   "rotate_stream": 0,
   "webdav": {

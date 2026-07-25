@@ -21,7 +21,10 @@ import (
 	"go.uber.org/zap"
 )
 
-var errIntegerRange = errors.New("integer value exceeds platform range")
+var (
+	errIntegerRange          = errors.New("integer value exceeds platform range")
+	errUnexpectedServiceExit = errors.New("service component exited unexpectedly")
+)
 
 func newServeCommand(ctx context.Context) *cobra.Command {
 	var configFile string
@@ -131,23 +134,45 @@ func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger 
 	}
 	appLogger.Info("init server succ, start it...")
 	runContext, cancel := context.WithCancel(ctx)
-	workerDone := make(chan error, 1)
+	defer cancel()
+	type componentResult struct {
+		name string
+		err  error
+	}
+	componentDone := make(chan componentResult, 3)
 	go func() {
-		workerDone <- fileManager.RunBlockDeleteWorker(runContext)
+		componentDone <- componentResult{
+			name: "block delete worker",
+			err:  fileManager.RunBlockDeleteWorker(runContext),
+		}
 	}()
-	if err := httpServer.Run(runContext); err != nil && !errors.Is(err, context.Canceled) {
-		cancel()
-		workerErr := <-workerDone
-		return errors.Join(fmt.Errorf("serve HTTP: %w", err), workerErr)
-	}
+	go func() {
+		componentDone <- componentResult{
+			name: "multipart cleanup worker",
+			err:  fileManager.RunMultipartCleanupWorker(runContext),
+		}
+	}()
+	go func() {
+		componentDone <- componentResult{name: "HTTP server", err: httpServer.Run(runContext)}
+	}()
+
+	first := <-componentDone
+	contextWasDone := ctx.Err() != nil
 	cancel()
-	if err := <-workerDone; err != nil {
-		return fmt.Errorf("run block delete worker: %w", err)
+	results := []componentResult{first, <-componentDone, <-componentDone}
+	var runErr error
+	for index, result := range results {
+		if result.err != nil && !errors.Is(result.err, context.Canceled) {
+			runErr = errors.Join(runErr, fmt.Errorf("%s: %w", result.name, result.err))
+		}
+		if index == 0 && !contextWasDone && result.err == nil {
+			runErr = errors.Join(
+				runErr,
+				fmt.Errorf("%w: %s", errUnexpectedServiceExit, result.name),
+			)
+		}
 	}
-	if err := runContext.Err(); err != nil && !errors.Is(err, context.Canceled) {
-		return fmt.Errorf("serve HTTP: %w", err)
-	}
-	return nil
+	return runErr
 }
 
 func toServerS3Options(input config.S3Config) server.S3Options {
@@ -159,9 +184,10 @@ func toServerS3Options(input config.S3Config) server.S3Options {
 		})
 	}
 	return server.S3Options{
-		Enabled:       input.Enable,
-		Buckets:       buckets,
-		MaxObjectSize: input.MaxObjectSize,
+		Enabled:              input.Enable,
+		Buckets:              buckets,
+		MaxObjectSize:        input.MaxObjectSize,
+		MultipartExpireHours: input.MultipartExpireHours,
 	}
 }
 

@@ -69,6 +69,7 @@ func TestValidateS3AndTelegramConfiguration(t *testing.T) {
 		},
 	}
 	require.NoError(t, valid.Validate())
+	require.Equal(t, 24, valid.S3.MultipartExpireHours)
 
 	tests := []struct {
 		name   string
@@ -108,6 +109,12 @@ func TestValidateS3AndTelegramConfiguration(t *testing.T) {
 			name: "object size beyond part limit",
 			mutate: func(config *Config) {
 				config.S3.MaxObjectSize = maxFilePartCount*telegramBlockSize + 1
+			},
+		},
+		{
+			name: "multipart expiry beyond limit",
+			mutate: func(config *Config) {
+				config.S3.MultipartExpireHours = 25
 			},
 		},
 	}

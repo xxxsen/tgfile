@@ -13,11 +13,13 @@ tgfile 是一个以 Telegram 为主要内容后端的流式文件服务。文件
 生产核心能力是：
 
 - S3 PUT、GET、HEAD、Range、ListObjectsV2、CopyObject 和删除；
+- S3 Multipart Upload 的创建、分片上传、列举、完成、终止和过期清理；
 - 基于 bucket ACL 的公开或私有读取；
 - 文件直链上传、下载和元数据读取；
 - SQLite migration、只读审计和持久化 Telegram 删除 worker。
 
-WebDAV、逻辑备份和静态目录复用同一 FileManager，但不是 S3 语义的替代实现。
+WebDAV、逻辑备份和静态目录复用同一 FileManager。WebDAV 可以透明读取 Multipart
+Composite File，其 DELETE 和覆盖式 COPY/MOVE 也使用同一套引用与底层删除语义。
 
 ## 2. 组件关系
 
@@ -48,7 +50,7 @@ Directory 事务完成。
 |---|---|
 | `cmd` | Cobra 子命令、配置校验、依赖组装和进程生命周期 |
 | `server` | HTTP 路由、bucket ACL、认证、S3/HTTP 协议转换 |
-| `filemgr` | 文件创建与读取、S3 对象事务、引用计数判断、删除 worker |
+| `filemgr` | 文件创建与读取、S3/Multipart 对象事务、Composite、引用判断和后台 worker |
 | `directory` | SQLite 路径树及事务内 Stat/Create/Remove/Copy/Move/Touch |
 | `dao` | File、Part 和普通 Mapping 数据访问 |
 | `db` | migration 规划、账本、checksum 和 schema 指纹校验 |
@@ -94,20 +96,31 @@ Telegram 后端的稳定约束：
 
 FileKey 和 DeleteRef 都是后端数据，日志和外部响应不得输出其完整值。
 
-## 6. 删除状态机
+## 6. Composite 与删除状态机
 
-Telegram 消息删除不是 Mapping 事务中的同步网络调用。S3 DeleteObject、DeleteObjects
-或覆盖操作移除最后一个 Mapping 引用时，只把对应 Part 的 durable outbox 状态从 `live`
-改为 `pending`。后台 worker：
+普通上传生成 layout v1 File，其 Telegram Part 直接记录在 `tg_file_part_tab`。Multipart
+的每个 S3 part 也是一个 layout v1 File；Complete 只创建 layout v2 Composite File，
+按顺序引用这些 source File，不重新下载或上传 Telegram message。所有读取入口最终都通过
+`FileManager.OpenFile`，因此 S3、直链、WebDAV、静态目录和备份可以透明读取两种 layout。
+
+Telegram 消息删除不是 Mapping 事务中的同步网络调用。以下操作在失去最后有效引用后，
+只把对应 Part 的 durable outbox 状态从 `live` 改为 `pending`：
+
+- S3 DeleteObject、DeleteObjects 和对象覆盖；
+- WebDAV DELETE，以及 COPY/MOVE 覆盖的目标子树；
+- Multipart Abort、过期、相同 PartNumber 替换、Complete 未选择和上传失败补偿。
+
+后台 worker：
 
 1. 恢复过期的 `deleting` lease；
 2. 按上传时间领取至多 100 个 `pending` Part；
-3. 再次确认 File 没有任何 Mapping 引用；
+3. 再次确认 File 没有直接 Mapping、已发布 Composite 或 active Multipart 引用；
 4. 在 47 小时安全截止时间内调用 BlockIO 删除；
 5. 根据成功、限流、临时错误或永久错误写入终态或下次重试时间。
 
-读取、启动、migration、audit、普通 Mapping 删除以及缺少 DeleteRef 的历史数据不会触发
-Telegram 删除。删除成功后仍保留 File、Part 和删除状态，保证审计与引用安全。
+读取、List、HEAD、PROPFIND、启动、migration、audit、无删除/覆盖的 Mapping 操作以及
+缺少 DeleteRef 的历史数据不会触发 Telegram 删除。删除成功后仍保留 File、Part 和删除
+状态，保证审计与引用安全。
 
 ## 7. 在线生命周期
 
@@ -117,8 +130,9 @@ Telegram 删除。删除成功后仍保留 File、Part 和删除状态，保证�
 2. 初始化日志和 ID 生成器；
 3. 打开 SQLite，规划并事务性执行 migration，再校验 schema；
 4. 创建 BlockIO、缓存和 FileManager；
-5. 创建 HTTP server，同时启动删除 worker；
-6. 收到终止信号后停止 HTTP 服务、取消 worker 并关闭数据库。
+5. 创建 HTTP server，同时启动 Telegram 删除 worker 和 Multipart 过期清理 worker；
+6. 任一组件非预期退出时取消其他组件并使服务退出；
+7. 收到终止信号后停止 HTTP 服务、取消 worker 并关闭数据库。
 
 `check-config` 在日志、数据库、网络和缓存初始化之前完成验证。`audit` 使用 SQLite 只读
 模式，不执行 migration。
@@ -127,7 +141,9 @@ Telegram 删除。删除成功后仍保留 File、Part 和删除状态，保证�
 
 - 业务 schema 只通过不可变的 `migrations/NNNN_name.sql` 演进；
 - Mapping 与 File 分离，CopyObject 只增加引用，不复制 Telegram 内容；
+- Multipart Complete 只创建 layout v2 manifest 和最终 Mapping，不执行 Telegram I/O；
 - S3 Mapping 与对象元数据在同一个 SQLite 事务中创建、覆盖、复制或删除；
+- WebDAV DELETE/COPY/MOVE 在同一事务中递归处理 Mapping、对象元数据和删除 outbox；
 - 最后引用判断与 `live -> pending` 状态变化处于同一事务；
 - 非 `live` File 不能重新创建 Mapping，worker 发现引用恢复时将可恢复状态改回 `live`；
 - 外部直链 key、`file_id`、Part 顺序、FileKey 和已持久化 MD5 不被静默改写；

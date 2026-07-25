@@ -4,15 +4,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/xml"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -43,7 +46,7 @@ func newIntegrationEnvironment(t *testing.T) *integrationEnvironment {
 	t.Cleanup(func() {
 		require.NoError(t, database.Close())
 	})
-	block, err := mem.New(4)
+	block, err := mem.New(8 * 1024 * 1024)
 	require.NoError(t, err)
 	cache, err := filemgr.NewFileIOCache(&filemgr.FileIOCacheConfig{
 		DisableL1Cache: true,
@@ -64,6 +67,7 @@ func newIntegrationEnvironment(t *testing.T) *integrationEnvironment {
 			}},
 		}),
 		server.WithUser(map[string]string{"access": "secret"}),
+		server.WithEnableWebdav(true, "/"),
 		server.WithFileManager(manager),
 	)
 	require.NoError(t, err)
@@ -784,8 +788,8 @@ func TestS3UnsupportedObjectSubresourcesAreNotDispatchedAsObjectIO(t *testing.T)
 	request = authenticatedRequest(t, http.MethodPost, objectURL+"?uploads", nil)
 	response, err = client.Do(request)
 	require.NoError(t, err)
-	require.Equal(t, http.StatusNotImplemented, response.StatusCode)
-	require.Contains(t, string(readResponse(t, response)), "NotImplemented")
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Contains(t, string(readResponse(t, response)), "InitiateMultipartUploadResult")
 
 	response, err = getResponse(t, client, objectURL)
 	require.NoError(t, err)
@@ -797,6 +801,339 @@ func TestS3UnsupportedObjectSubresourcesAreNotDispatchedAsObjectIO(t *testing.T)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	require.Equal(t, []byte("content"), readResponse(t, response))
+}
+
+func TestS3MultipartUploadIsReadableThroughS3AndWebDAV(t *testing.T) {
+	environment := newIntegrationEnvironment(t)
+	client := environment.server.Client()
+	objectURL := environment.server.URL + "/hackmd/multipart/data.bin"
+
+	anonymousCreate, err := http.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		objectURL+"?uploads",
+		nil,
+	)
+	require.NoError(t, err)
+	response, err := client.Do(anonymousCreate)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, response.StatusCode)
+	_ = readResponse(t, response)
+
+	createRequest := authenticatedRequest(t, http.MethodPost, objectURL+"?uploads", nil)
+	createRequest.Header.Set("Content-Type", "application/custom")
+	createRequest.Header.Set("X-Amz-Meta-Source", "multipart")
+	response, err = client.Do(createRequest)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	var initiated struct {
+		UploadID string `xml:"UploadId"`
+	}
+	require.NoError(t, xml.Unmarshal(readResponse(t, response), &initiated))
+	require.Len(t, initiated.UploadID, 64)
+
+	firstContent := bytes.Repeat([]byte("a"), 5*1024*1024)
+	secondContent := []byte("multipart-tail")
+	firstETag := uploadIntegrationPart(t, client, objectURL, initiated.UploadID, 1, firstContent)
+	secondETag := uploadIntegrationPart(t, client, objectURL, initiated.UploadID, 2, secondContent)
+
+	listRequest := authenticatedRequest(
+		t,
+		http.MethodGet,
+		objectURL+"?uploadId="+initiated.UploadID+"&max-parts=1",
+		nil,
+	)
+	response, err = client.Do(listRequest)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	listBody := string(readResponse(t, response))
+	require.Contains(t, listBody, "<IsTruncated>true</IsTruncated>")
+	require.Contains(t, listBody, "<NextPartNumberMarker>1</NextPartNumberMarker>")
+
+	completeBody := []byte(
+		`<CompleteMultipartUpload xmlns="http://s3.amazonaws.com/doc/2006-03-01/">` +
+			`<Part><PartNumber>1</PartNumber><ETag>` + firstETag + `</ETag></Part>` +
+			`<Part><PartNumber>2</PartNumber><ETag>` + secondETag + `</ETag></Part>` +
+			`</CompleteMultipartUpload>`,
+	)
+	completeRequest := authenticatedRequest(
+		t,
+		http.MethodPost,
+		objectURL+"?uploadId="+initiated.UploadID,
+		bytes.NewReader(completeBody),
+	)
+	completeDigest := filemgr.NewMD5CompatibilityHash()
+	_, err = completeDigest.Write(completeBody)
+	require.NoError(t, err)
+	completeRequest.Header.Set("Content-MD5", base64.StdEncoding.EncodeToString(completeDigest.Sum(nil)))
+	response, err = client.Do(completeRequest)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	finalETag := response.Header.Get("ETag")
+	require.Contains(t, finalETag, "-2")
+	require.Contains(t, string(readResponse(t, response)), "<CompleteMultipartUploadResult")
+
+	response, err = getResponse(t, client, objectURL)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "application/custom", response.Header.Get("Content-Type"))
+	require.Equal(t, "multipart", response.Header.Get("X-Amz-Meta-Source"))
+	require.Equal(t, append(firstContent, secondContent...), readResponse(t, response))
+
+	webDAVRequest := authenticatedRequest(
+		t,
+		http.MethodGet,
+		environment.server.URL+"/webdav/hackmd/multipart/data.bin",
+		nil,
+	)
+	response, err = client.Do(webDAVRequest)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, append(firstContent, secondContent...), readResponse(t, response))
+
+	webDAVHead := authenticatedRequest(
+		t,
+		http.MethodHead,
+		environment.server.URL+"/webdav/hackmd/multipart/data.bin",
+		nil,
+	)
+	response, err = client.Do(webDAVHead)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, strconv.Itoa(len(firstContent)+len(secondContent)), response.Header.Get("Content-Length"))
+	_ = readResponse(t, response)
+
+	webDAVRange := authenticatedRequest(
+		t,
+		http.MethodGet,
+		environment.server.URL+"/webdav/hackmd/multipart/data.bin",
+		nil,
+	)
+	webDAVRange.Header.Set("Range", "bytes=5242878-5242884")
+	response, err = client.Do(webDAVRange)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusPartialContent, response.StatusCode)
+	require.Equal(t, append(firstContent, secondContent...)[5242878:5242885], readResponse(t, response))
+
+	propfind := authenticatedRequest(
+		t,
+		"PROPFIND",
+		environment.server.URL+"/webdav/hackmd/multipart",
+		nil,
+	)
+	propfind.Header.Set("Depth", "1")
+	response, err = client.Do(propfind)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusMultiStatus, response.StatusCode)
+	require.Contains(t, string(readResponse(t, response)), "data.bin")
+
+	webDAVCopyURL := environment.server.URL + "/webdav/hackmd/multipart/copy.bin"
+	webDAVCopy := authenticatedRequest(
+		t,
+		"COPY",
+		environment.server.URL+"/webdav/hackmd/multipart/data.bin",
+		nil,
+	)
+	webDAVCopy.Header.Set("Destination", webDAVCopyURL)
+	webDAVCopy.Header.Set("Overwrite", "F")
+	response, err = client.Do(webDAVCopy)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, response.StatusCode)
+	_ = readResponse(t, response)
+
+	webDAVDelete := authenticatedRequest(
+		t,
+		http.MethodDelete,
+		environment.server.URL+"/webdav/hackmd/multipart/data.bin",
+		nil,
+	)
+	response, err = client.Do(webDAVDelete)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNoContent, response.StatusCode)
+	_ = readResponse(t, response)
+	require.Zero(t, queryIntegrationCount(
+		t,
+		environment.database,
+		"SELECT COUNT(*) FROM tg_file_part_delete_state_tab WHERE delete_state = 'pending'",
+	))
+	response, err = client.Do(authenticatedRequest(t, http.MethodGet, webDAVCopyURL, nil))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, append(firstContent, secondContent...), readResponse(t, response))
+
+	webDAVMovedURL := environment.server.URL + "/webdav/hackmd/multipart/moved.bin"
+	webDAVMove := authenticatedRequest(t, "MOVE", webDAVCopyURL, nil)
+	webDAVMove.Header.Set("Destination", webDAVMovedURL)
+	webDAVMove.Header.Set("Overwrite", "F")
+	response, err = client.Do(webDAVMove)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusCreated, response.StatusCode)
+	_ = readResponse(t, response)
+	response, err = client.Do(authenticatedRequest(t, http.MethodGet, webDAVCopyURL, nil))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, response.StatusCode)
+	_ = readResponse(t, response)
+
+	webDAVDelete = authenticatedRequest(t, http.MethodDelete, webDAVMovedURL, nil)
+	response, err = client.Do(webDAVDelete)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNoContent, response.StatusCode)
+	_ = readResponse(t, response)
+	partCount := queryIntegrationCount(
+		t,
+		environment.database,
+		"SELECT COUNT(*) FROM tg_file_part_tab",
+	)
+	require.Positive(t, partCount)
+	require.Equal(t, partCount, queryIntegrationCount(
+		t,
+		environment.database,
+		"SELECT COUNT(*) FROM tg_file_part_delete_state_tab WHERE delete_state = 'pending'",
+	))
+	response, err = getResponse(t, client, objectURL)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, response.StatusCode)
+	_ = readResponse(t, response)
+
+	workerContext, cancelWorker := context.WithCancel(t.Context())
+	workerDone := make(chan error, 1)
+	go func() {
+		workerDone <- environment.manager.RunBlockDeleteWorker(workerContext)
+	}()
+	require.Eventually(t, func() bool {
+		return queryIntegrationCount(
+			t,
+			environment.database,
+			"SELECT COUNT(*) FROM tg_file_part_delete_state_tab WHERE delete_state = 'deleted'",
+		) == partCount
+	}, 3*time.Second, 20*time.Millisecond)
+	cancelWorker()
+	require.NoError(t, <-workerDone)
+
+	abortRequest := authenticatedRequest(
+		t,
+		http.MethodDelete,
+		objectURL+"?uploadId="+initiated.UploadID,
+		nil,
+	)
+	response, err = client.Do(abortRequest)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, response.StatusCode)
+	require.Contains(t, string(readResponse(t, response)), "NoSuchUpload")
+}
+
+func uploadIntegrationPart(
+	t *testing.T,
+	client *http.Client,
+	objectURL, uploadID string,
+	partNumber int,
+	content []byte,
+) string {
+	t.Helper()
+	target := fmt.Sprintf("%s?partNumber=%d&uploadId=%s", objectURL, partNumber, uploadID)
+	request := authenticatedRequest(t, http.MethodPut, target, bytes.NewReader(content))
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	_ = readResponse(t, response)
+	etag := response.Header.Get("ETag")
+	require.Len(t, etag, 34)
+	return etag
+}
+
+func TestS3MultipartListAbortAndProtocolErrors(t *testing.T) {
+	environment := newIntegrationEnvironment(t)
+	client := environment.server.Client()
+	firstURL := environment.server.URL + "/hackmd/active.bin"
+	secondURL := environment.server.URL + "/hackmd/nested/active.bin"
+	firstUploadID := createIntegrationMultipart(t, client, firstURL)
+	_ = createIntegrationMultipart(t, client, secondURL)
+
+	listRequest := authenticatedRequest(
+		t,
+		http.MethodGet,
+		environment.server.URL+"/hackmd?uploads&delimiter=/&max-keys=1000",
+		nil,
+	)
+	response, err := client.Do(listRequest)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	listBody := string(readResponse(t, response))
+	require.Contains(t, listBody, "<Key>active.bin</Key>")
+	require.Contains(t, listBody, "<Prefix>nested/</Prefix>")
+
+	copyPart := authenticatedRequest(
+		t,
+		http.MethodPut,
+		firstURL+"?partNumber=1&uploadId="+firstUploadID,
+		bytes.NewReader([]byte("copy")),
+	)
+	copyPart.Header.Set("X-Amz-Copy-Source", "/hackmd/source.bin")
+	response, err = client.Do(copyPart)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotImplemented, response.StatusCode)
+	require.Contains(t, string(readResponse(t, response)), "NotImplemented")
+
+	checksumPart := authenticatedRequest(
+		t,
+		http.MethodPut,
+		firstURL+"?partNumber=1&uploadId="+firstUploadID,
+		bytes.NewReader([]byte("checksum")),
+	)
+	checksumPart.Header.Set("X-Amz-Checksum-Sha256", "invalid")
+	response, err = client.Do(checksumPart)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotImplemented, response.StatusCode)
+	_ = readResponse(t, response)
+
+	_ = uploadIntegrationPart(t, client, firstURL, firstUploadID, 1, []byte("abort-me"))
+	for range 2 {
+		abort := authenticatedRequest(
+			t,
+			http.MethodDelete,
+			firstURL+"?uploadId="+firstUploadID,
+			nil,
+		)
+		response, err = client.Do(abort)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusNoContent, response.StatusCode)
+		_ = readResponse(t, response)
+	}
+	listParts := authenticatedRequest(
+		t,
+		http.MethodGet,
+		firstURL+"?uploadId="+firstUploadID,
+		nil,
+	)
+	response, err = client.Do(listParts)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, response.StatusCode)
+	require.Contains(t, string(readResponse(t, response)), "NoSuchUpload")
+
+	duplicateQuery := authenticatedRequest(
+		t,
+		http.MethodGet,
+		secondURL+"?uploadId=one&uploadId=two",
+		nil,
+	)
+	response, err = client.Do(duplicateQuery)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, response.StatusCode)
+	require.Contains(t, string(readResponse(t, response)), "InvalidArgument")
+}
+
+func createIntegrationMultipart(t *testing.T, client *http.Client, objectURL string) string {
+	t.Helper()
+	request := authenticatedRequest(t, http.MethodPost, objectURL+"?uploads", nil)
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	var initiated struct {
+		UploadID string `xml:"UploadId"`
+	}
+	require.NoError(t, xml.Unmarshal(readResponse(t, response), &initiated))
+	require.Len(t, initiated.UploadID, 64)
+	return initiated.UploadID
 }
 
 func TestS3AWSV2SignerAndPresignedURLInteroperate(t *testing.T) {

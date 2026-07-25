@@ -1,8 +1,11 @@
 package webdav
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/xxxsen/common/webapi/proxyutil"
 
@@ -20,7 +23,14 @@ func (h *WebdavHandler) handlePut(c *gin.Context) {
 		return
 	}
 	if err := h.fmgr.CreateFileLink(ctx, file, fileid, length, false); err != nil {
-		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("create link failed, err:%w", err))
+		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		cleanupErr := h.fmgr.DiscardUnpublishedFile(cleanupContext, fileid)
+		cancel()
+		proxyutil.FailStatus(
+			c,
+			http.StatusInternalServerError,
+			fmt.Errorf("create link failed: %w", errors.Join(err, cleanupErr)),
+		)
 		return
 	}
 	c.Status(http.StatusCreated)

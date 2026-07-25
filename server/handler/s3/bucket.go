@@ -83,6 +83,10 @@ func (h *S3Handler) GetBucketOrObject(c *gin.Context) {
 		h.GetBucket(c)
 		return
 	}
+	if hasQueryKey(c.Request.URL.Query(), "uploadId") {
+		h.ListParts(c)
+		return
+	}
 	h.DownloadObject(c)
 }
 
@@ -102,6 +106,8 @@ func (h *S3Handler) GetBucket(c *gin.Context) {
 		h.listObjectsV2(c, bucketName)
 	case hasQueryKey(query, "location"):
 		s3base.SimpleReply(c)
+	case hasQueryKey(query, "uploads"):
+		h.ListMultipartUploads(c)
 	case hasUnsupportedBucketSubresource(query):
 		writeUnsupportedBucketSubresource(c)
 	case isListObjectsV1Request(c.Request):
@@ -128,7 +134,19 @@ func (h *S3Handler) PostBucketOrObject(c *gin.Context) {
 		h.DeleteObjects(c)
 		return
 	}
-	h.NotImplemented(c)
+	query := c.Request.URL.Query()
+	hasUploads := hasQueryKey(query, "uploads")
+	hasUploadID := hasQueryKey(query, "uploadId")
+	switch {
+	case hasUploads && hasUploadID:
+		s3base.WriteError(c, s3base.InvalidRequest("uploads and uploadId cannot be combined.", nil))
+	case hasUploads:
+		h.CreateMultipartUpload(c)
+	case hasUploadID:
+		h.CompleteMultipartUpload(c)
+	default:
+		h.NotImplemented(c)
+	}
 }
 
 func (h *S3Handler) HeadBucket(c *gin.Context) {

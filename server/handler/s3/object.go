@@ -124,6 +124,21 @@ func (h *S3Handler) HeadObject(c *gin.Context) {
 }
 
 func (h *S3Handler) UploadObject(c *gin.Context) {
+	query := c.Request.URL.Query()
+	hasPartNumber := hasQueryKey(query, "partNumber")
+	hasUploadID := hasQueryKey(query, "uploadId")
+	if hasPartNumber || hasUploadID {
+		if !hasPartNumber || !hasUploadID {
+			if _, apiError := h.Authorize(c, true); apiError != nil {
+				s3base.WriteError(c, apiError)
+				return
+			}
+			s3base.WriteError(c, invalidMultipartArgument("partNumber and uploadId must be provided together.", nil))
+			return
+		}
+		h.UploadPart(c)
+		return
+	}
 	if h.rejectUnsupportedObjectQuery(c) {
 		return
 	}
@@ -166,6 +181,7 @@ func (h *S3Handler) UploadObject(c *gin.Context) {
 		preparation.condition,
 	)
 	if err != nil {
+		discardUploadedFile(c.Request.Context(), h.fmgr, fileID)
 		s3base.WriteError(c, mutationError(err))
 		return
 	}
@@ -305,15 +321,30 @@ func (h *S3Handler) receiveUpload(
 		return 0, nil, uploadError(err)
 	}
 	if _, err := io.Copy(io.Discard, reader); err != nil {
+		discardUploadedFile(c.Request.Context(), h.fmgr, fileID)
 		return 0, nil, uploadError(err)
 	}
 	if apiError := hashes.loadTrailer(c); apiError != nil {
+		discardUploadedFile(c.Request.Context(), h.fmgr, fileID)
 		return 0, nil, apiError
 	}
 	if apiError := hashes.validate(); apiError != nil {
+		discardUploadedFile(c.Request.Context(), h.fmgr, fileID)
 		return 0, nil, apiError
 	}
 	return fileID, hashes, nil
+}
+
+func discardUploadedFile(ctx context.Context, manager filemgr.IFileManager, fileID uint64) {
+	cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
+	if err := manager.DiscardUnpublishedFile(cleanupContext, fileID); err != nil {
+		logutil.GetLogger(ctx).Error(
+			"discard unpublished uploaded file failed",
+			zap.Error(err),
+			zap.Uint64("file_id", fileID),
+		)
+	}
 }
 
 func (h *S3Handler) authorizeObject(c *gin.Context) (Bucket, string, *s3base.APIError) {
@@ -949,7 +980,7 @@ func mutationError(err error) *s3base.APIError {
 	if errors.Is(err, filemgr.ErrS3Precondition) {
 		return s3base.PreconditionFailed(err)
 	}
-	if errors.Is(err, filemgr.ErrS3ObjectConflict) {
+	if errors.Is(err, filemgr.ErrS3ObjectConflict) || errors.Is(err, filemgr.ErrMultipartConflict) {
 		return s3base.NewError(
 			http.StatusConflict,
 			"ConditionalRequestConflict",

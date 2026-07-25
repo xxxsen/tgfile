@@ -372,16 +372,7 @@ func statS3ObjectTx(
 }
 
 func ensureFileCanBeLinked(ctx context.Context, queryer database.IQueryer, fileID uint64) error {
-	const query = `SELECT COUNT(*) FROM tg_file_part_delete_state_tab
-WHERE file_id = ? AND delete_state != 'live'`
-	var count int64
-	if err := queryRow(ctx, queryer, query, fileID).Scan(&count); err != nil {
-		return fmt.Errorf("check S3 file delete state: %w", err)
-	}
-	if count != 0 {
-		return ErrS3ObjectConflict
-	}
-	return nil
+	return ensureFileTreeCanBeLinked(ctx, queryer, fileID)
 }
 
 func deleteS3Metadata(ctx context.Context, exec database.IExecer, entryID uint64) error {
@@ -397,30 +388,7 @@ func markFilePendingIfUnreferenced(
 	fileID uint64,
 	now int64,
 ) error {
-	var count int64
-	if err := queryRow(
-		ctx,
-		queryExecer,
-		"SELECT COUNT(*) FROM tg_file_mapping_tab WHERE ref_data = ?",
-		strconv.FormatUint(fileID, 10),
-	).Scan(&count); err != nil {
-		return fmt.Errorf("count S3 file mappings: %w", err)
-	}
-	if count != 0 {
-		return nil
-	}
-	if _, err := queryExecer.ExecContext(
-		ctx,
-		`UPDATE tg_file_part_delete_state_tab
-SET delete_state = 'pending', next_attempt_at = ?, mtime = ?
-WHERE file_id = ? AND delete_state = 'live'`,
-		now,
-		now,
-		fileID,
-	); err != nil {
-		return fmt.Errorf("mark unreferenced S3 blocks pending: %w", err)
-	}
-	return nil
+	return markFileTreePendingIfUnreferenced(ctx, queryExecer, fileID, now)
 }
 
 func (d *defaultFileManager) CopyS3Object(

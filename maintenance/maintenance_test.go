@@ -183,6 +183,112 @@ INSERT INTO tg_file_part_delete_state_tab (
 	require.Equal(t, int64(1), report.PrivateFileWithDefaultsMapping)
 }
 
+func TestAuditUnderstandsCompositeAndMultipartReferences(t *testing.T) {
+	databaseFile := filepath.Join(t.TempDir(), "multipart-audit.db")
+	database, err := db.Open(databaseFile)
+	require.NoError(t, err)
+	now := time.Now().UnixMilli()
+	_, err = database.ExecContext(t.Context(), `
+INSERT INTO tg_file_tab (
+    file_id, file_size, file_part_count, file_state, ctime, mtime, extinfo, file_layout_version
+) VALUES
+    (300, 4, 1, 2, ?, ?, '{}', 1),
+    (301, 4, 1, 2, ?, ?, '{}', 2);
+INSERT INTO tg_file_part_tab (
+    file_id, file_part_id, file_key, file_part_md5, ctime, mtime
+) VALUES (300, 0, 'source-key', 'source-md5', ?, ?);
+INSERT INTO tg_file_part_delete_state_tab (
+    file_id, file_part_id, backend_kind, delete_ref, uploaded_at, delete_state,
+    attempt_count, next_attempt_at, lease_until, last_attempt_at, last_error_code,
+    deleted_at, ctime, mtime
+) VALUES (300, 0, 'telegram', 'delete-ref', ?, 'live', 0, 0, 0, 0, '', 0, ?, ?);
+INSERT INTO tg_s3_file_segment_tab (
+    file_id, segment_index, source_file_id, segment_size, ctime, mtime
+) VALUES (301, 0, 300, 4, ?, ?);
+INSERT INTO tg_file_mapping_tab (
+    entry_id, parent_entry_id, ref_data, file_kind,
+    ctime, mtime, file_size, file_mode, file_name
+) VALUES
+    (1, 0, '', 1, ?, ?, 0, 420, '/'),
+    (2, 1, '', 1, ?, ?, 0, 420, 'private-data'),
+    (3, 2, '301', 2, ?, ?, 4, 420, 'multipart.bin');
+INSERT INTO tg_s3_multipart_upload_tab (
+    upload_id, bucket_name, object_key, upload_state,
+    completion_fingerprint, result_file_id, result_etag,
+    initiated_at, expires_at, completed_at, cleanup_at, ctime, mtime
+) VALUES (
+    '0000000000000000000000000000000000000000000000000000000000000001',
+    'private-data', 'multipart.bin', 'completed',
+    'fingerprint', 301, '"etag-1"', ?, ?, ?, ?, ?, ?
+);
+INSERT INTO tg_s3_multipart_part_tab (
+    upload_id, part_number, part_state, file_id, part_size, part_etag,
+    uploaded_at, ctime, mtime
+) VALUES (
+    '0000000000000000000000000000000000000000000000000000000000000001',
+    1, 'selected', 300, 4, '0123456789abcdef0123456789abcdef', ?, ?, ?
+);`,
+		now, now,
+		now, now,
+		now,
+		now, now,
+		now, now,
+		now, now,
+		now, now,
+		now, now,
+		now, now+time.Hour.Milliseconds(), now,
+		now+time.Hour.Milliseconds(), now, now,
+		now, now, now,
+	)
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), `
+UPDATE tg_s3_multipart_upload_tab
+SET initiated_at = ?, expires_at = ?, completed_at = ?, cleanup_at = ?, ctime = ?, mtime = ?`,
+		now,
+		now+time.Hour.Milliseconds(),
+		now,
+		now+time.Hour.Milliseconds(),
+		now,
+		now,
+	)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	report, err := Audit(t.Context(), databaseFile)
+	require.NoError(t, err)
+	require.Empty(t, report.ReadyFilePartCountMismatch)
+	require.Zero(t, report.UnreferencedFileCount)
+	require.Zero(t, report.InvalidCompositeManifestCount)
+	require.Zero(t, report.InvalidCompletedUploadCount)
+	require.Zero(t, report.InvalidMultipartStateCount)
+	require.Equal(t, int64(1), report.MultipartUploadCountByState["completed"])
+	require.Equal(t, int64(1), report.MultipartPartCountByState["selected"])
+
+	writable, err := openDatabase(t.Context(), databaseFile, false)
+	require.NoError(t, err)
+	_, err = writable.ExecContext(
+		t.Context(),
+		"DELETE FROM tg_file_part_delete_state_tab WHERE file_id = 300",
+	)
+	require.NoError(t, err)
+	require.NoError(t, writable.Close())
+	report, err = Audit(t.Context(), databaseFile)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), report.MappedCompositeNonLiveSource)
+
+	writable, err = openDatabase(t.Context(), databaseFile, false)
+	require.NoError(t, err)
+	_, err = writable.ExecContext(
+		t.Context(),
+		"UPDATE tg_s3_file_segment_tab SET segment_size = 3 WHERE file_id = 301",
+	)
+	require.NoError(t, err)
+	require.NoError(t, writable.Close())
+	report, err = Audit(t.Context(), databaseFile)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), report.InvalidCompositeManifestCount)
+}
+
 func TestWriteAuditReportUsesPrivatePermissions(t *testing.T) {
 	output := filepath.Join(t.TempDir(), "audit.json")
 	require.NoError(t, os.WriteFile(output, []byte("old"), 0o600))

@@ -25,9 +25,10 @@ type S3BucketOptions struct {
 }
 
 type S3Options struct {
-	Enabled       bool
-	Buckets       []S3BucketOptions
-	MaxObjectSize int64
+	Enabled              bool
+	Buckets              []S3BucketOptions
+	MaxObjectSize        int64
+	MultipartExpireHours int
 }
 
 func WithS3(options S3Options) Option {

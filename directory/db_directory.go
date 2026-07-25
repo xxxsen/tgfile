@@ -15,20 +15,18 @@ import (
 )
 
 var (
-	errInvalidPath                  = errors.New("invalid directory path")
-	errNoRowsAffected               = errors.New("no rows affected")
-	errNoRowsInserted               = errors.New("no rows inserted")
-	errRootNotFoundAfterCreate      = errors.New("root entry not found after creation")
-	errPathComponentNotDirectory    = errors.New("path component is not a directory")
-	errCopySourceNotFound           = errors.New("copy source not found")
-	errDestinationMustNotBeRoot     = errors.New("destination must not be root")
-	errCopyDestinationDirectory     = errors.New("copy destination directory already exists")
-	errDestinationExists            = errors.New("destination exists and overwrite is disabled")
-	errDestinationInsideSource      = errors.New("destination is inside source")
-	errMoveSourceNotFound           = errors.New("move source not found")
-	errDirectoryOverwriteDisallowed = errors.New("overwriting a directory is not allowed")
-	errEntryMustNotBeRoot           = errors.New("file entry must not be root")
-	errInvalidScanBatch             = errors.New("invalid directory scan batch size")
+	errInvalidPath               = errors.New("invalid directory path")
+	errNoRowsAffected            = errors.New("no rows affected")
+	errNoRowsInserted            = errors.New("no rows inserted")
+	errRootNotFoundAfterCreate   = errors.New("root entry not found after creation")
+	errPathComponentNotDirectory = errors.New("path component is not a directory")
+	errCopySourceNotFound        = errors.New("copy source not found")
+	errDestinationMustNotBeRoot  = errors.New("destination must not be root")
+	errDestinationExists         = errors.New("destination exists and overwrite is disabled")
+	errDestinationInsideSource   = errors.New("destination is inside source")
+	errMoveSourceNotFound        = errors.New("move source not found")
+	errEntryMustNotBeRoot        = errors.New("file entry must not be root")
+	errInvalidScanBatch          = errors.New("invalid directory scan batch size")
 )
 
 type IDGenFunc func() uint64
@@ -197,7 +195,9 @@ func (t *directoryTransaction) Copy(
 		return nil, nil, err
 	}
 	if destinationExists {
-		overwritten = append(overwritten, destinationEntry)
+		if err := t.collectEntries(ctx, destinationEntry, &overwritten); err != nil {
+			return nil, nil, err
+		}
 	}
 	if err := t.directory.txDoCopy(ctx, t.tx, source, destination, overwrite); err != nil {
 		return nil, nil, err
@@ -215,6 +215,26 @@ func (t *directoryTransaction) Copy(
 		return nil, nil, err
 	}
 	return pairs, overwritten, nil
+}
+
+func (t *directoryTransaction) collectEntries(
+	ctx context.Context,
+	entry *directoryEntryTab,
+	entries *[]IDirectoryEntry,
+) error {
+	if entry.FileKind_ == defaultFileKindDir {
+		children, err := t.directory.txListAllDir(ctx, t.tx, entry.EntryId_)
+		if err != nil {
+			return fmt.Errorf("list transaction entry children: %w", err)
+		}
+		for _, child := range children {
+			if err := t.collectEntries(ctx, child, entries); err != nil {
+				return err
+			}
+		}
+	}
+	*entries = append(*entries, entry.ToDirectoyEntry())
+	return nil
 }
 
 func (t *directoryTransaction) collectCopyPairs(
@@ -268,7 +288,9 @@ func (t *directoryTransaction) Move(
 		return nil, err
 	}
 	if destinationExists {
-		overwritten = append(overwritten, destinationEntry)
+		if err := t.collectEntries(ctx, destinationEntry, &overwritten); err != nil {
+			return nil, err
+		}
 	}
 	if err := t.directory.txDoMove(ctx, t.tx, source, destination, overwrite); err != nil {
 		return nil, err
@@ -733,15 +755,13 @@ func (e *dbDirectory) txDoCopy(ctx context.Context, tx database.IQueryExecer, sr
 		return fmt.Errorf("get copy destination %q: %w", dst, err)
 	}
 	if exist {
-		if dinfo.FileKind_ == defaultFileKindDir { // 存在且目标为目录, 直接跳过后续流程
-			return errCopyDestinationDirectory
-		}
-		// 如果为文件, 则需要检查是否启用overwrite
 		if !overwrite {
 			return errDestinationExists
 		}
-		if err := e.txRemove(ctx, tx, dinfo.ParentEntryId_, dinfo.FileName_); err != nil {
-			return fmt.Errorf("delete before copy failed, err:%w", err)
+		transaction := &directoryTransaction{directory: e, tx: tx}
+		removed := make([]IDirectoryEntry, 0, 1)
+		if err := transaction.collectAndRemove(ctx, dinfo, &removed); err != nil {
+			return fmt.Errorf("delete before copy: %w", err)
 		}
 	}
 	// 执行递归copy流程
@@ -785,6 +805,9 @@ func (e *dbDirectory) precheckMoveCopy(src, dst string) (bool, error) {
 	if e.isArrayHasSuffix(d, s) {
 		return false, errDestinationInsideSource
 	}
+	if e.isArrayHasSuffix(s, d) {
+		return false, errDestinationInsideSource
+	}
 	return true, nil
 }
 
@@ -820,15 +843,13 @@ func (e *dbDirectory) txDoMove(ctx context.Context, tx database.IQueryExecer, sr
 		}
 		return nil
 	}
-	if dinfo.FileKind_ == defaultFileKindDir { // 不允许直接覆盖dir
-		return errDirectoryOverwriteDisallowed
-	}
-	if !overwrite { // 文件存在, 但是又没又overwrite选项, 直接返回
+	if !overwrite {
 		return errDestinationExists
 	}
-	// 删除老的, 并修改src父节点
-	if err := e.txRemove(ctx, tx, parentid, dname); err != nil {
-		return fmt.Errorf("overwrite but remove origin failed, err:%w", err)
+	transaction := &directoryTransaction{directory: e, tx: tx}
+	removed := make([]IDirectoryEntry, 0, 1)
+	if err := transaction.collectAndRemove(ctx, dinfo, &removed); err != nil {
+		return fmt.Errorf("remove overwritten move destination: %w", err)
 	}
 	if err := e.txChangeParent(ctx, tx, sinfo.EntryId_, parentid, &dname); err != nil {
 		return fmt.Errorf("move entry after replacing destination: %w", err)

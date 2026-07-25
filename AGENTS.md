@@ -7,9 +7,12 @@
 - 不允许主动降低代码质量要求，包括放宽 lint、跳过失败测试、删除测试、缩小检查范围，
   或使用 `//nolint` 等方式掩盖可以修复的问题。
 - 修改必须优先保证存量 S3 GET/HEAD、文件直链读取和 SQLite 数据兼容性。
-- Telegram 消息只允许在显式 S3 DeleteObject、DeleteObjects 或覆盖操作移除最后一个
-  Mapping 引用后，通过持久化删除状态机处理；读取、启动、audit、migration、普通
-  Mapping 操作和历史无删除引用的数据不得触发后端删除。
+- 已发布内容只允许在 S3 DeleteObject/DeleteObjects/S3 覆盖或 WebDAV DELETE、
+  COPY/MOVE 覆盖移除最后一个 Mapping 引用后，通过持久化删除状态机处理。
+- 未发布 Multipart 暂存内容只允许在 Abort、同 PartNumber 覆盖、Complete 未选择、
+  upload 过期或上传失败补偿时进入持久化删除状态机。
+- 读取、List、HEAD、PROPFIND、启动、audit、migration、无删除或覆盖的 Mapping 操作和
+  历史无删除引用的数据不得触发后端删除。
 - 后端删除成功也必须保留 File、Part 和删除状态记录；其他数据清理必须有审计结果、
   明确范围、备份和可验证的迁移/回滚方案。
 - 工作区可能包含用户尚未提交的修改。不得覆盖、丢弃或重置无关改动。
@@ -83,6 +86,10 @@ make check                  # 格式、vet、test、race、lint 全量门禁
 - 只读维护命令必须用 SQLite 只读模式，不能调用会建表或迁移 schema 的初始化逻辑。
 - S3 PUT 和 CopyObject 遵循标准覆盖语义，`If-Match`/`If-None-Match` 条件必须在最终
   SQLite 事务中再次判断；被替换内容只有在最后一个 Mapping 引用消失后才能进入删除队列。
+- WebDAV DELETE 以及 COPY/MOVE 覆盖必须在同一个 SQLite 事务中递归处理 Mapping、
+  S3 Metadata、最后引用判断和 durable outbox；成功响应不等待 Telegram 网络删除。
+- Multipart Complete 只能原子发布 layout v2 Composite File，不得重新上传或移动
+  Telegram Part；Abort、过期和未选择 Part 不得绕过 durable outbox。
 - 默认上传根目录固定为 `/defaults`；运行时代码不得增加历史路径 fallback。
 - 外部直链 key、file_id、Telegram FileKey、分片顺序和存量 MD5 不得静默改写。
 - 业务 schema DDL 只能放在根目录 `migrations/`，文件名使用 `NNNN_name.sql`；Go 代码中
