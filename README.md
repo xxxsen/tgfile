@@ -135,6 +135,12 @@ make install-golangci-lint
 make check
 ```
 
+## 设计文档
+
+- [系统架构](docs/01-architecture.md)
+- [数据与存储模型](docs/02-data-and-storage-model.md)
+- [核心流程与接口设计](docs/03-core-flows-and-api.md)
+
 ## 接口信息
 
 **基础接口**
