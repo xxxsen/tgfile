@@ -3,15 +3,20 @@ package mem
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 
 	"github.com/xxxsen/common/utils"
+
 	"github.com/xxxsen/tgfile/blockio"
 
 	"github.com/google/uuid"
 )
+
+var errInvalidBlockValue = errors.New("invalid in-memory block value")
 
 type memBlockIO struct {
 	bksize int64
@@ -22,22 +27,25 @@ func (m *memBlockIO) MaxFileSize() int64 {
 	return m.bksize
 }
 
-func (m *memBlockIO) Upload(ctx context.Context, r io.Reader) (string, error) {
+func (m *memBlockIO) Upload(_ context.Context, r io.Reader) (string, error) {
 	raw, err := io.ReadAll(r)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read block content: %w", err)
 	}
 	key := uuid.NewString()
 	m.m.Store(key, raw)
 	return key, nil
 }
 
-func (m *memBlockIO) Download(ctx context.Context, filekey string, pos int64) (io.ReadCloser, error) {
+func (m *memBlockIO) Download(_ context.Context, filekey string, pos int64) (io.ReadCloser, error) {
 	raw, ok := m.m.Load(filekey)
 	if !ok {
-		return nil, fmt.Errorf("key:%s not found", filekey)
+		return nil, fmt.Errorf("block key %q: %w", filekey, os.ErrNotExist)
 	}
-	data := raw.([]byte)
+	data, ok := raw.([]byte)
+	if !ok {
+		return nil, errInvalidBlockValue
+	}
 	if pos > int64(len(data)) {
 		pos = int64(len(data))
 	}
@@ -55,10 +63,10 @@ func New(bksize int64) (blockio.IBlockIO, error) {
 	return &memBlockIO{bksize: bksize}, nil
 }
 
-func create(args interface{}) (blockio.IBlockIO, error) {
+func create(args any) (blockio.IBlockIO, error) {
 	c := &config{}
 	if err := utils.ConvStructJson(args, c); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode memory block config: %w", err)
 	}
 	return New(c.BlockSize)
 }

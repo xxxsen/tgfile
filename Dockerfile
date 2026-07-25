@@ -1,4 +1,4 @@
-FROM golang:1.25
+FROM golang:1.25.12
 
 WORKDIR /build
 COPY . ./
@@ -8,3 +8,4 @@ FROM alpine:3.12
 COPY --from=0 /build/tgfile /bin/
 
 ENTRYPOINT [ "/bin/tgfile" ]
+CMD [ "serve" ]

@@ -6,10 +6,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
 	"github.com/xxxsen/tgfile/entity"
 )
 
 func TestScanMapping(t *testing.T) {
+	setupDAOTest(t)
 	ctx := context.Background()
 	for i := 0; i < 10; i++ {
 		_, err := fileMappingDao.CreateFileLink(ctx, &entity.CreateFileLinkRequest{
@@ -20,7 +22,7 @@ func TestScanMapping(t *testing.T) {
 		})
 		assert.NoError(t, err)
 	}
-	err := fileMappingDao.ScanFileLink(ctx, 1, func(ctx context.Context, res []*entity.FileLinkMeta) (bool, error) {
+	err := fileMappingDao.ScanFileLink(ctx, 1, func(_ context.Context, res []*entity.FileLinkMeta) (bool, error) {
 		if len(res) == 0 {
 			return false, nil
 		}

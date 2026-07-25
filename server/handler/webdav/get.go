@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/xxxsen/common/webapi/proxyutil"
+
 	"github.com/xxxsen/tgfile/server/httpkit"
 
 	"github.com/gin-gonic/gin"
@@ -27,7 +28,7 @@ func (h *WebdavHandler) handleGet(c *gin.Context) {
 		return
 	}
 	if item.IsDir {
-		proxyutil.FailStatus(c, http.StatusMethodNotAllowed, fmt.Errorf("cant open stream on dir"))
+		proxyutil.FailStatus(c, http.StatusMethodNotAllowed, errDirectoryStream)
 		return
 	}
 	stream, err := h.fmgr.OpenFile(ctx, item.FileId)
@@ -35,7 +36,7 @@ func (h *WebdavHandler) handleGet(c *gin.Context) {
 		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("open stream failed, err:%w", err))
 		return
 	}
-	defer stream.Close()
+	defer logCloseError(ctx, stream, "close WebDAV download")
 	httpkit.SetDefaultDownloadHeader(c, item)
 	http.ServeContent(c.Writer, c.Request, strconv.Quote(item.FileName), time.UnixMilli(item.Mtime), stream)
 }

@@ -16,18 +16,16 @@ type MarkFileReadyRequest struct {
 	Extinfo string
 }
 
-type MarkFileReadyResponse struct {
-}
+type MarkFileReadyResponse struct{}
 
 type CreateFilePartRequest struct {
 	FileId      uint64
 	FilePartId  int32
-	FileKey     string //真实的, 用于换取文件信息的key
+	FileKey     string // 真实的, 用于换取文件信息的key
 	FilePartMd5 string
 }
 
-type CreateFilePartResponse struct {
-}
+type CreateFilePartResponse struct{}
 
 type GetFileInfoRequest struct {
 	FileIds []uint64
@@ -59,7 +57,6 @@ func (f *FileInfoItem) ToFileMeta() *FileMeta {
 	}
 	if len(f.Extinfo) == 0 || f.Extinfo == "{}" {
 		return fm
-
 	}
 	var extinfo FileExtInfo
 	if err := json.Unmarshal([]byte(f.Extinfo), &extinfo); err == nil {
@@ -77,8 +74,7 @@ type DeleteFileRequest struct {
 	FileId []uint64
 }
 
-type DeleteFileResponse struct {
-}
+type DeleteFileResponse struct{}
 
 type FileMeta struct {
 	FileId        uint64

@@ -1,7 +1,6 @@
 package webdav
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/xxxsen/common/webapi/proxyutil"
@@ -10,5 +9,5 @@ import (
 )
 
 func (h *WebdavHandler) handlePropPatch(c *gin.Context) {
-	proxyutil.FailStatus(c, http.StatusForbidden, fmt.Errorf("no impl"))
+	proxyutil.FailStatus(c, http.StatusForbidden, errPropertyPatchMissing)
 }

@@ -5,12 +5,31 @@ import (
 	"fmt"
 	"os"
 
+	"go.uber.org/zap"
+
 	"github.com/xxxsen/common/logger"
 )
 
-type BotConfig struct { //默认的配置
+type BotConfig struct { // 默认的配置
 	Chatid uint64 `json:"chatid"`
 	Token  string `json:"token"`
+}
+
+func (c *Config) SafeLogFields() []zap.Field {
+	return []zap.Field{
+		zap.String("bind", c.Bind),
+		zap.String("db_file", c.DBFile),
+		zap.String("bot_kind", c.BotKind),
+		zap.Bool("s3_enable", c.S3.Enable),
+		zap.Strings("s3_buckets", c.S3.Bucket),
+		zap.Bool("webdav_enable", c.Webdav.Enable),
+		zap.String("webdav_root", c.Webdav.Root),
+		zap.Bool("l1_cache_enable", c.IOCache.EnableL1Cache),
+		zap.Int("l1_cache_size", c.IOCache.L1CacheSize),
+		zap.Bool("l2_cache_enable", c.IOCache.EnableL2Cache),
+		zap.Int("l2_cache_size", c.IOCache.L2CacheSize),
+		zap.Int("user_count", len(c.UserInfo)),
+	}
 }
 
 type S3Config struct {
@@ -38,7 +57,7 @@ type Config struct {
 	LogInfo      logger.LogConfig  `json:"log_info"`
 	DBFile       string            `json:"db_file"`
 	BotKind      string            `json:"bot_kind"`
-	BotInfo      interface{}       `json:"bot_config"`
+	BotInfo      any               `json:"bot_config"`
 	UserInfo     map[string]string `json:"user_info"`
 	S3           S3Config          `json:"s3"`
 	RotateStream int               `json:"rotate_stream"`

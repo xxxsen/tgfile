@@ -16,7 +16,11 @@ func (h *WebdavHandler) handleHead(c *gin.Context) {
 	file := h.buildSrcPath(c)
 	item, err := h.fmgr.StatFileLink(ctx, file)
 	if err != nil {
-		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("decode link info failed, link:%s, err:%w", file, err))
+		proxyutil.FailStatus(
+			c,
+			http.StatusInternalServerError,
+			fmt.Errorf("decode link info for %q: %w", file, err),
+		)
 		return
 	}
 	// if item.IsDir {
@@ -30,6 +34,6 @@ func (h *WebdavHandler) handleHead(c *gin.Context) {
 	if item.IsDir {
 		c.Writer.Header().Set("Content-Type", "text/plain")
 	}
-	//TODO: try set etag...
+	// TODO: try set etag...
 	c.Writer.Header().Set("Last-Modified", time.UnixMilli(item.Mtime).UTC().Format(http.TimeFormat))
 }

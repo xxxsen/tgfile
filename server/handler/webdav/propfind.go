@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/xxxsen/common/webapi/proxyutil"
+
 	"github.com/xxxsen/tgfile/entity"
 	"github.com/xxxsen/tgfile/server/httpkit"
 	"github.com/xxxsen/tgfile/server/model"
@@ -26,8 +27,8 @@ import (
 func (h *WebdavHandler) handlePropfind(c *gin.Context) {
 	ctx := c.Request.Context()
 	location := h.buildSrcPath(c)
-	var depth int = 0
-	if c.GetHeader("Depth") == "1" || c.GetHeader("Depth") == "infinity" { //非0的场景下， 均只获取直接子级
+	depth := 0
+	if c.GetHeader("Depth") == "1" || c.GetHeader("Depth") == "infinity" { // 非0的场景下， 均只获取直接子级
 		depth = 1
 	}
 	base, entries, err := h.propFindEntries(ctx, location, depth)
@@ -37,10 +38,14 @@ func (h *WebdavHandler) handlePropfind(c *gin.Context) {
 	}
 
 	if err != nil {
-		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("find entries failed, location:%s, depth:%d, err:%w", location, depth, err))
+		proxyutil.FailStatus(
+			c,
+			http.StatusInternalServerError,
+			fmt.Errorf("find entries at %q with depth %d: %w", location, depth, err),
+		)
 		return
 	}
-	//构建最终返回的时候, 需要将地址转换为用户可见的路径
+	// 构建最终返回的时候, 需要将地址转换为用户可见的路径
 	// 所以这里实际上应该返回的url的Path
 	userLocation := c.Request.URL.Path
 	res := h.generatePropfindResponse(userLocation, base, entries)
@@ -50,21 +55,26 @@ func (h *WebdavHandler) handlePropfind(c *gin.Context) {
 	}
 }
 
-func (h *WebdavHandler) propFindEntries(ctx context.Context, location string, depth int) (*entity.FileLinkMeta, []*entity.FileLinkMeta, error) {
+func (h *WebdavHandler) propFindEntries(
+	ctx context.Context,
+	location string,
+	depth int,
+) (*entity.FileLinkMeta, []*entity.FileLinkMeta, error) {
 	base, err := h.fmgr.StatFileLink(ctx, location)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("stat PROPFIND path %q: %w", location, err)
 	}
 
 	if !base.IsDir || depth == 0 {
 		return base, []*entity.FileLinkMeta{}, nil
 	}
 	rs := make([]*entity.FileLinkMeta, 0, 32)
-	if err := h.fmgr.WalkFileLink(ctx, location, func(ctx context.Context, link string, item *entity.FileLinkMeta) (bool, error) {
+	appendEntry := func(_ context.Context, _ string, item *entity.FileLinkMeta) (bool, error) {
 		rs = append(rs, item)
 		return true, nil
-	}); err != nil {
-		return nil, nil, err
+	}
+	if err := h.fmgr.WalkFileLink(ctx, location, appendEntry); err != nil {
+		return nil, nil, fmt.Errorf("walk PROPFIND path %q: %w", location, err)
 	}
 	sort.Slice(rs, func(i, j int) bool {
 		left := 0
@@ -80,34 +90,50 @@ func (h *WebdavHandler) propFindEntries(ctx context.Context, location string, de
 	return base, rs, nil
 }
 
-func (h *WebdavHandler) generatePropfindResponse(location string, base *entity.FileLinkMeta, ents []*entity.FileLinkMeta) *model.Multistatus {
+func (h *WebdavHandler) generatePropfindResponse(
+	location string,
+	base *entity.FileLinkMeta,
+	ents []*entity.FileLinkMeta,
+) *model.Multistatus {
 	ms := &model.Multistatus{
 		XMLNS: "DAV:",
 	}
-	if !base.IsDir { //文件的场景下
+	if !base.IsDir { // 文件的场景下
 		h.generatePropfindFileResponse(ms, location, base)
 		return ms
 	}
-	//构建目录枚举列表
+	// 构建目录枚举列表
 	h.generatePropfindDirResponse(ms, location, base, ents)
 	return ms
 }
 
-func (h *WebdavHandler) generatePropfindFileResponse(ms *model.Multistatus, location string, base *entity.FileLinkMeta) {
+func (h *WebdavHandler) generatePropfindFileResponse(
+	ms *model.Multistatus,
+	location string,
+	base *entity.FileLinkMeta,
+) {
 	ms.Responses = append(ms.Responses, h.convertFileMappingItemToResponse(path.Dir(location), base))
 }
 
-func (h *WebdavHandler) generatePropfindDirResponse(ms *model.Multistatus, location string, base *entity.FileLinkMeta, ents []*entity.FileLinkMeta) {
-	{ //处理父目录
+func (h *WebdavHandler) generatePropfindDirResponse(
+	ms *model.Multistatus,
+	location string,
+	base *entity.FileLinkMeta,
+	ents []*entity.FileLinkMeta,
+) {
+	{ // 处理父目录
 		ms.Responses = append(ms.Responses, h.convertLastDirFileMappingItemToResponse(location, base))
 	}
-	//处理子节点
+	// 处理子节点
 	for _, item := range ents {
 		ms.Responses = append(ms.Responses, h.convertFileMappingItemToResponse(location, item))
 	}
 }
 
-func (h *WebdavHandler) convertLastDirFileMappingItemToResponse(root string, file *entity.FileLinkMeta) *model.Response {
+func (h *WebdavHandler) convertLastDirFileMappingItemToResponse(
+	root string,
+	file *entity.FileLinkMeta,
+) *model.Response {
 	if !strings.HasSuffix(root, "/") {
 		root += "/"
 	}
@@ -147,7 +173,7 @@ func (h *WebdavHandler) convertFileMappingItemToResponse(root string, file *enti
 	}
 
 	if file.IsDir {
-		resp.Propstat.Prop.ResourceType.Collection = " " //不能空
+		resp.Propstat.Prop.ResourceType.Collection = " " // 不能空
 	} else {
 		resp.Propstat.Prop.ContentLength = file.FileSize
 		contentType := httpkit.DetermineMimeType(filename) // 基于扩展名提取文件类型

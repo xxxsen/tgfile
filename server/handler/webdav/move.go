@@ -20,13 +20,17 @@ func (h *WebdavHandler) handleMove(c *gin.Context) {
 		return
 	}
 	if err := h.fmgr.RenameFileLink(ctx, src, dst, isOverWrite); err != nil {
-		proxyutil.FailStatus(c, http.StatusInternalServerError, fmt.Errorf("rename link failed, src:%s, dst:%s, err:%w", src, dst, err))
+		proxyutil.FailStatus(
+			c,
+			http.StatusInternalServerError,
+			fmt.Errorf("move link from %q to %q: %w", src, dst, err),
+		)
 		return
 	}
 	c.Status(http.StatusCreated)
 }
 
-func (h *WebdavHandler) checkSameWebdavRoot(src string, dst string) bool {
+func (h *WebdavHandler) checkSameWebdavRoot(src, dst string) bool {
 	src = strings.TrimPrefix(src, "/")
 	idx := strings.Index(src, "/")
 	if idx < 0 {

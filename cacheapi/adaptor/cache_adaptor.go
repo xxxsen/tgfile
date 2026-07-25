@@ -5,6 +5,7 @@ import (
 
 	lru "github.com/hashicorp/golang-lru/v2"
 	explru "github.com/hashicorp/golang-lru/v2/expirable"
+
 	"github.com/xxxsen/tgfile/cacheapi"
 )
 
@@ -12,7 +13,7 @@ type lruCacheAdaptor[K comparable, V any] struct {
 	c *lru.Cache[K, V]
 }
 
-func (l *lruCacheAdaptor[K, V]) Get(ctx context.Context, k K) (V, error) {
+func (l *lruCacheAdaptor[K, V]) Get(_ context.Context, k K) (V, error) {
 	v, ok := l.c.Get(k)
 	if !ok {
 		return v, cacheapi.ErrCacheKeyNotExist
@@ -20,12 +21,12 @@ func (l *lruCacheAdaptor[K, V]) Get(ctx context.Context, k K) (V, error) {
 	return v, nil
 }
 
-func (l *lruCacheAdaptor[K, V]) Set(ctx context.Context, k K, v V) error {
+func (l *lruCacheAdaptor[K, V]) Set(_ context.Context, k K, v V) error {
 	_ = l.c.Add(k, v)
 	return nil
 }
 
-func (l *lruCacheAdaptor[K, V]) Del(ctx context.Context, k K) error {
+func (l *lruCacheAdaptor[K, V]) Del(_ context.Context, k K) error {
 	_ = l.c.Remove(k)
 	return nil
 }
@@ -40,7 +41,7 @@ type expirableLruCacheAdaptor[K comparable, V any] struct {
 	c *explru.LRU[K, V]
 }
 
-func (e *expirableLruCacheAdaptor[K, V]) Get(ctx context.Context, k K) (V, error) {
+func (e *expirableLruCacheAdaptor[K, V]) Get(_ context.Context, k K) (V, error) {
 	v, ok := e.c.Get(k)
 	if !ok {
 		return v, cacheapi.ErrCacheKeyNotExist
@@ -48,12 +49,12 @@ func (e *expirableLruCacheAdaptor[K, V]) Get(ctx context.Context, k K) (V, error
 	return v, nil
 }
 
-func (e *expirableLruCacheAdaptor[K, V]) Set(ctx context.Context, k K, v V) error {
+func (e *expirableLruCacheAdaptor[K, V]) Set(_ context.Context, k K, v V) error {
 	_ = e.c.Add(k, v)
 	return nil
 }
 
-func (e *expirableLruCacheAdaptor[K, V]) Del(ctx context.Context, k K) error {
+func (e *expirableLruCacheAdaptor[K, V]) Del(_ context.Context, k K) error {
 	_ = e.c.Remove(k)
 	return nil
 }

@@ -4,51 +4,36 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/xxxsen/tgfile/db"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/xxxsen/common/database"
 	"github.com/xxxsen/common/idgen"
 )
 
 var (
-	dbfile = "/tmp/sqlite_webdav_test.db"
-	dbc    database.IDatabase
-	dav    IDirectory
+	dbc database.IDatabase
+	dav IDirectory
 )
 
-func setup() {
-	tearDown()
+func setupDirectoryTest(t *testing.T) {
+	t.Helper()
 	var err error
-	if err := db.InitDB(dbfile); err != nil {
-		panic(err)
-	}
-	dbc = db.GetClient()
+	dbc, err = db.Open(filepath.Join(t.TempDir(), "data.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		require.NoError(t, dbc.Close())
+	})
 	dav, err = NewDBDirectory(dbc, "tg_file_mapping_tab", idgen.Default().NextId)
-	if err != nil {
-		panic(err)
-	}
-}
-
-func tearDown() {
-	if dbc != nil {
-		_ = dbc.Close()
-	}
-	os.RemoveAll(dbfile)
-}
-
-func TestMain(m *testing.M) {
-	setup()
-	code := m.Run()
-	tearDown()
-	if code != 0 {
-		os.Exit(code)
-	}
+	require.NoError(t, err)
 }
 
 func TestMkdir(t *testing.T) {
+	setupDirectoryTest(t)
 	ctx := context.Background()
 	err := dav.Mkdir(ctx, "/a/b/c/d/e/f/g")
 	assert.NoError(t, err)
@@ -66,6 +51,7 @@ func TestMkdir(t *testing.T) {
 }
 
 func TestCreateFile(t *testing.T) {
+	setupDirectoryTest(t)
 	ctx := context.Background()
 	err := dav.Create(ctx, "/1/2.txt", 123, "aaaa")
 	assert.NoError(t, err)
@@ -80,6 +66,7 @@ func TestCreateFile(t *testing.T) {
 }
 
 func TestStatMissingDoesNotCreateParentDirectories(t *testing.T) {
+	setupDirectoryTest(t)
 	ctx := context.Background()
 	_, err := dav.Stat(ctx, "/stat_read_only/nested/missing.pdf")
 	assert.ErrorIs(t, err, os.ErrNotExist)
@@ -89,6 +76,7 @@ func TestStatMissingDoesNotCreateParentDirectories(t *testing.T) {
 }
 
 func TestListDir(t *testing.T) {
+	setupDirectoryTest(t)
 	ctx := context.Background()
 	for i := 0; i < 1000; i++ {
 		err := dav.Create(ctx, fmt.Sprintf("/list/%d.txt", i), 100, "aaaa")
@@ -100,6 +88,7 @@ func TestListDir(t *testing.T) {
 }
 
 func TestRemove(t *testing.T) {
+	setupDirectoryTest(t)
 	ctx := context.Background()
 	testPath := "/delete_test"
 	err := dav.Mkdir(ctx, testPath)
@@ -125,7 +114,7 @@ func TestRemove(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 10, len(items))
 
-	//remove then
+	// remove then
 	err = dav.Remove(ctx, testPath)
 	assert.NoError(t, err)
 	_, err = dav.List(ctx, testPath)
@@ -133,6 +122,7 @@ func TestRemove(t *testing.T) {
 }
 
 func TestRemoveRoot(t *testing.T) {
+	setupDirectoryTest(t)
 	ctx := context.Background()
 	err := dav.Remove(ctx, "/")
 	assert.NoError(t, err)
@@ -187,6 +177,7 @@ type testMovePair struct {
 }
 
 func TestMove(t *testing.T) {
+	setupDirectoryTest(t)
 	ctx := context.Background()
 	testPath := "/move_test"
 	err := dav.Mkdir(ctx, testPath)
@@ -376,7 +367,7 @@ func TestMove(t *testing.T) {
 			},
 		},
 		{
-			name: "check_dir_overwrite_file", //目标为文件, 那么可以overwrite
+			name: "check_dir_overwrite_file", // 目标为文件, 那么可以overwrite
 			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/b/c",
@@ -407,7 +398,7 @@ func TestMove(t *testing.T) {
 			},
 		},
 		{
-			name: "check_dir_overwrite_dir", //目标为dir, 无法进行overwrite
+			name: "check_dir_overwrite_dir", // 目标为dir, 无法进行overwrite
 			prepareList: []testMovePrepareItem{
 				{
 					link:  "/a/b/c",
@@ -468,6 +459,7 @@ type testCopyPair struct {
 }
 
 func TestCopy(t *testing.T) {
+	setupDirectoryTest(t)
 	ctx := context.Background()
 	testPath := "/copy_test"
 	err := dav.Mkdir(ctx, testPath)
@@ -753,13 +745,14 @@ func TestCopy(t *testing.T) {
 }
 
 func TestScan(t *testing.T) {
+	setupDirectoryTest(t)
 	ctx := context.Background()
 	_ = dav.Remove(ctx, "/")
 	for i := 0; i < 10; i++ {
 		err := dav.Create(ctx, fmt.Sprintf("/%d.txt", i), 0, "123")
 		assert.NoError(t, err)
 	}
-	err := dav.Scan(ctx, 1, func(ctx context.Context, res []IDirectoryEntry) (bool, error) {
+	err := dav.Scan(ctx, 1, func(_ context.Context, res []IDirectoryEntry) (bool, error) {
 		if len(res) == 0 {
 			return false, nil
 		}

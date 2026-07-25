@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/dgraph-io/ristretto/v2"
+
 	"github.com/xxxsen/tgfile/cacheapi"
 )
 
@@ -15,7 +16,7 @@ type ristrettoCacheWrap[K LimitRistrettoKey, V any] struct {
 	c *ristretto.Cache[K, V]
 }
 
-func (r *ristrettoCacheWrap[K, V]) Get(ctx context.Context, k K) (V, error) {
+func (r *ristrettoCacheWrap[K, V]) Get(_ context.Context, k K) (V, error) {
 	v, ok := r.c.Get(k)
 	if !ok {
 		return v, cacheapi.ErrCacheKeyNotExist
@@ -23,13 +24,20 @@ func (r *ristrettoCacheWrap[K, V]) Get(ctx context.Context, k K) (V, error) {
 	return v, nil
 }
 
-func (r *ristrettoCacheWrap[K, V]) Set(ctx context.Context, k K, v V) error {
-	_ = r.c.Set(k, v, 0)
+func (r *ristrettoCacheWrap[K, V]) Set(_ context.Context, k K, v V) error {
+	if !r.c.Set(k, v, 0) {
+		return cacheapi.ErrCacheSetRejected
+	}
+	r.c.Wait()
+	if _, ok := r.c.Get(k); !ok {
+		return cacheapi.ErrCacheSetRejected
+	}
 	return nil
 }
 
-func (r *ristrettoCacheWrap[K, V]) Del(ctx context.Context, k K) error {
+func (r *ristrettoCacheWrap[K, V]) Del(_ context.Context, k K) error {
 	r.c.Del(k)
+	r.c.Wait()
 	return nil
 }
 
