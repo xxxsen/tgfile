@@ -3,8 +3,6 @@ package maintenance
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -44,7 +42,7 @@ INSERT INTO tg_file_tab (
 	}
 
 	insertMapping(1, 0, "", 1, "/")
-	insertMapping(2, 1, "", 1, "defauls")
+	insertMapping(2, 1, "", 1, "defaults")
 	insertMapping(3, 2, "", 1, "01")
 	insertMapping(4, 3, "100", 2, "0123456789abcdef-file")
 	insertMapping(5, 1, "101", 2, "draft")
@@ -88,8 +86,7 @@ func TestAuditIsReadOnlyAndReportsAnomalies(t *testing.T) {
 	require.Len(t, report.ReadyFilePartCountMismatch, 1)
 	require.Equal(t, uint64(102), report.ReadyFilePartCountMismatch[0].FileID)
 	require.Equal(t, int64(2), report.UnreferencedFileCount)
-	require.True(t, report.LegacyDefaultRootExists)
-	require.False(t, report.CorrectDefaultRootExists)
+	require.True(t, report.DefaultRootExists)
 	require.Equal(t, before, fileDigest(t, databaseFile))
 
 	readOnly, err := openDatabase(context.Background(), databaseFile, true)
@@ -97,6 +94,23 @@ func TestAuditIsReadOnlyAndReportsAnomalies(t *testing.T) {
 	defer readOnly.Close()
 	_, err = readOnly.ExecContext(context.Background(), "UPDATE tg_file_tab SET file_size = 0;")
 	require.Error(t, err)
+}
+
+func TestAuditReportsMissingDefaultRoot(t *testing.T) {
+	databaseFile := filepath.Join(t.TempDir(), "data.db")
+	database, err := db.Open(databaseFile)
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), `
+INSERT INTO tg_file_mapping_tab (
+    entry_id, parent_entry_id, ref_data, file_kind,
+    ctime, mtime, file_size, file_mode, file_name
+) VALUES (1, 0, '', 1, 100, 200, 0, 420, '/');`)
+	require.NoError(t, err)
+	require.NoError(t, database.Close())
+
+	report, err := Audit(t.Context(), databaseFile)
+	require.NoError(t, err)
+	require.False(t, report.DefaultRootExists)
 }
 
 func TestWriteAuditReportUsesPrivatePermissions(t *testing.T) {
@@ -109,104 +123,4 @@ func TestWriteAuditReportUsesPrivatePermissions(t *testing.T) {
 	raw, err := os.ReadFile(output)
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "telegram-key")
-}
-
-func TestMigrateDefaultPrefixForwardAndReverse(t *testing.T) {
-	databaseFile := createMaintenanceDatabase(t)
-	ctx := context.Background()
-
-	dryRun, err := MigrateDefaultPrefix(ctx, databaseFile, DirectionForward, true)
-	require.NoError(t, err)
-	require.Equal(t, int64(1), dryRun.RootCount)
-	require.Equal(t, int64(1), dryRun.SourceCount)
-	require.Equal(t, int64(0), dryRun.TargetCount)
-	require.True(t, dryRun.SourceIsDir)
-	require.Zero(t, dryRun.ChangedRows)
-
-	forward, err := MigrateDefaultPrefix(ctx, databaseFile, DirectionForward, false)
-	require.NoError(t, err)
-	require.Equal(t, int64(1), forward.ChangedRows)
-	assertPrefixRow(t, databaseFile, "defaults", 2, 1, 100, 200)
-
-	already, err := MigrateDefaultPrefix(ctx, databaseFile, DirectionForward, true)
-	require.NoError(t, err)
-	require.True(t, already.AlreadyMigrated)
-	_, err = MigrateDefaultPrefix(ctx, databaseFile, DirectionForward, false)
-	require.Error(t, err)
-	require.True(t, IsPreconditionError(err))
-
-	reverse, err := MigrateDefaultPrefix(ctx, databaseFile, DirectionReverse, false)
-	require.NoError(t, err)
-	require.Equal(t, int64(1), reverse.ChangedRows)
-	assertPrefixRow(t, databaseFile, "defauls", 2, 1, 100, 200)
-}
-
-func TestMigrateDefaultPrefixRejectsConflictWithoutChanges(t *testing.T) {
-	databaseFile := createMaintenanceDatabase(t)
-	database, err := sql.Open("sqlite", databaseFile)
-	require.NoError(t, err)
-	_, err = database.ExecContext(t.Context(), `
-INSERT INTO tg_file_mapping_tab (
-    entry_id, parent_entry_id, ref_data, file_kind,
-    ctime, mtime, file_size, file_mode, file_name
-) VALUES (20, 1, '', 1, 300, 400, 0, 420, 'defaults');`)
-	require.NoError(t, err)
-	require.NoError(t, database.Close())
-	before := fileDigest(t, databaseFile)
-
-	_, err = MigrateDefaultPrefix(context.Background(), databaseFile, DirectionForward, false)
-	require.Error(t, err)
-	require.True(t, IsPreconditionError(err))
-	require.Equal(t, before, fileDigest(t, databaseFile))
-}
-
-func TestMigrateDefaultPrefixRejectsAlreadyMigratedNonDirectory(t *testing.T) {
-	databaseFile := createMaintenanceDatabase(t)
-	_, err := MigrateDefaultPrefix(context.Background(), databaseFile, DirectionForward, false)
-	require.NoError(t, err)
-	database, err := sql.Open("sqlite", databaseFile)
-	require.NoError(t, err)
-	_, err = database.ExecContext(
-		t.Context(),
-		"UPDATE tg_file_mapping_tab SET file_kind = 2 WHERE file_name = 'defaults';",
-	)
-	require.NoError(t, err)
-	require.NoError(t, database.Close())
-
-	_, err = MigrateDefaultPrefix(context.Background(), databaseFile, DirectionForward, true)
-	require.Error(t, err)
-	require.True(t, IsPreconditionError(err))
-}
-
-func assertPrefixRow(t *testing.T, databaseFile, name string, entryID, parentID uint64, ctime, mtime int64) {
-	t.Helper()
-	database, err := sql.Open("sqlite", databaseFile)
-	require.NoError(t, err)
-	defer database.Close()
-	var gotEntryID, gotParentID uint64
-	var gotCTime, gotMTime, gotFileSize, gotFileMode int64
-	var gotRefData string
-	var count int
-	require.NoError(t, database.QueryRowContext(t.Context(), `
-SELECT entry_id, parent_entry_id, ctime, mtime, ref_data, file_size, file_mode
-FROM tg_file_mapping_tab
-WHERE file_name = ?;`, name).Scan(
-		&gotEntryID,
-		&gotParentID,
-		&gotCTime,
-		&gotMTime,
-		&gotRefData,
-		&gotFileSize,
-		&gotFileMode,
-	))
-	require.Equal(t, entryID, gotEntryID)
-	require.Equal(t, parentID, gotParentID)
-	require.Equal(t, ctime, gotCTime)
-	require.Equal(t, mtime, gotMTime)
-	require.Empty(t, gotRefData)
-	require.Zero(t, gotFileSize)
-	require.Equal(t, int64(420), gotFileMode)
-	require.NoError(t, database.QueryRowContext(t.Context(), `
-SELECT COUNT(*) FROM tg_file_mapping_tab WHERE parent_entry_id = ?;`, entryID).Scan(&count))
-	require.Equal(t, 1, count, fmt.Sprintf("/%s children changed", name))
 }

@@ -32,8 +32,7 @@ type AuditReport struct {
 	MappingToNonReadyFile      []MappingIssue   `json:"mapping_to_non_ready_file"`
 	ReadyFilePartCountMismatch []PartCountIssue `json:"ready_file_part_count_mismatch"`
 	UnreferencedFileCount      int64            `json:"unreferenced_file_count"`
-	LegacyDefaultRootExists    bool             `json:"legacy_default_root_exists"`
-	CorrectDefaultRootExists   bool             `json:"correct_default_root_exists"`
+	DefaultRootExists          bool             `json:"default_root_exists"`
 }
 
 func readFileStateTotals(ctx context.Context, database *sql.DB, report *AuditReport) error {
@@ -229,13 +228,9 @@ WHERE NOT EXISTS (
 		return nil, fmt.Errorf("count unreferenced files: %w", err)
 	}
 
-	legacyRoot := database.QueryRowContext(ctx, defaultRootExistsSQL, "defauls")
-	if err := legacyRoot.Scan(&report.LegacyDefaultRootExists); err != nil {
-		return nil, fmt.Errorf("check legacy default root: %w", err)
-	}
-	correctRoot := database.QueryRowContext(ctx, defaultRootExistsSQL, "defaults")
-	if err := correctRoot.Scan(&report.CorrectDefaultRootExists); err != nil {
-		return nil, fmt.Errorf("check correct default root: %w", err)
+	defaultRoot := database.QueryRowContext(ctx, defaultRootExistsSQL, "defaults")
+	if err := defaultRoot.Scan(&report.DefaultRootExists); err != nil {
+		return nil, fmt.Errorf("check default root: %w", err)
 	}
 	return report, nil
 }

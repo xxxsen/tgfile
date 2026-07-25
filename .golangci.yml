@@ -145,9 +145,6 @@ linters:
 
     misspell:
       locale: US
-      # 历史数据库路径的真实拼写；迁移代码必须能定位旧值。
-      ignore-rules:
-        - defauls
 
     nestif:
       min-complexity: 4

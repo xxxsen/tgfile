@@ -2,7 +2,6 @@ package server_test
 
 import (
 	"bytes"
-	"encoding/hex"
 	"encoding/json"
 	"io"
 	"mime/multipart"
@@ -17,9 +16,7 @@ import (
 	"github.com/xxxsen/tgfile/blockio/mem"
 	"github.com/xxxsen/tgfile/db"
 	"github.com/xxxsen/tgfile/filemgr"
-	"github.com/xxxsen/tgfile/maintenance"
 	"github.com/xxxsen/tgfile/server"
-	"github.com/xxxsen/tgfile/utils"
 )
 
 func newIntegrationServer(t *testing.T) *httptest.Server {
@@ -118,7 +115,7 @@ func TestS3PutGetHeadRangeAndConflict(t *testing.T) {
 	require.Equal(t, content, readResponse(t, response))
 }
 
-func TestDirectUploadDownloadAndRemovedMultipartRoutes(t *testing.T) {
+func TestDirectUploadDownload(t *testing.T) {
 	testServer := newIntegrationServer(t)
 	client := testServer.Client()
 	content := []byte("direct upload content")
@@ -155,76 +152,4 @@ func TestDirectUploadDownloadAndRemovedMultipartRoutes(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusBadRequest, response.StatusCode)
 	_ = readResponse(t, response)
-}
-
-func TestDefaultPrefixMigrationPreservesHistoricalDirectLink(t *testing.T) {
-	logger.Init("", "debug", 0, 0, 0, true)
-	databaseFile := filepath.Join(t.TempDir(), "data.db")
-	database, err := db.Open(databaseFile)
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		require.NoError(t, database.Close())
-	})
-	block, err := mem.New(4)
-	require.NoError(t, err)
-	cache, err := filemgr.NewFileIOCache(&filemgr.FileIOCacheConfig{
-		DisableL1Cache: true,
-		DisableL2Cache: true,
-	})
-	require.NoError(t, err)
-	manager := filemgr.NewFileManager(database, block, cache)
-
-	content := []byte("historical direct-link content")
-	fileID, err := manager.CreateFile(
-		t.Context(),
-		int64(len(content)),
-		bytes.NewReader(content),
-	)
-	require.NoError(t, err)
-	hash := hex.EncodeToString(utils.FileIdToHash(fileID))
-	key := hash + "-history.txt"
-	legacyPath := "/defauls/" + key[:2] + "/" + key
-	canonicalPath := "/defaults/" + key[:2] + "/" + key
-	require.NoError(t, manager.CreateFileLink(
-		t.Context(),
-		legacyPath,
-		fileID,
-		int64(len(content)),
-		false,
-	))
-
-	_, err = manager.StatFileLink(t.Context(), canonicalPath)
-	require.Error(t, err)
-	result, err := maintenance.MigrateDefaultPrefix(
-		t.Context(),
-		databaseFile,
-		maintenance.DirectionForward,
-		false,
-	)
-	require.NoError(t, err)
-	require.Equal(t, int64(1), result.ChangedRows)
-
-	handler, err := server.New(
-		"127.0.0.1:0",
-		server.WithFileManager(manager),
-	)
-	require.NoError(t, err)
-	testServer := httptest.NewServer(handler)
-	t.Cleanup(testServer.Close)
-
-	response, err := getResponse(t, testServer.Client(), testServer.URL+"/file/download/"+key)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusOK, response.StatusCode)
-	require.Equal(t, content, readResponse(t, response))
-
-	result, err = maintenance.MigrateDefaultPrefix(
-		t.Context(),
-		databaseFile,
-		maintenance.DirectionReverse,
-		false,
-	)
-	require.NoError(t, err)
-	require.Equal(t, int64(1), result.ChangedRows)
-	_, err = manager.StatFileLink(t.Context(), legacyPath)
-	require.NoError(t, err)
 }
