@@ -236,12 +236,14 @@ type listBucketV1Result struct {
 }
 
 type listContent struct {
-	Key          string     `xml:"Key"`
-	LastModified string     `xml:"LastModified"`
-	ETag         string     `xml:"ETag"`
-	Size         int64      `xml:"Size"`
-	StorageClass string     `xml:"StorageClass"`
-	Owner        *listOwner `xml:"Owner,omitempty"`
+	Key               string     `xml:"Key"`
+	LastModified      string     `xml:"LastModified"`
+	ETag              string     `xml:"ETag"`
+	Size              int64      `xml:"Size"`
+	ChecksumAlgorithm string     `xml:"ChecksumAlgorithm,omitempty"`
+	ChecksumType      string     `xml:"ChecksumType,omitempty"`
+	StorageClass      string     `xml:"StorageClass"`
+	Owner             *listOwner `xml:"Owner,omitempty"`
 }
 
 type commonPrefix struct {
@@ -332,11 +334,13 @@ func listContents(items []filemgr.S3ListItem, encodingType string, fetchOwner bo
 	contents := make([]listContent, 0, len(items))
 	for _, item := range items {
 		content := listContent{
-			Key:          encodeListValue(item.Key, encodingType),
-			LastModified: time.UnixMilli(item.LastModified).UTC().Format("2006-01-02T15:04:05.000Z"),
-			ETag:         item.ETag,
-			Size:         item.Size,
-			StorageClass: "STANDARD",
+			Key:               encodeListValue(item.Key, encodingType),
+			LastModified:      time.UnixMilli(item.LastModified).UTC().Format("2006-01-02T15:04:05.000Z"),
+			ETag:              item.ETag,
+			Size:              item.Size,
+			ChecksumAlgorithm: item.ChecksumAlgorithm,
+			ChecksumType:      item.ChecksumType,
+			StorageClass:      "STANDARD",
 		}
 		if fetchOwner {
 			content.Owner = &listOwner{ID: "tgfile", DisplayName: "tgfile"}

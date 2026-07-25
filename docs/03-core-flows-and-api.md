@@ -31,8 +31,8 @@
 `POST /{bucket}?delete` 和 `POST /{bucket}/?delete`。
 
 不实现 bucket 创建/删除、对象 ACL、版本控制、tagging、lifecycle 和
-SelectObjectContent。Multipart 首版不实现 UploadPartCopy、additional checksum、SSE 和
-对象 ACL，对应请求稳定返回 NotImplemented。其他未实现的标准 bucket/object subresource
+SelectObjectContent。Multipart 不实现 UploadPartCopy、SSE 和对象 ACL，对应请求稳定返回
+NotImplemented。其他未实现的标准 bucket/object subresource
 在鉴权后也返回 NotImplemented，不能进入普通对象 I/O，也不能因空对象 key 返回
 InvalidObjectName；普通 PutObject 的 `x-amz-acl` 和 grant header 返回
 AccessControlListNotSupported。
@@ -53,7 +53,8 @@ SigV4 固定使用 region `us-east-1`、service `s3`，凭据来自 `user_info`�
 
 handler 只能读取 verifier 返回的 Body，并且必须成功读到 EOF 后才能发布 Mapping。
 streaming 模式校验每个 chunk、签名链、解码长度和 trailer；应用层另外校验
-`x-amz-trailer` 声明的对象 checksum，不能只验证 trailer 签名。
+`x-amz-trailer` 声明的对象或 Part checksum，不能只验证 trailer 签名。checksum header
+属于 canonical request；public-read ACL 不改变签名和 checksum 规则。
 
 认证错误使用稳定 S3 XML code，不在响应或日志中暴露 secret、Authorization、签名或
 完整后端引用。
@@ -119,19 +120,54 @@ Multipart 的六个核心 API 默认随 S3 启用，没有额外服务端开关�
 中仍按 20 MiB BlockIO 上限拆成多个 message。Part ETag 是 part 原文字节的 MD5；覆盖旧
 part 时，旧暂存 File 在事务中进入 durable 删除队列。
 
+CreateMultipartUpload 支持 `x-amz-checksum-algorithm` 和 `x-amz-checksum-type`，并在
+Upload 生命周期内固化选择：
+
+| 请求 | 固化结果 |
+|---|---|
+| 都未指定，或只指定 FULL_OBJECT | `CRC64NVME/FULL_OBJECT` |
+| CRC64NVME，未指定 type | `CRC64NVME/FULL_OBJECT` |
+| CRC32/CRC32C/SHA1/SHA256，未指定 type | 对应算法的 `COMPOSITE` |
+| CRC32/CRC32C + FULL_OBJECT | 对应算法的 `FULL_OBJECT` |
+
+算法和 type 使用精确大写枚举。未知算法返回 InvalidArgument；已定义但未实现的
+MD5/SHA512/XXHash 返回 NotImplemented；非法组合返回 InvalidRequest。Create 成功响应
+通过 header 返回最终 algorithm/type。0009 之前仍 active 且字段为空的 Upload 保持
+legacy 行为，不要求也不返回 additional checksum。
+
+UploadPart 在读取 body 前通过 FileManager 校验 UploadId、bucket/key、状态和过期时间，
+取得固化策略。支持算法对应的 checksum header、`x-amz-sdk-checksum-algorithm` 和
+aws-chunked checksum trailer。SDK algorithm 必须匹配固化算法，并且必须伴随 header 或
+trailer；header 与 trailer 同时存在时必须使用同一算法和值。COMPOSITE 要求客户端提交
+每个 Part checksum；FULL_OBJECT 可省略，但服务端始终流式计算并保存。Base64、摘要长度
+或内容校验失败时不登记 Part，暂存 File 通过 durable outbox 补偿。成功响应始终返回
+ETag 和所选算法的 checksum。
+
+ListParts 对非 legacy Upload 返回 algorithm/type，并在每个 Part 返回唯一对应的
+ChecksumCRC32、ChecksumCRC32C、ChecksumCRC64NVME、ChecksumSHA1 或 ChecksumSHA256。
+ListMultipartUploads 在每个非 legacy Upload 项返回其固化 algorithm/type。
+
 Complete 请求：
 
-- XML body 最大 2 MiB，PartNumber 必须严格递增且 ETag 必须匹配；
+- XML body 最大 2 MiB，PartNumber 必须严格递增，ETag 和可选 Part checksum 必须匹配；
 - 除选择列表最后一个 part 外，每个 part 至少 5 MiB；
-- 允许选择已上传 part 的子集，编号不必连续；
+- FULL_OBJECT 和 legacy 允许选择已上传 part 的非连续子集；COMPOSITE 必须从 1 连续；
+- COMPOSITE 的每个 XML Part 必须提交固化算法对应的 checksum；FULL_OBJECT 可省略；
+- 可提交最终算法 checksum、`x-amz-checksum-type` 和 `x-amz-mp-object-size`，均须匹配；
 - `If-Match`/`If-None-Match` 在最终 SQLite 事务内判断；
 - 创建 layout v2 Composite File 和有序 Segment，原子发布 Mapping；
 - 不下载、复制或重新上传 Telegram message；
 - 未选择 part 在同一事务中进入删除队列。
 
+FULL_OBJECT 只用于 CRC。服务端根据每个 Part 的 CRC 和字节数做 GF(2) combine，结果等于
+直接对完整对象计算 CRC；COMPOSITE 对按顺序 Base64 解码后的原始 Part digest 拼接后再次
+计算所选算法，持久化与响应值带 `-N` 后缀。Complete 不读取或重组 Telegram message。
+最终 algorithm/type/value 与 Mapping、对象 Metadata 和 completed 控制记录一次事务提交。
+
 最终 ETag 使用标准 Multipart 组合 ETag并带 `-N` 后缀，不代表整对象 MD5。相同规范化
 Part 列表的 Complete 在控制记录保留期内可幂等重试；不同列表、已 Abort 或不存在的
-UploadId 返回 NoSuchUpload。
+UploadId 返回 NoSuchUpload。幂等重试仍校验 Part checksum、最终 checksum、type 和 size，
+不一致不能重放为成功。
 
 Abort 把 active part 标记为 discarded，并通过 durable outbox 异步删除暂存 message；
 重复 Abort 返回 204。active upload 从创建起最多保留 `s3.multipart_expire_hours`
@@ -150,6 +186,12 @@ delimiter、key/upload marker、`max-uploads`，并接受 s3cmd 的 `max-keys` �
 
 GET/HEAD 返回 ETag、Last-Modified、Content-Type、Cache-Control、可选内容元数据、用户
 元数据和 checksum。HEAD 不读取 Telegram 内容。
+
+`x-amz-checksum-mode` 只接受 `ENABLED`。有 additional checksum Metadata 的对象返回唯一
+算法对应的 checksum 和 `x-amz-checksum-type`；历史无 Metadata 对象不现场读取 Telegram
+补算。为兼容既有 PutObject 客户端，未显式 checksum mode 时仍保留已有 checksum header
+返回行为。206 Range 响应不返回完整对象 checksum，避免客户端把局部响应与完整对象摘要
+比较；If-Range 不匹配而回退到 200 时仍返回完整对象 checksum。
 
 支持：
 
@@ -179,6 +221,8 @@ ListObjects V2 支持 `prefix`、空 delimiter 或 `/`、`max-keys` 0..1000、`s
 V1 与 V2 复用同一个 FileManager 列表实现。SQLite 递归 CTE 只扫描配置 bucket 路径，
 prefix 使用转义后的参数化 LIKE。delimiter 投影产生去重 CommonPrefixes，结果按 key
 排序并只读取 `max-keys + 1` 项。列表始终要求认证，即使 bucket 是 public-read。
+对象存在 additional checksum Metadata 时，V1/V2 Contents 同时返回
+ChecksumAlgorithm/ChecksumType；列表不读取 Telegram 或现场计算历史对象 checksum。
 
 V2 continuation token 是严格解码的 Base64URL JSON，绑定版本、bucket、prefix、delimiter
 和最后一项；未知字段、超长值或与当前请求不匹配都返回 InvalidToken。V1 marker 和 V2
@@ -196,7 +240,8 @@ CopyObject 只在 SQLite 中新增对源 File 的引用，不下载或重新上�
 - 同 key COPY 不改变内容；同 key REPLACE 原子更新元数据；
 - 目标覆盖移除旧 Mapping，只有旧 File 最后引用消失时才进入删除队列。
 
-请求新的 checksum 算法但源元数据无法直接复用时返回 NotImplemented，不为此读取完整内容。
+CopyObject 成功响应返回复用后的算法专用 checksum 和 ChecksumType。请求新的 checksum
+算法但源元数据无法直接复用时返回 NotImplemented，不为此读取完整内容。
 
 ## 8. DeleteObject 与 DeleteObjects
 
@@ -207,7 +252,7 @@ DeleteObjects：
 
 - 必须使用精确 `?delete`；
 - XML body 最大 2 MiB；
-- 必须提供正确 Content-MD5；
+- 必须提供正确 Content-MD5，或现代 AWS SDK/CLI 生成的 supported additional checksum；
 - 每次 1..1000 个 Object；
 - XML 只允许 Delete/Object/Key/ETag/Quiet 结构；
 - 每个 Object 独立事务，返回 Deleted 或逐项 Error；

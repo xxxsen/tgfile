@@ -94,10 +94,12 @@ type S3ListRequest struct {
 }
 
 type S3ListItem struct {
-	Key          string
-	Size         int64
-	LastModified int64
-	ETag         string
+	Key               string
+	Size              int64
+	LastModified      int64
+	ETag              string
+	ChecksumAlgorithm string
+	ChecksumType      string
 }
 
 type S3ListResult struct {

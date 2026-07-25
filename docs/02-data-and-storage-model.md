@@ -92,13 +92,20 @@ File、Segment、Mapping、S3 Metadata 和 Multipart 状态的操作处于同一
 
 `tg_s3_multipart_upload_tab` 保存 bucket/key、`active/completing/completed/aborted` 状态、
 创建时对象元数据、发起/过期/完成/清理时间，以及 Complete 幂等所需的 fingerprint、
-result FileID 和 Multipart ETag。
+result FileID、Multipart ETag 和最终 checksum。checksum 字段为：
+
+| 字段 | 语义 |
+|---|---|
+| `checksum_algorithm` | `CRC32/CRC32C/CRC64NVME/SHA1/SHA256`，legacy active Upload 为空 |
+| `checksum_type` | `FULL_OBJECT/COMPOSITE`，legacy active Upload 为空 |
+| `result_checksum_value` | Complete 后的最终返回值；COMPOSITE 包含 `-N` 后缀 |
 
 `tg_s3_multipart_part_tab` 的 `(upload_id, part_number)` 为主键，保存：
 
 - `active/selected/discarded` 状态；
 - 对应 layout v1 暂存 FileID；
 - S3 part 的真实大小、原文 MD5 ETag 和上传时间。
+- Create 时所选算法对应的 `Base64(raw digest bytes)` checksum。
 
 PartNumber 为 1～10000，单 part 最大 5 GiB。一个暂存 File 只能属于一个 Multipart Part。
 active upload 和 completed/aborted 控制记录分别在 24 小时有效期与保留期后由专用 worker
@@ -113,7 +120,8 @@ active upload 和 completed/aborted 控制记录分别在 24 小时有效期与�
 | `entry_id` | 对应 Mapping 主键 |
 | `etag` | 完整 HTTP ETag 文本 |
 | `checksum_sha256` | 服务端对对象原文计算的 Base64 SHA-256 |
-| `request_checksum_algorithm/value` | 客户端显式提交且验证成功的 checksum |
+| `request_checksum_algorithm/value` | 对象的 additional checksum 算法和值；普通 PUT 来自已验证请求，Multipart 来自固化策略和服务端聚合 |
+| `checksum_type` | additional checksum 的 `FULL_OBJECT/COMPOSITE` 聚合语义 |
 | `content_type`、`cache_control` | 标准响应元数据 |
 | `content_disposition/encoding/language` | 可选内容元数据 |
 | `expires` | 规范化 HTTP date |
@@ -122,6 +130,13 @@ active upload 和 completed/aborted 控制记录分别在 24 小时有效期与�
 
 新 PUT 的 ETag 是对象原文 MD5 的小写十六进制强 ETag。CopyObject 的 COPY 模式复制源
 元数据，REPLACE 模式替换可写元数据但保留内容 ETag 和 checksum。
+
+新建 Multipart Upload 默认使用 `CRC64NVME/FULL_OBJECT`。CRC32/CRC32C 可使用
+FULL_OBJECT 或 COMPOSITE；SHA1/SHA256 只使用 COMPOSITE；CRC64NVME 只使用
+FULL_OBJECT。0009 之前创建且仍 active 的 Upload 通过空 algorithm/type 保持 legacy
+语义，不伪造 Part 或最终 checksum。0009 之前由普通 PutObject 保存的 additional
+checksum 都描述完整请求体，migration 只把其 `checksum_type` 元数据补为 FULL_OBJECT，
+不读取或改写 File、Telegram message、对象字节、ETag 或 checksum 值。
 
 Multipart 最终对象的 ETag 为标准组合值：
 
@@ -247,6 +262,9 @@ Mapping 时逐一检查 source File；仍被有效 Mapping/Composite/active uplo
 - Multipart upload/part 状态、过期 active upload、长期 completing 和孤立控制行；
 - layout v2 manifest 连续性、Size/Part 数、source 状态与引用删除状态；
 - 有效引用指向非 live File、无引用但仍 live 的暂存 File。
+- Multipart algorithm/type 组合、legacy 空字段、active Part checksum、COMPOSITE `-N`
+  结果和 completed result；
+- Multipart result 与最终对象 Metadata 的一致性，以及对象 checksum 三元组的完整性。
 
 共享 FileID 指标用于发现 private 内容的其他公开入口；它不会自动修改 Mapping 或 ACL。
 

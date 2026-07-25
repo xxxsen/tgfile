@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/xxxsen/tgfile/db"
+	"github.com/xxxsen/tgfile/s3checksum"
 )
 
 func createMaintenanceDatabase(t *testing.T) string {
@@ -241,6 +242,40 @@ INSERT INTO tg_s3_multipart_part_tab (
 		now, now, now,
 	)
 	require.NoError(t, err)
+	partHasher, err := s3checksum.NewHash(s3checksum.AlgorithmSHA256)
+	require.NoError(t, err)
+	_, err = partHasher.Write([]byte("data"))
+	require.NoError(t, err)
+	partChecksum := s3checksum.SumBase64(partHasher)
+	_, resultChecksum, err := s3checksum.Composite(
+		s3checksum.AlgorithmSHA256,
+		[]string{partChecksum},
+	)
+	require.NoError(t, err)
+	_, err = database.ExecContext(t.Context(), `
+UPDATE tg_s3_multipart_upload_tab
+SET checksum_algorithm = 'SHA256', checksum_type = 'COMPOSITE',
+    result_checksum_value = ?
+WHERE upload_id = '0000000000000000000000000000000000000000000000000000000000000001';
+UPDATE tg_s3_multipart_part_tab
+SET checksum_value = ?
+WHERE upload_id = '0000000000000000000000000000000000000000000000000000000000000001';
+INSERT INTO tg_s3_object_metadata_tab (
+    entry_id, etag, checksum_sha256, request_checksum_algorithm,
+    request_checksum_value, checksum_type, content_type, cache_control,
+    content_disposition, content_encoding, content_language, expires,
+    user_metadata, ctime, mtime
+) VALUES (
+    3, '"etag-1"', '', 'SHA256', ?, 'COMPOSITE', 'application/octet-stream', '',
+    '', '', '', '', '{}', ?, ?
+);`,
+		resultChecksum,
+		partChecksum,
+		resultChecksum,
+		now,
+		now,
+	)
+	require.NoError(t, err)
 	_, err = database.ExecContext(t.Context(), `
 UPDATE tg_s3_multipart_upload_tab
 SET initiated_at = ?, expires_at = ?, completed_at = ?, cleanup_at = ?, ctime = ?, mtime = ?`,
@@ -261,6 +296,12 @@ SET initiated_at = ?, expires_at = ?, completed_at = ?, cleanup_at = ?, ctime = 
 	require.Zero(t, report.InvalidCompositeManifestCount)
 	require.Zero(t, report.InvalidCompletedUploadCount)
 	require.Zero(t, report.InvalidMultipartStateCount)
+	require.Zero(t, report.InvalidMultipartChecksumPolicy)
+	require.Zero(t, report.InvalidActivePartChecksum)
+	require.Zero(t, report.InvalidCompositeResultChecksum)
+	require.Zero(t, report.MissingCompletedResultChecksum)
+	require.Zero(t, report.MultipartResultMetadataMismatch)
+	require.Zero(t, report.InvalidObjectChecksumMetadata)
 	require.Equal(t, int64(1), report.MultipartUploadCountByState["completed"])
 	require.Equal(t, int64(1), report.MultipartPartCountByState["selected"])
 
@@ -299,4 +340,25 @@ func TestWriteAuditReportUsesPrivatePermissions(t *testing.T) {
 	raw, err := os.ReadFile(output)
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "telegram-key")
+}
+
+func TestValidObjectChecksumMetadata(t *testing.T) {
+	require.True(t, validObjectChecksumMetadata("", "", ""))
+	require.True(t, validObjectChecksumMetadata("CRC64NVME", "FULL_OBJECT", "AAAAAAAAAAA="))
+	require.True(t, validObjectChecksumMetadata(
+		"SHA256",
+		"COMPOSITE",
+		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=-2",
+	))
+	require.True(t, validObjectChecksumMetadata(
+		"SHA256",
+		"FULL_OBJECT",
+		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+	))
+
+	require.False(t, validObjectChecksumMetadata("CRC64NVME", "", "AAAAAAAAAAA="))
+	require.False(t, validObjectChecksumMetadata("CRC64NVME", "COMPOSITE", "AAAAAAAAAAA=-1"))
+	require.False(t, validObjectChecksumMetadata("SHA256", "COMPOSITE", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="))
+	require.False(t, validObjectChecksumMetadata("SHA256", "COMPOSITE", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=-0"))
+	require.False(t, validObjectChecksumMetadata("SHA256", "COMPOSITE", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=-x"))
 }

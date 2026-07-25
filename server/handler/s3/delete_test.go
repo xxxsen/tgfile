@@ -1,6 +1,7 @@
 package s3
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 	"github.com/xxxsen/s3verify"
+
+	"github.com/xxxsen/tgfile/s3checksum"
 )
 
 func TestDecodeDeleteObjectsAcceptsStandardNamespace(t *testing.T) {
@@ -65,4 +68,29 @@ func TestReadDeleteBodyPreservesPayloadVerificationError(t *testing.T) {
 
 	require.NotNil(t, apiError)
 	require.Equal(t, "XAmzContentSHA256Mismatch", apiError.Code)
+}
+
+func TestReadDeleteBodyAcceptsAdditionalChecksum(t *testing.T) {
+	body := []byte(`<Delete><Object><Key>object</Key></Object></Delete>`)
+	digest, err := s3checksum.NewHash(s3checksum.AlgorithmCRC32)
+	require.NoError(t, err)
+	_, err = digest.Write(body)
+	require.NoError(t, err)
+
+	gin.SetMode(gin.TestMode)
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	request := httptest.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		"/bucket?delete",
+		bytes.NewReader(body),
+	)
+	request.Header.Set("X-Amz-Checksum-Crc32", s3checksum.SumBase64(digest))
+	request.Header.Set("X-Amz-Sdk-Checksum-Algorithm", "CRC32")
+	context.Request = request
+
+	actual, apiError := readDeleteBody(context)
+
+	require.Nil(t, apiError)
+	require.Equal(t, body, actual)
 }

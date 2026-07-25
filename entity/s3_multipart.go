@@ -23,9 +23,12 @@ type S3MultipartUpload struct {
 	ContentLanguage       string
 	Expires               string
 	UserMetadata          string
+	ChecksumAlgorithm     string
+	ChecksumType          string
 	CompletionFingerprint string
 	ResultFileID          uint64
 	ResultETag            string
+	ResultChecksumValue   string
 	InitiatedAt           int64
 	ExpiresAt             int64
 	CompletedAt           int64
@@ -36,13 +39,14 @@ type S3MultipartUpload struct {
 
 // S3MultipartPart contains one currently registered S3 upload part.
 type S3MultipartPart struct {
-	UploadID   string
-	PartNumber int
-	PartState  string
-	FileID     uint64
-	PartSize   int64
-	PartETag   string
-	UploadedAt int64
-	Ctime      int64
-	Mtime      int64
+	UploadID      string
+	PartNumber    int
+	PartState     string
+	FileID        uint64
+	PartSize      int64
+	PartETag      string
+	ChecksumValue string
+	UploadedAt    int64
+	Ctime         int64
+	Mtime         int64
 }

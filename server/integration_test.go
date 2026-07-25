@@ -29,6 +29,7 @@ import (
 	"github.com/xxxsen/tgfile/blockio/mem"
 	"github.com/xxxsen/tgfile/db"
 	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/s3checksum"
 	"github.com/xxxsen/tgfile/server"
 )
 
@@ -243,6 +244,8 @@ func TestS3ConditionsChecksumsAndRangeErrors(t *testing.T) {
 	response, err = client.Do(request)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusPartialContent, response.StatusCode)
+	require.Empty(t, response.Header.Get("X-Amz-Checksum-Sha256"))
+	require.Empty(t, response.Header.Get("X-Amz-Checksum-Type"))
 	require.Equal(t, []byte("cond"), readResponse(t, response))
 
 	request, err = http.NewRequestWithContext(t.Context(), http.MethodGet, objectURL, nil)
@@ -252,6 +255,7 @@ func TestS3ConditionsChecksumsAndRangeErrors(t *testing.T) {
 	response, err = client.Do(request)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "VhtMrotqbDFU8IcjQZ/osL6hEejuQrOuAg4v6fqpkP8=", response.Header.Get("X-Amz-Checksum-Sha256"))
 	require.Equal(t, content, readResponse(t, response))
 
 	request = authenticatedRequest(t, http.MethodPut, objectURL, bytes.NewReader([]byte("replacement")))
@@ -826,6 +830,8 @@ func TestS3MultipartUploadIsReadableThroughS3AndWebDAV(t *testing.T) {
 	response, err = client.Do(createRequest)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "CRC64NVME", response.Header.Get("X-Amz-Checksum-Algorithm"))
+	require.Equal(t, "FULL_OBJECT", response.Header.Get("X-Amz-Checksum-Type"))
 	var initiated struct {
 		UploadID string `xml:"UploadId"`
 	}
@@ -849,6 +855,9 @@ func TestS3MultipartUploadIsReadableThroughS3AndWebDAV(t *testing.T) {
 	listBody := string(readResponse(t, response))
 	require.Contains(t, listBody, "<IsTruncated>true</IsTruncated>")
 	require.Contains(t, listBody, "<NextPartNumberMarker>1</NextPartNumberMarker>")
+	require.Contains(t, listBody, "<ChecksumAlgorithm>CRC64NVME</ChecksumAlgorithm>")
+	require.Contains(t, listBody, "<ChecksumType>FULL_OBJECT</ChecksumType>")
+	require.Contains(t, listBody, "<ChecksumCRC64NVME>")
 
 	completeBody := []byte(
 		`<CompleteMultipartUpload xmlns="http://s3.amazonaws.com/doc/2006-03-01/">` +
@@ -871,14 +880,34 @@ func TestS3MultipartUploadIsReadableThroughS3AndWebDAV(t *testing.T) {
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	finalETag := response.Header.Get("ETag")
 	require.Contains(t, finalETag, "-2")
-	require.Contains(t, string(readResponse(t, response)), "<CompleteMultipartUploadResult")
+	finalHash, err := s3checksum.NewHash(s3checksum.AlgorithmCRC64NVME)
+	require.NoError(t, err)
+	allContent := append(bytes.Clone(firstContent), secondContent...)
+	_, err = finalHash.Write(allContent)
+	require.NoError(t, err)
+	finalChecksum := s3checksum.SumBase64(finalHash)
+	completeResponseBody := string(readResponse(t, response))
+	require.Contains(t, completeResponseBody, "<CompleteMultipartUploadResult")
+	require.Contains(t, completeResponseBody, "<ChecksumCRC64NVME>"+finalChecksum+"</ChecksumCRC64NVME>")
+	require.Contains(t, completeResponseBody, "<ChecksumType>FULL_OBJECT</ChecksumType>")
 
 	response, err = getResponse(t, client, objectURL)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	require.Equal(t, "application/custom", response.Header.Get("Content-Type"))
 	require.Equal(t, "multipart", response.Header.Get("X-Amz-Meta-Source"))
-	require.Equal(t, append(firstContent, secondContent...), readResponse(t, response))
+	require.Equal(t, finalChecksum, response.Header.Get("X-Amz-Checksum-Crc64nvme"))
+	require.Equal(t, "FULL_OBJECT", response.Header.Get("X-Amz-Checksum-Type"))
+	require.Equal(t, allContent, readResponse(t, response))
+
+	headRequest := authenticatedRequest(t, http.MethodHead, objectURL, nil)
+	headRequest.Header.Set("X-Amz-Checksum-Mode", "ENABLED")
+	response, err = client.Do(headRequest)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, finalChecksum, response.Header.Get("X-Amz-Checksum-Crc64nvme"))
+	require.Equal(t, "FULL_OBJECT", response.Header.Get("X-Amz-Checksum-Type"))
+	_ = readResponse(t, response)
 
 	webDAVRequest := authenticatedRequest(
 		t,
@@ -1022,6 +1051,275 @@ func TestS3MultipartUploadIsReadableThroughS3AndWebDAV(t *testing.T) {
 	require.Contains(t, string(readResponse(t, response)), "NoSuchUpload")
 }
 
+func TestS3MultipartChecksumAlgorithmsInteroperate(t *testing.T) {
+	environment := newIntegrationEnvironment(t)
+	client := environment.server.Client()
+	content := []byte("multipart checksum integration payload")
+	algorithms := []s3checksum.Algorithm{
+		s3checksum.AlgorithmCRC32,
+		s3checksum.AlgorithmCRC32C,
+		s3checksum.AlgorithmCRC64NVME,
+		s3checksum.AlgorithmSHA1,
+		s3checksum.AlgorithmSHA256,
+	}
+	for _, algorithm := range algorithms {
+		t.Run(string(algorithm), func(t *testing.T) {
+			checksumType := s3checksum.TypeComposite
+			if algorithm == s3checksum.AlgorithmCRC64NVME {
+				checksumType = s3checksum.TypeFullObject
+			}
+			key := "checksum/algorithm-" + strings.ToLower(string(algorithm)) + ".bin"
+			objectURL := environment.server.URL + "/hackmd/" + key
+			uploadID := createChecksumIntegrationMultipart(
+				t,
+				client,
+				objectURL,
+				algorithm,
+				checksumType,
+			)
+			partChecksum := integrationChecksumValue(t, algorithm, content)
+			partETag := uploadChecksumIntegrationPart(
+				t,
+				client,
+				objectURL,
+				uploadID,
+				algorithm,
+				content,
+				partChecksum,
+			)
+			assertChecksumIntegrationListParts(
+				t,
+				client,
+				objectURL,
+				uploadID,
+				algorithm,
+				checksumType,
+				partChecksum,
+			)
+			finalRequestValue := partChecksum
+			finalResponseValue := partChecksum
+			if checksumType == s3checksum.TypeComposite {
+				var err error
+				finalRequestValue, finalResponseValue, err = s3checksum.Composite(
+					algorithm,
+					[]string{partChecksum},
+				)
+				require.NoError(t, err)
+			}
+			completeChecksumIntegrationMultipart(
+				t,
+				client,
+				objectURL,
+				uploadID,
+				algorithm,
+				checksumType,
+				partETag,
+				partChecksum,
+				finalRequestValue,
+				finalResponseValue,
+				int64(len(content)),
+			)
+			assertChecksumIntegrationObject(
+				t,
+				client,
+				objectURL,
+				algorithm,
+				checksumType,
+				finalResponseValue,
+				content,
+			)
+		})
+	}
+}
+
+func createChecksumIntegrationMultipart(
+	t *testing.T,
+	client *http.Client,
+	objectURL string,
+	algorithm s3checksum.Algorithm,
+	checksumType s3checksum.Type,
+) string {
+	t.Helper()
+	request := authenticatedRequest(t, http.MethodPost, objectURL+"?uploads", nil)
+	request.Header.Set("X-Amz-Checksum-Algorithm", string(algorithm))
+	request.Header.Set("X-Amz-Checksum-Type", string(checksumType))
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, string(algorithm), response.Header.Get("X-Amz-Checksum-Algorithm"))
+	require.Equal(t, string(checksumType), response.Header.Get("X-Amz-Checksum-Type"))
+	var result struct {
+		UploadID string `xml:"UploadId"`
+	}
+	require.NoError(t, xml.Unmarshal(readResponse(t, response), &result))
+	require.Len(t, result.UploadID, 64)
+	return result.UploadID
+}
+
+func uploadChecksumIntegrationPart(
+	t *testing.T,
+	client *http.Client,
+	objectURL, uploadID string,
+	algorithm s3checksum.Algorithm,
+	content []byte,
+	checksumValue string,
+) string {
+	t.Helper()
+	target := objectURL + "?partNumber=1&uploadId=" + uploadID
+	request := authenticatedRequest(t, http.MethodPut, target, bytes.NewReader(content))
+	header, err := s3checksum.HeaderName(algorithm)
+	require.NoError(t, err)
+	request.Header.Set(header, checksumValue)
+	request.Header.Set("X-Amz-Sdk-Checksum-Algorithm", string(algorithm))
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, checksumValue, response.Header.Get(header))
+	_ = readResponse(t, response)
+	etag := response.Header.Get("ETag")
+	require.Len(t, etag, 34)
+	return etag
+}
+
+func assertChecksumIntegrationListParts(
+	t *testing.T,
+	client *http.Client,
+	objectURL, uploadID string,
+	algorithm s3checksum.Algorithm,
+	checksumType s3checksum.Type,
+	checksumValue string,
+) {
+	t.Helper()
+	request := authenticatedRequest(t, http.MethodGet, objectURL+"?uploadId="+uploadID, nil)
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	body := string(readResponse(t, response))
+	require.Contains(t, body, "<ChecksumAlgorithm>"+string(algorithm)+"</ChecksumAlgorithm>")
+	require.Contains(t, body, "<ChecksumType>"+string(checksumType)+"</ChecksumType>")
+	require.Contains(t, body, "<Checksum"+string(algorithm)+">"+checksumValue+"</Checksum"+string(algorithm)+">")
+}
+
+func completeChecksumIntegrationMultipart(
+	t *testing.T,
+	client *http.Client,
+	objectURL, uploadID string,
+	algorithm s3checksum.Algorithm,
+	checksumType s3checksum.Type,
+	etag, partChecksum, finalRequestValue, finalResponseValue string,
+	objectSize int64,
+) {
+	t.Helper()
+	body := []byte(fmt.Sprintf(
+		"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>%s</ETag>"+
+			"<Checksum%s>%s</Checksum%s></Part></CompleteMultipartUpload>",
+		etag,
+		algorithm,
+		partChecksum,
+		algorithm,
+	))
+	request := authenticatedRequest(
+		t,
+		http.MethodPost,
+		objectURL+"?uploadId="+uploadID,
+		bytes.NewReader(body),
+	)
+	header, err := s3checksum.HeaderName(algorithm)
+	require.NoError(t, err)
+	request.Header.Set(header, finalRequestValue)
+	request.Header.Set("X-Amz-Checksum-Type", string(checksumType))
+	request.Header.Set("X-Amz-Mp-Object-Size", strconv.FormatInt(objectSize, 10))
+	response, err := client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	responseBody := string(readResponse(t, response))
+	require.Contains(
+		t,
+		responseBody,
+		"<Checksum"+string(algorithm)+">"+finalResponseValue+"</Checksum"+string(algorithm)+">",
+	)
+	require.Contains(t, responseBody, "<ChecksumType>"+string(checksumType)+"</ChecksumType>")
+}
+
+func assertChecksumIntegrationObject(
+	t *testing.T,
+	client *http.Client,
+	objectURL string,
+	algorithm s3checksum.Algorithm,
+	checksumType s3checksum.Type,
+	checksumValue string,
+	content []byte,
+) {
+	t.Helper()
+	header, err := s3checksum.HeaderName(algorithm)
+	require.NoError(t, err)
+	head := authenticatedRequest(t, http.MethodHead, objectURL, nil)
+	head.Header.Set("X-Amz-Checksum-Mode", "ENABLED")
+	response, err := client.Do(head)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, checksumValue, response.Header.Get(header))
+	require.Equal(t, string(checksumType), response.Header.Get("X-Amz-Checksum-Type"))
+	_ = readResponse(t, response)
+
+	response, err = getResponse(t, client, objectURL)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, content, readResponse(t, response))
+
+	serverURL, _, found := strings.Cut(objectURL, "/hackmd/")
+	require.True(t, found)
+	list := authenticatedRequest(
+		t,
+		http.MethodGet,
+		serverURL+"/hackmd?list-type=2&prefix=checksum%2F",
+		nil,
+	)
+	response, err = client.Do(list)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	listBody := string(readResponse(t, response))
+	require.Contains(t, listBody, "<ChecksumAlgorithm>"+string(algorithm)+"</ChecksumAlgorithm>")
+	require.Contains(t, listBody, "<ChecksumType>"+string(checksumType)+"</ChecksumType>")
+
+	copiedURL := objectURL + ".copy"
+	copyRequest := authenticatedRequest(t, http.MethodPut, copiedURL, nil)
+	copyRequest.Header.Set("X-Amz-Copy-Source", strings.TrimPrefix(objectURL, serverURL))
+	copyRequest.Header.Set("X-Amz-Checksum-Algorithm", string(algorithm))
+	response, err = client.Do(copyRequest)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	copyBody := string(readResponse(t, response))
+	require.Contains(
+		t,
+		copyBody,
+		"<Checksum"+string(algorithm)+">"+checksumValue+"</Checksum"+string(algorithm)+">",
+	)
+	require.Contains(t, copyBody, "<ChecksumType>"+string(checksumType)+"</ChecksumType>")
+
+	copiedHead := authenticatedRequest(t, http.MethodHead, copiedURL, nil)
+	copiedHead.Header.Set("X-Amz-Checksum-Mode", "ENABLED")
+	response, err = client.Do(copiedHead)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, checksumValue, response.Header.Get(header))
+	require.Equal(t, string(checksumType), response.Header.Get("X-Amz-Checksum-Type"))
+	_ = readResponse(t, response)
+}
+
+func integrationChecksumValue(
+	t *testing.T,
+	algorithm s3checksum.Algorithm,
+	content []byte,
+) string {
+	t.Helper()
+	hasher, err := s3checksum.NewHash(algorithm)
+	require.NoError(t, err)
+	_, err = hasher.Write(content)
+	require.NoError(t, err)
+	return s3checksum.SumBase64(hasher)
+}
+
 func uploadIntegrationPart(
 	t *testing.T,
 	client *http.Client,
@@ -1038,6 +1336,7 @@ func uploadIntegrationPart(
 	_ = readResponse(t, response)
 	etag := response.Header.Get("ETag")
 	require.Len(t, etag, 34)
+	require.NotEmpty(t, response.Header.Get("X-Amz-Checksum-Crc64nvme"))
 	return etag
 }
 
@@ -1083,8 +1382,8 @@ func TestS3MultipartListAbortAndProtocolErrors(t *testing.T) {
 	checksumPart.Header.Set("X-Amz-Checksum-Sha256", "invalid")
 	response, err = client.Do(checksumPart)
 	require.NoError(t, err)
-	require.Equal(t, http.StatusNotImplemented, response.StatusCode)
-	_ = readResponse(t, response)
+	require.Equal(t, http.StatusBadRequest, response.StatusCode)
+	require.Contains(t, string(readResponse(t, response)), "InvalidDigest")
 
 	_ = uploadIntegrationPart(t, client, firstURL, firstUploadID, 1, []byte("abort-me"))
 	for range 2 {

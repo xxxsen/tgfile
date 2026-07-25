@@ -83,7 +83,7 @@ func readS3Metadata(
 	entryID uint64,
 ) (*entity.S3ObjectMetadata, bool, error) {
 	const query = `SELECT entry_id, etag, checksum_sha256, request_checksum_algorithm,
-request_checksum_value, content_type, cache_control, content_disposition, content_encoding,
+request_checksum_value, checksum_type, content_type, cache_control, content_disposition, content_encoding,
 content_language, expires, user_metadata, ctime, mtime
 FROM tg_s3_object_metadata_tab WHERE entry_id = ?`
 	row := queryRow(ctx, queryer, query, entryID)
@@ -94,6 +94,7 @@ FROM tg_s3_object_metadata_tab WHERE entry_id = ?`
 		&metadata.ChecksumSHA256,
 		&metadata.RequestChecksumAlgorithm,
 		&metadata.RequestChecksumValue,
+		&metadata.ChecksumType,
 		&metadata.ContentType,
 		&metadata.CacheControl,
 		&metadata.ContentDisposition,
@@ -159,10 +160,10 @@ func insertS3Metadata(
 	metadata *entity.S3ObjectMetadata,
 ) error {
 	const statement = `INSERT INTO tg_s3_object_metadata_tab (
-entry_id, etag, checksum_sha256, request_checksum_algorithm, request_checksum_value,
+entry_id, etag, checksum_sha256, request_checksum_algorithm, request_checksum_value, checksum_type,
 content_type, cache_control, content_disposition, content_encoding, content_language,
 expires, user_metadata, ctime, mtime
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err := exec.ExecContext(
 		ctx,
 		statement,
@@ -171,6 +172,7 @@ expires, user_metadata, ctime, mtime
 		metadata.ChecksumSHA256,
 		metadata.RequestChecksumAlgorithm,
 		metadata.RequestChecksumValue,
+		metadata.ChecksumType,
 		metadata.ContentType,
 		metadata.CacheControl,
 		metadata.ContentDisposition,
@@ -667,10 +669,12 @@ func (d *defaultFileManager) appendS3ListEntry(
 		metadata = legacyS3Metadata(link)
 	}
 	result.Items = append(result.Items, S3ListItem{
-		Key:          entry.key,
-		Size:         link.FileSize,
-		LastModified: link.Mtime,
-		ETag:         metadata.ETag,
+		Key:               entry.key,
+		Size:              link.FileSize,
+		LastModified:      link.Mtime,
+		ETag:              metadata.ETag,
+		ChecksumAlgorithm: metadata.RequestChecksumAlgorithm,
+		ChecksumType:      metadata.ChecksumType,
 	})
 	return nil
 }
