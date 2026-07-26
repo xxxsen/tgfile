@@ -66,6 +66,28 @@ func TestCreateFile(t *testing.T) {
 	}
 }
 
+func TestReplaceReturnsPreviousEntrySnapshot(t *testing.T) {
+	setupDirectoryTest(t)
+	ctx := t.Context()
+	require.NoError(t, dav.Create(ctx, "/replace.txt", 3, "old"))
+	transactional, ok := dav.(ITransactionalDirectory)
+	require.True(t, ok)
+	var previous IDirectoryEntry
+	err := transactional.WithTransaction(ctx, func(ctx context.Context, tx ITransaction) error {
+		var err error
+		previous, err = tx.Replace(ctx, "/replace.txt", 7, "new", 1234)
+		return err
+	})
+	require.NoError(t, err)
+
+	assert.Equal(t, "old", previous.RefData())
+	assert.EqualValues(t, 3, previous.Size())
+	current, err := dav.Stat(ctx, "/replace.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "new", current.RefData())
+	assert.EqualValues(t, 7, current.Size())
+}
+
 func TestStatMissingDoesNotCreateParentDirectories(t *testing.T) {
 	setupDirectoryTest(t)
 	ctx := context.Background()
