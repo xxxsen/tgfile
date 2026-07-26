@@ -1,4 +1,4 @@
-.PHONY: build dev soak stress test test-race install-golangci-lint lint check
+.PHONY: build dev soak stress test test-race test-release-build install-golangci-lint lint check
 
 BIN ?= tgfile
 GO ?= go
@@ -53,6 +53,11 @@ test:
 test-race:
 	GOCACHE=$(GOCACHE) $(GO) test -count=1 -race ./...
 
+test-release-build:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOCACHE=$(GOCACHE) $(GO) build -o /dev/null ./cmd
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 GOCACHE=$(GOCACHE) $(GO) build -o /dev/null ./cmd
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 GOCACHE=$(GOCACHE) $(GO) build -o /dev/null ./cmd
+
 install-golangci-lint:
 	GOBIN=$(GOBIN) GOCACHE=$(GOCACHE) $(GO) install \
 		github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
@@ -66,4 +71,5 @@ check:
 	$(GO) vet ./...
 	$(MAKE) test
 	$(MAKE) test-race
+	$(MAKE) test-release-build
 	$(MAKE) lint
