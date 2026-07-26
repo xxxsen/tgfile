@@ -1758,8 +1758,8 @@ func ensureFreeSpace(workDir string, payloadBytes int64) error {
 	if payloadBytes < 0 {
 		return ErrInvalidRequest
 	}
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(workDir, &stat); err != nil {
+	available, err := filesystemFreeBytes(workDir)
+	if err != nil {
 		return fmt.Errorf("inspect backup work space: %w", err)
 	}
 	const gib = int64(1024 * 1024 * 1024)
@@ -1772,7 +1772,6 @@ func ensureFreeSpace(workDir string, payloadBytes int64) error {
 		return backupfmt.ErrLimitExceeded
 	}
 	required += margin
-	available := int64(stat.Bavail) * stat.Bsize //nolint:gosec // Statfs values are non-negative.
 	if available < required {
 		return fmt.Errorf("backup work directory requires %d free bytes: %w", required, syscall.ENOSPC)
 	}
