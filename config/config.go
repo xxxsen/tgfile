@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -29,6 +31,9 @@ func (c *Config) SafeLogFields() []zap.Field {
 		zap.Int("s3_multipart_expire_hours", c.S3.MultipartExpireHours),
 		zap.Bool("webdav_enable", c.Webdav.Enable),
 		zap.String("webdav_root", c.Webdav.Root),
+		zap.Int64("webdav_max_upload_size", c.Webdav.MaxUploadSize),
+		zap.Int64("webdav_quota_bytes", c.Webdav.QuotaBytes),
+		zap.Int("webdav_user_count", len(c.Webdav.Users)),
 		zap.Bool("l1_cache_enable", c.IOCache.EnableL1Cache),
 		zap.Int("l1_cache_size", c.IOCache.L1CacheSize),
 		zap.Bool("l2_cache_enable", c.IOCache.EnableL2Cache),
@@ -58,8 +63,15 @@ func (c S3Config) BucketNames() []string {
 }
 
 type WebdavConfig struct {
-	Enable bool   `json:"enable"`
-	Root   string `json:"root"`
+	Enable             bool              `json:"enable"`
+	Root               string            `json:"root"`
+	ExternalOrigin     string            `json:"external_origin"`
+	MaxUploadSize      int64             `json:"max_upload_size"`
+	UploadTempDir      string            `json:"upload_temp_dir"`
+	Users              map[string]string `json:"users"`
+	QuotaBytes         int64             `json:"quota_bytes"`
+	MaxMutationEntries int               `json:"max_mutation_entries"`
+	SyncPageSize       int               `json:"sync_page_size"`
 }
 
 type IOCacheConfig struct {
@@ -114,6 +126,9 @@ const (
 	defaultTelegramUploadIntervalMS int64 = 1000
 	maxFilePartCount                int64 = 100_000
 	telegramBlockSize               int64 = 20 * 1024 * 1024
+	defaultWebDAVMaxUploadSize      int64 = 5 * 1024 * 1024 * 1024
+	defaultWebDAVMutationEntries          = 100_000
+	defaultWebDAVSyncPageSize             = 1_000
 )
 
 func (c *Config) Validate() error {
@@ -123,7 +138,119 @@ func (c *Config) Validate() error {
 	if err := c.validateS3(); err != nil {
 		return err
 	}
+	if err := c.validateWebDAV(); err != nil {
+		return err
+	}
 	return c.validateBlockIO()
+}
+
+func (c *Config) validateWebDAV() error {
+	if !c.Webdav.Enable {
+		return nil
+	}
+	if err := c.validateWebDAVPathAndUpload(); err != nil {
+		return err
+	}
+	if err := c.validateWebDAVLimits(); err != nil {
+		return err
+	}
+	return c.validateWebDAVUsers()
+}
+
+func (c *Config) validateWebDAVPathAndUpload() error {
+	if strings.TrimSpace(c.Webdav.Root) == "" {
+		c.Webdav.Root = "/"
+	}
+	if !strings.HasPrefix(c.Webdav.Root, "/") {
+		return fmt.Errorf("%w: webdav.root must be an absolute path", errInvalidConfig)
+	}
+	if err := c.validateWebDAVExternalOrigin(); err != nil {
+		return err
+	}
+	if c.Webdav.MaxUploadSize == 0 {
+		c.Webdav.MaxUploadSize = c.S3.MaxObjectSize
+		if c.Webdav.MaxUploadSize == 0 {
+			c.Webdav.MaxUploadSize = defaultWebDAVMaxUploadSize
+		}
+	}
+	if c.Webdav.MaxUploadSize < 0 {
+		return fmt.Errorf("%w: webdav.max_upload_size must be positive", errInvalidConfig)
+	}
+	if c.BotKind == "telegram" &&
+		c.Webdav.MaxUploadSize > maxFilePartCount*telegramBlockSize {
+		return fmt.Errorf(
+			"%w: webdav.max_upload_size exceeds Telegram storage limit",
+			errInvalidConfig,
+		)
+	}
+	if strings.TrimSpace(c.Webdav.UploadTempDir) == "" {
+		c.Webdav.UploadTempDir = filepath.Join(filepath.Dir(c.DBFile), "webdav-upload")
+	}
+	return nil
+}
+
+func (c *Config) validateWebDAVExternalOrigin() error {
+	value := strings.TrimSpace(c.Webdav.ExternalOrigin)
+	if value == "" {
+		return nil
+	}
+	origin, err := url.Parse(value)
+	if err != nil ||
+		(origin.Scheme != "http" && origin.Scheme != "https") ||
+		origin.Host == "" ||
+		origin.User != nil ||
+		(origin.Path != "" && origin.Path != "/") ||
+		origin.RawQuery != "" ||
+		origin.Fragment != "" {
+		return fmt.Errorf(
+			"%w: webdav.external_origin must be an HTTP(S) origin without a path",
+			errInvalidConfig,
+		)
+	}
+	c.Webdav.ExternalOrigin = origin.Scheme + "://" + origin.Host
+	return nil
+}
+
+func (c *Config) validateWebDAVLimits() error {
+	if c.Webdav.QuotaBytes < 0 {
+		return fmt.Errorf("%w: webdav.quota_bytes must not be negative", errInvalidConfig)
+	}
+	if c.Webdav.MaxMutationEntries == 0 {
+		c.Webdav.MaxMutationEntries = defaultWebDAVMutationEntries
+	}
+	if c.Webdav.MaxMutationEntries < 1 {
+		return fmt.Errorf("%w: webdav.max_mutation_entries must be positive", errInvalidConfig)
+	}
+	if c.Webdav.SyncPageSize == 0 {
+		c.Webdav.SyncPageSize = defaultWebDAVSyncPageSize
+	}
+	if c.Webdav.SyncPageSize < 1 || c.Webdav.SyncPageSize > 10_000 {
+		return fmt.Errorf(
+			"%w: webdav.sync_page_size must be between 1 and 10000",
+			errInvalidConfig,
+		)
+	}
+	return nil
+}
+
+func (c *Config) validateWebDAVUsers() error {
+	for username, role := range c.Webdav.Users {
+		if _, exists := c.UserInfo[username]; !exists {
+			return fmt.Errorf(
+				"%w: webdav.users references unknown user %q",
+				errInvalidConfig,
+				username,
+			)
+		}
+		if role != "read" && role != "read-write" {
+			return fmt.Errorf(
+				"%w: webdav.users[%q] must be read or read-write",
+				errInvalidConfig,
+				username,
+			)
+		}
+	}
+	return nil
 }
 
 func (c *Config) validateS3() error {

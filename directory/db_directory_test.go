@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/xxxsen/tgfile/db"
@@ -764,4 +765,71 @@ func TestScan(t *testing.T) {
 		return true, nil
 	})
 	assert.NoError(t, err)
+}
+
+func TestIterateUsesBoundedStableBatches(t *testing.T) {
+	setupDirectoryTest(t)
+	ctx := t.Context()
+	require.NoError(t, dav.Remove(ctx, "/"))
+	require.NoError(t, dav.Mkdir(ctx, "/iterate"))
+	const itemCount = 301
+	for index := 0; index < itemCount; index++ {
+		require.NoError(t, dav.Create(
+			ctx,
+			fmt.Sprintf("/iterate/%03d.txt", index),
+			int64(index),
+			strconv.Itoa(index+1),
+		))
+	}
+
+	const batchSize uint = 17
+	names := make([]string, 0, itemCount)
+	maxBatch := 0
+	err := dav.Iterate(
+		ctx,
+		"/iterate",
+		batchSize,
+		func(_ context.Context, entries []IDirectoryEntry) (bool, error) {
+			maxBatch = max(maxBatch, len(entries))
+			for _, entry := range entries {
+				names = append(names, entry.Name())
+			}
+			return true, nil
+		},
+	)
+	require.NoError(t, err)
+	require.Len(t, names, itemCount)
+	require.LessOrEqual(t, maxBatch, int(batchSize))
+	require.IsIncreasing(t, names)
+}
+
+func TestIterateCursorDoesNotSkipAfterConcurrentDelete(t *testing.T) {
+	setupDirectoryTest(t)
+	ctx := t.Context()
+	require.NoError(t, dav.Remove(ctx, "/"))
+	require.NoError(t, dav.Mkdir(ctx, "/cursor"))
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		require.NoError(t, dav.Create(ctx, "/cursor/"+name, 1, "1"))
+	}
+
+	names := make([]string, 0, 4)
+	firstBatch := true
+	err := dav.Iterate(
+		ctx,
+		"/cursor",
+		2,
+		func(_ context.Context, entries []IDirectoryEntry) (bool, error) {
+			for _, entry := range entries {
+				names = append(names, entry.Name())
+			}
+			if firstBatch {
+				firstBatch = false
+				require.NoError(t, dav.Remove(ctx, "/cursor/a.txt"))
+				require.NoError(t, dav.Create(ctx, "/cursor/d.txt", 1, "1"))
+			}
+			return true, nil
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, []string{"a.txt", "b.txt", "c.txt", "d.txt"}, names)
 }

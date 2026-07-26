@@ -3,11 +3,10 @@ package server
 import "github.com/xxxsen/tgfile/filemgr"
 
 type config struct {
-	s3           S3Options
-	userMap      map[string]string
-	webdavEnable bool
-	webdavRoot   string
-	fmgr         filemgr.IFileManager
+	s3      S3Options
+	userMap map[string]string
+	webdav  WebDAVOptions
+	fmgr    filemgr.IFileManager
 }
 
 type Option func(c *config)
@@ -29,6 +28,18 @@ type S3Options struct {
 	Buckets              []S3BucketOptions
 	MaxObjectSize        int64
 	MultipartExpireHours int
+}
+
+type WebDAVOptions struct {
+	Enabled            bool
+	Root               string
+	ExternalOrigin     string
+	MaxUploadSize      int64
+	UploadTempDir      string
+	Users              map[string]string
+	QuotaBytes         int64
+	MaxMutationEntries int
+	SyncPageSize       int
 }
 
 func WithS3(options S3Options) Option {
@@ -53,8 +64,14 @@ func applyOpts(opts ...Option) *config {
 
 func WithEnableWebdav(v bool, root string) Option {
 	return func(c *config) {
-		c.webdavEnable = v
-		c.webdavRoot = root
+		c.webdav.Enabled = v
+		c.webdav.Root = root
+	}
+}
+
+func WithWebDAV(options WebDAVOptions) Option {
+	return func(c *config) {
+		c.webdav = options
 	}
 }
 

@@ -17,14 +17,7 @@ func (d *defaultFileManager) removeWebDAVLink(ctx context.Context, link string) 
 		if err != nil {
 			return fmt.Errorf("remove mapping entry: %w", err)
 		}
-		fileIDs, err := mappingEntryFileIDs(removed)
-		if err != nil {
-			return err
-		}
-		if err := deleteMappingMetadata(ctx, tx.QueryExecer(), removed); err != nil {
-			return err
-		}
-		return markMappingFilesPending(ctx, tx.QueryExecer(), fileIDs)
+		return finalizeRemovedWebDAVEntries(ctx, tx.QueryExecer(), removed)
 	}); err != nil {
 		return fmt.Errorf("remove file link %q: %w", link, err)
 	}
@@ -41,14 +34,7 @@ func (d *defaultFileManager) moveWebDAVLink(
 		if err != nil {
 			return fmt.Errorf("move mapping entry: %w", err)
 		}
-		fileIDs, err := mappingEntryFileIDs(overwritten)
-		if err != nil {
-			return err
-		}
-		if err := deleteMappingMetadata(ctx, tx.QueryExecer(), overwritten); err != nil {
-			return err
-		}
-		return markMappingFilesPending(ctx, tx.QueryExecer(), fileIDs)
+		return finalizeRemovedWebDAVEntries(ctx, tx.QueryExecer(), overwritten)
 	}); err != nil {
 		return fmt.Errorf("rename file link %q to %q: %w", source, destination, err)
 	}
@@ -68,17 +54,13 @@ func (d *defaultFileManager) copyWebDAVLink(
 		if err := validateWebDAVCopies(ctx, tx.QueryExecer(), copies); err != nil {
 			return err
 		}
-		fileIDs, err := mappingEntryFileIDs(overwritten)
-		if err != nil {
-			return err
-		}
-		if err := deleteMappingMetadata(ctx, tx.QueryExecer(), overwritten); err != nil {
+		if err := finalizeRemovedWebDAVEntries(ctx, tx.QueryExecer(), overwritten); err != nil {
 			return err
 		}
 		if err := copyWebDAVMetadata(ctx, tx.QueryExecer(), copies); err != nil {
 			return err
 		}
-		return markMappingFilesPending(ctx, tx.QueryExecer(), fileIDs)
+		return copyWebDAVProperties(ctx, tx.QueryExecer(), copies)
 	}); err != nil {
 		return fmt.Errorf("copy file link %q to %q: %w", source, destination, err)
 	}

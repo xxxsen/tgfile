@@ -245,22 +245,29 @@ FROM tg_s3_object_metadata_tab WHERE entry_id = ?`
 }
 
 func (f *fileMappingDaoImpl) IterFileLink(ctx context.Context, prefix string, cb IterFileLinkFunc) error {
-	ents, err := f.dir.List(ctx, prefix)
-	if err != nil {
-		return fmt.Errorf("list file links under %q: %w", prefix, err)
-	}
-	for _, item := range ents {
-		cbitem, err := f.directoryEntryToFileMappingItem(item)
-		if err != nil {
-			return fmt.Errorf("convert file link %q: %w", item.Name(), err)
-		}
-		next, err := cb(ctx, path.Join(prefix, item.Name()), cbitem)
-		if err != nil {
-			return fmt.Errorf("process file link %q: %w", item.Name(), err)
-		}
-		if !next {
-			break
-		}
+	const batchSize uint = 128
+	if err := f.dir.Iterate(
+		ctx,
+		prefix,
+		batchSize,
+		func(ctx context.Context, entries []directory.IDirectoryEntry) (bool, error) {
+			for _, item := range entries {
+				cbitem, err := f.directoryEntryToFileMappingItem(item)
+				if err != nil {
+					return false, fmt.Errorf("convert file link %q: %w", item.Name(), err)
+				}
+				next, err := cb(ctx, path.Join(prefix, item.Name()), cbitem)
+				if err != nil {
+					return false, fmt.Errorf("process file link %q: %w", item.Name(), err)
+				}
+				if !next {
+					return false, nil
+				}
+			}
+			return true, nil
+		},
+	); err != nil {
+		return fmt.Errorf("iterate file links under %q: %w", prefix, err)
 	}
 	return nil
 }

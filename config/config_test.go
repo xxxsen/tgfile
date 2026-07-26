@@ -145,3 +145,38 @@ func TestLegacyBucketFieldIsNotAccepted(t *testing.T) {
 	require.Empty(t, parsed.S3.Buckets)
 	require.ErrorIs(t, parsed.Validate(), errInvalidConfig)
 }
+
+func TestValidateWebDAVExternalOrigin(t *testing.T) {
+	value := &Config{
+		BotKind: "localfile",
+		BotInfo: map[string]any{
+			"storage_dir": t.TempDir(),
+		},
+		DBFile: filepath.Join(t.TempDir(), "data.db"),
+		UserInfo: map[string]string{
+			"editor": "secret",
+		},
+		Webdav: WebdavConfig{
+			Enable:         true,
+			ExternalOrigin: "https://image.example.test/",
+			Users: map[string]string{
+				"editor": "read-write",
+			},
+		},
+	}
+	require.NoError(t, value.Validate())
+	require.Equal(t, "https://image.example.test", value.Webdav.ExternalOrigin)
+
+	for _, origin := range []string{
+		"ftp://image.example.test",
+		"https://",
+		"https://user@example.test",
+		"https://image.example.test/webdav",
+		"https://image.example.test?source=proxy",
+	} {
+		copyConfig := *value
+		copyConfig.Webdav = value.Webdav
+		copyConfig.Webdav.ExternalOrigin = origin
+		require.ErrorIs(t, copyConfig.Validate(), errInvalidConfig, origin)
+	}
+}

@@ -10,23 +10,30 @@ import (
 )
 
 var (
-	ErrInvalidFileSize  = errors.New("invalid file size")
-	ErrInvalidBlockSize = errors.New("invalid block size")
-	ErrTooManyFileParts = errors.New("too many file parts")
-	ErrFileShortRead    = errors.New("file content shorter than declared size")
-	ErrFilePartNotFound = errors.New("file part not found")
-	ErrInvalidFilePart  = errors.New("invalid file part id")
-	ErrFileNotOpen      = errors.New("file is not open")
-	ErrInvalidOffset    = errors.New("invalid file offset")
-	ErrSeekPastEnd      = errors.New("seek exceeds file size")
-	ErrDirectoryIO      = errors.New("operation is not supported on a directory")
-	ErrNotDirectory     = errors.New("operation requires a directory")
-	ErrInvalidCache     = errors.New("invalid file cache configuration")
-	ErrInvalidCachePath = errors.New("invalid file cache path")
-	ErrS3Precondition   = errors.New("S3 object precondition failed")
-	ErrS3ObjectConflict = errors.New("S3 object changed concurrently")
-	ErrInvalidS3Part    = errors.New("invalid completed S3 part manifest")
-	ErrS3PartNotFound   = errors.New("S3 object part number exceeds the completed part count")
+	ErrInvalidFileSize    = errors.New("invalid file size")
+	ErrInvalidBlockSize   = errors.New("invalid block size")
+	ErrTooManyFileParts   = errors.New("too many file parts")
+	ErrFileShortRead      = errors.New("file content shorter than declared size")
+	ErrFilePartNotFound   = errors.New("file part not found")
+	ErrInvalidFilePart    = errors.New("invalid file part id")
+	ErrFileNotOpen        = errors.New("file is not open")
+	ErrInvalidOffset      = errors.New("invalid file offset")
+	ErrSeekPastEnd        = errors.New("seek exceeds file size")
+	ErrDirectoryIO        = errors.New("operation is not supported on a directory")
+	ErrNotDirectory       = errors.New("operation requires a directory")
+	ErrInvalidCache       = errors.New("invalid file cache configuration")
+	ErrInvalidCachePath   = errors.New("invalid file cache path")
+	ErrS3Precondition     = errors.New("S3 object precondition failed")
+	ErrS3ObjectConflict   = errors.New("S3 object changed concurrently")
+	ErrInvalidS3Part      = errors.New("invalid completed S3 part manifest")
+	ErrS3PartNotFound     = errors.New("S3 object part number exceeds the completed part count")
+	ErrWebDAVPrecondition = errors.New("WebDAV precondition failed")
+	ErrWebDAVLocked       = errors.New("WebDAV resource is locked")
+	ErrWebDAVLockToken    = errors.New("WebDAV lock token does not match")
+	ErrWebDAVProperty     = errors.New("WebDAV property update is invalid")
+	ErrWebDAVQuota        = errors.New("WebDAV logical quota exceeded")
+	ErrWebDAVTooManyItems = errors.New("WebDAV mutation exceeds the configured entry limit")
+	ErrWebDAVSyncToken    = errors.New("WebDAV sync token is not valid for the current journal")
 )
 
 type WalkLinkFunc func(ctx context.Context, link string, item *entity.FileLinkMeta) (bool, error)
@@ -70,6 +77,7 @@ type IProtocolManager interface {
 	ILinkManager
 	IS3ObjectManager
 	IS3MultipartManager
+	IWebDAVManager
 }
 
 type IFileManager interface {
@@ -139,6 +147,173 @@ type S3Condition struct {
 	IfNoneMatch       string
 	IfModifiedSince   *time.Time
 	IfUnmodifiedSince *time.Time
+}
+
+type WebDAVCondition struct {
+	IfMatch           string
+	IfNoneMatch       string
+	IfModifiedSince   *time.Time
+	IfUnmodifiedSince *time.Time
+	IfHeader          *WebDAVIfHeader
+	RequestPath       string
+}
+
+type WebDAVIfHeader struct {
+	Lists []WebDAVIfList
+}
+
+type WebDAVIfList struct {
+	Resource string
+	Terms    []WebDAVIfTerm
+}
+
+type WebDAVIfTerm struct {
+	Not       bool
+	LockToken string
+	ETag      string
+}
+
+type WebDAVMutationOptions struct {
+	Principal  string
+	Condition  *WebDAVCondition
+	MaxEntries int
+	QuotaRoot  string
+	QuotaBytes int64
+}
+
+type WebDAVPropertyName struct {
+	Namespace string
+	LocalName string
+}
+
+type WebDAVProperty struct {
+	Name     WebDAVPropertyName
+	ValueXML string
+}
+
+type WebDAVPropertyPatch struct {
+	Set      bool
+	Property WebDAVProperty
+}
+
+type WebDAVPublishResult struct {
+	Link    *entity.FileLinkMeta
+	Created bool
+}
+
+type WebDAVMutationResult struct {
+	Created bool
+}
+
+type WebDAVLock struct {
+	Token       string
+	RootPath    string
+	RootEntryID uint64
+	Depth       string
+	OwnerXML    string
+	Principal   string
+	CreatedAt   int64
+	ExpiresAt   int64
+	LockNull    bool
+}
+
+type WebDAVLockRequest struct {
+	Path       string
+	Depth      string
+	OwnerXML   string
+	Principal  string
+	Timeout    time.Duration
+	IfHeader   *WebDAVIfHeader
+	MaxEntries int
+}
+
+type WebDAVLockResult struct {
+	Lock    WebDAVLock
+	Created bool
+}
+
+type WebDAVChange struct {
+	Revision int64
+	Path     string
+	Kind     string
+}
+
+type WebDAVChangePage struct {
+	Changes      []WebDAVChange
+	SyncRevision int64
+	HasMore      bool
+}
+
+type IWebDAVResourceManager interface {
+	CreateWebDAVCollection(
+		ctx context.Context,
+		path string,
+		options WebDAVMutationOptions,
+	) (*WebDAVMutationResult, error)
+	PublishWebDAVFile(
+		ctx context.Context,
+		path string,
+		fileID uint64,
+		size int64,
+		options WebDAVMutationOptions,
+	) (*WebDAVPublishResult, error)
+	DeleteWebDAVResource(
+		ctx context.Context,
+		path string,
+		options WebDAVMutationOptions,
+	) error
+	CopyWebDAVResource(
+		ctx context.Context,
+		source, destination string,
+		overwrite, recursive bool,
+		options WebDAVMutationOptions,
+	) (*WebDAVMutationResult, error)
+	MoveWebDAVResource(
+		ctx context.Context,
+		source, destination string,
+		overwrite bool,
+		options WebDAVMutationOptions,
+	) (*WebDAVMutationResult, error)
+}
+
+type IWebDAVPropertyManager interface {
+	ReadWebDAVProperties(ctx context.Context, entryID uint64) ([]WebDAVProperty, error)
+	PatchWebDAVProperties(
+		ctx context.Context,
+		path string,
+		patches []WebDAVPropertyPatch,
+		options WebDAVMutationOptions,
+	) error
+}
+
+type IWebDAVLockManager interface {
+	ListWebDAVLocks(ctx context.Context, path string) ([]WebDAVLock, error)
+	LockWebDAVResource(ctx context.Context, request WebDAVLockRequest) (*WebDAVLockResult, error)
+	RefreshWebDAVLock(
+		ctx context.Context,
+		path, token, principal string,
+		timeout time.Duration,
+		ifHeader *WebDAVIfHeader,
+	) (*WebDAVLock, error)
+	UnlockWebDAVResource(ctx context.Context, path, token, principal string) error
+}
+
+type IWebDAVDiscoveryManager interface {
+	WebDAVQuota(ctx context.Context, root string, limit int64) (int64, int64, error)
+	WebDAVChanges(
+		ctx context.Context,
+		root string,
+		since int64,
+		depth string,
+		limit int,
+	) (*WebDAVChangePage, error)
+}
+
+type IWebDAVManager interface {
+	IWebDAVResourceManager
+	IWebDAVPropertyManager
+	IWebDAVLockManager
+	IWebDAVDiscoveryManager
 }
 
 type IS3ObjectReader interface {

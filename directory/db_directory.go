@@ -15,18 +15,20 @@ import (
 )
 
 var (
-	errInvalidPath               = errors.New("invalid directory path")
-	errNoRowsAffected            = errors.New("no rows affected")
-	errNoRowsInserted            = errors.New("no rows inserted")
-	errRootNotFoundAfterCreate   = errors.New("root entry not found after creation")
-	errPathComponentNotDirectory = errors.New("path component is not a directory")
-	errCopySourceNotFound        = errors.New("copy source not found")
-	errDestinationMustNotBeRoot  = errors.New("destination must not be root")
-	errDestinationExists         = errors.New("destination exists and overwrite is disabled")
-	errDestinationInsideSource   = errors.New("destination is inside source")
-	errMoveSourceNotFound        = errors.New("move source not found")
-	errEntryMustNotBeRoot        = errors.New("file entry must not be root")
-	errInvalidScanBatch          = errors.New("invalid directory scan batch size")
+	ErrInvalidPath               = errors.New("invalid directory path")
+	ErrPathComponentNotDirectory = errors.New("path component is not a directory")
+	ErrSourceNotFound            = errors.New("source path not found")
+	ErrDestinationMustNotBeRoot  = errors.New("destination must not be root")
+	ErrDestinationExists         = errors.New("destination exists and overwrite is disabled")
+	ErrDestinationInsideSource   = errors.New("destination is inside source")
+	ErrEntryMustNotBeRoot        = errors.New("file entry must not be root")
+	ErrEntryNotFile              = errors.New("directory entry is not a file")
+	ErrParentNotFound            = errors.New("parent collection does not exist")
+
+	errNoRowsAffected          = errors.New("no rows affected")
+	errNoRowsInserted          = errors.New("no rows inserted")
+	errRootNotFoundAfterCreate = errors.New("root entry not found after creation")
+	errInvalidScanBatch        = errors.New("invalid directory scan batch size")
 )
 
 type IDGenFunc func() uint64
@@ -74,7 +76,7 @@ func (t *directoryTransaction) Create(
 	filename = strings.TrimSuffix(filename, "/")
 	dir, name, isRoot := t.directory.splitFilename(filename)
 	if isRoot {
-		return nil, errEntryMustNotBeRoot
+		return nil, ErrEntryMustNotBeRoot
 	}
 	var created IDirectoryEntry
 	err := t.directory.txOnSelectDir(ctx, t.tx, dir, true, func(
@@ -111,7 +113,103 @@ func (t *directoryTransaction) Create(
 	if err != nil {
 		return nil, fmt.Errorf("create transaction path %q: %w", filename, err)
 	}
+	if err := t.directory.recordChange(ctx, t.tx, filename, "created"); err != nil {
+		return nil, err
+	}
+	if err := t.directory.touchParent(ctx, t.tx, filename, time.Now().UnixMilli()); err != nil {
+		return nil, err
+	}
 	return created, nil
+}
+
+func (t *directoryTransaction) Mkdir(
+	ctx context.Context,
+	dirname string,
+) (IDirectoryEntry, error) {
+	dirname = strings.TrimSuffix(dirname, "/")
+	parent, name, isRoot := t.directory.splitFilename(dirname)
+	if isRoot {
+		return nil, ErrEntryMustNotBeRoot
+	}
+	var created IDirectoryEntry
+	err := t.directory.txOnSelectDir(ctx, t.tx, parent, false, func(
+		ctx context.Context,
+		parentID uint64,
+		tx database.IQueryExecer,
+	) error {
+		if exists, err := t.directory.txIsEntryExist(ctx, tx, parentID, name); err != nil {
+			return fmt.Errorf("check directory entry %q: %w", name, err)
+		} else if exists {
+			return os.ErrExist
+		}
+		entryID, err := t.directory.txCreateDir(ctx, tx, parentID, name)
+		if err != nil {
+			return fmt.Errorf("create directory entry %q: %w", name, err)
+		}
+		entry, exists, err := t.directory.txSearchEntry(ctx, tx, parentID, name)
+		if err != nil || !exists {
+			return fmt.Errorf("read created directory entry %q: %w", name, err)
+		}
+		entry.EntryId_ = entryID
+		created = entry
+		return nil
+	})
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrParentNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("create transaction directory %q: %w", dirname, err)
+	}
+	if err := t.directory.recordChange(ctx, t.tx, dirname, "created"); err != nil {
+		return nil, err
+	}
+	if err := t.directory.touchParent(ctx, t.tx, dirname, time.Now().UnixMilli()); err != nil {
+		return nil, err
+	}
+	return created, nil
+}
+
+func (t *directoryTransaction) Replace(
+	ctx context.Context,
+	filename string,
+	size int64,
+	refdata string,
+	mtime int64,
+) (IDirectoryEntry, error) {
+	entry, exists, err := t.directory.txGetEntryInfo(ctx, t.tx, filename, nil)
+	if err != nil {
+		return nil, fmt.Errorf("find transaction replace path %q: %w", filename, err)
+	}
+	if !exists {
+		return nil, os.ErrNotExist
+	}
+	if entry.FileKind_ != defaultFileKindFile {
+		return nil, ErrEntryNotFile
+	}
+	statement, args, err := builder.BuildUpdate(t.directory.table(), map[string]any{
+		"entry_id": entry.EntryId_,
+	}, map[string]any{
+		"ref_data":  refdata,
+		"file_size": size,
+		"mtime":     mtime,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build transaction replace: %w", err)
+	}
+	if _, err := t.tx.ExecContext(ctx, statement, args...); err != nil {
+		return nil, fmt.Errorf("replace transaction entry: %w", err)
+	}
+	previous := entry.ToDirectoyEntry()
+	if err := t.directory.recordChange(ctx, t.tx, filename, "updated"); err != nil {
+		return nil, err
+	}
+	if err := t.directory.touchParent(ctx, t.tx, filename, mtime); err != nil {
+		return nil, err
+	}
+	entry.RefData_ = refdata
+	entry.FileSize_ = size
+	entry.Mtime_ = mtime
+	return previous, nil
 }
 
 func (t *directoryTransaction) Remove(
@@ -126,7 +224,10 @@ func (t *directoryTransaction) Remove(
 		return nil, nil
 	}
 	removed := make([]IDirectoryEntry, 0, 1)
-	if err := t.collectAndRemove(ctx, entry, &removed); err != nil {
+	if err := t.collectAndRemove(ctx, path.Clean(filename), entry, &removed); err != nil {
+		return nil, err
+	}
+	if err := t.directory.touchParent(ctx, t.tx, filename, time.Now().UnixMilli()); err != nil {
 		return nil, err
 	}
 	return removed, nil
@@ -134,6 +235,7 @@ func (t *directoryTransaction) Remove(
 
 func (t *directoryTransaction) collectAndRemove(
 	ctx context.Context,
+	entryPath string,
 	entry *directoryEntryTab,
 	removed *[]IDirectoryEntry,
 ) error {
@@ -143,12 +245,20 @@ func (t *directoryTransaction) collectAndRemove(
 			return fmt.Errorf("list transaction remove children: %w", err)
 		}
 		for _, child := range children {
-			if err := t.collectAndRemove(ctx, child, removed); err != nil {
+			if err := t.collectAndRemove(
+				ctx,
+				path.Join(entryPath, child.FileName_),
+				child,
+				removed,
+			); err != nil {
 				return err
 			}
 		}
 	}
 	*removed = append(*removed, entry)
+	if err := t.directory.recordChange(ctx, t.tx, entryPath, "deleted"); err != nil {
+		return err
+	}
 	if err := t.directory.txRemove(ctx, t.tx, entry.ParentEntryId_, entry.FileName_); err != nil {
 		return fmt.Errorf("remove transaction entry %q: %w", entry.FileName_, err)
 	}
@@ -174,13 +284,21 @@ func (t *directoryTransaction) Touch(ctx context.Context, filename string, mtime
 	if _, err := t.tx.ExecContext(ctx, sql, args...); err != nil {
 		return fmt.Errorf("touch transaction entry: %w", err)
 	}
-	return nil
+	return t.directory.recordChange(ctx, t.tx, filename, "updated")
 }
 
 func (t *directoryTransaction) Copy(
 	ctx context.Context,
 	source, destination string,
 	overwrite bool,
+) ([]EntryCopy, []IDirectoryEntry, error) {
+	return t.CopyDepth(ctx, source, destination, overwrite, true)
+}
+
+func (t *directoryTransaction) CopyDepth(
+	ctx context.Context,
+	source, destination string,
+	overwrite, recursive bool,
 ) ([]EntryCopy, []IDirectoryEntry, error) {
 	next, err := t.directory.precheckMoveCopy(source, destination)
 	if err != nil {
@@ -199,7 +317,14 @@ func (t *directoryTransaction) Copy(
 			return nil, nil, err
 		}
 	}
-	if err := t.directory.txDoCopy(ctx, t.tx, source, destination, overwrite); err != nil {
+	if err := t.directory.txDoCopyDepth(
+		ctx,
+		t.tx,
+		source,
+		destination,
+		overwrite,
+		recursive,
+	); err != nil {
 		return nil, nil, err
 	}
 	sourceEntry, sourceExists, err := t.directory.txGetEntryInfo(ctx, t.tx, source, nil)
@@ -211,7 +336,7 @@ func (t *directoryTransaction) Copy(
 		return nil, nil, fmt.Errorf("read copied destination: %w", err)
 	}
 	pairs := make([]EntryCopy, 0, 1)
-	if err := t.collectCopyPairs(ctx, sourceEntry, copiedEntry, &pairs); err != nil {
+	if err := t.collectCopyPairs(ctx, sourceEntry, copiedEntry, recursive, &pairs); err != nil {
 		return nil, nil, err
 	}
 	return pairs, overwritten, nil
@@ -240,13 +365,14 @@ func (t *directoryTransaction) collectEntries(
 func (t *directoryTransaction) collectCopyPairs(
 	ctx context.Context,
 	source, destination *directoryEntryTab,
+	recursive bool,
 	pairs *[]EntryCopy,
 ) error {
 	*pairs = append(*pairs, EntryCopy{
 		Source:      source.ToDirectoyEntry(),
 		Destination: destination.ToDirectoyEntry(),
 	})
-	if source.FileKind_ == defaultFileKindFile {
+	if source.FileKind_ == defaultFileKindFile || !recursive {
 		return nil
 	}
 	sourceChildren, err := t.directory.txListAllDir(ctx, t.tx, source.EntryId_)
@@ -263,7 +389,7 @@ func (t *directoryTransaction) collectCopyPairs(
 		if err != nil || !exists {
 			return fmt.Errorf("find copied child %q: %w", sourceChild.FileName_, err)
 		}
-		if err := t.collectCopyPairs(ctx, sourceChild, destinationChild, pairs); err != nil {
+		if err := t.collectCopyPairs(ctx, sourceChild, destinationChild, true, pairs); err != nil {
 			return err
 		}
 	}
@@ -292,7 +418,20 @@ func (t *directoryTransaction) Move(
 			return nil, err
 		}
 	}
+	if err := t.directory.recordTreeChanges(ctx, t.tx, source, "deleted"); err != nil {
+		return nil, err
+	}
 	if err := t.directory.txDoMove(ctx, t.tx, source, destination, overwrite); err != nil {
+		return nil, err
+	}
+	if err := t.directory.recordTreeChanges(ctx, t.tx, destination, "created"); err != nil {
+		return nil, err
+	}
+	now := time.Now().UnixMilli()
+	if err := t.directory.touchParent(ctx, t.tx, source, now); err != nil {
+		return nil, err
+	}
+	if err := t.directory.touchParent(ctx, t.tx, destination, now); err != nil {
 		return nil, err
 	}
 	return overwritten, nil
@@ -340,15 +479,119 @@ func (e *dbDirectory) rebuildDirItems(dir string) ([]string, error) {
 			continue
 		}
 		if item == ".." {
-			return nil, errInvalidPath
+			return nil, ErrInvalidPath
 		}
-		rs = append(rs, strings.TrimSpace(item))
+		rs = append(rs, item)
 	}
 	return rs, nil
 }
 
 func (e *dbDirectory) table() string {
 	return e.tab
+}
+
+func (e *dbDirectory) recordChange(
+	ctx context.Context,
+	exec database.IExecer,
+	entryPath, kind string,
+) error {
+	entryPath = path.Clean(entryPath)
+	if _, err := exec.ExecContext(
+		ctx,
+		`INSERT INTO tg_webdav_change_tab(path, change_kind, changed_at)
+VALUES (?, ?, ?)`,
+		entryPath,
+		kind,
+		time.Now().UnixMilli(),
+	); err != nil {
+		return fmt.Errorf("record directory change: %w", err)
+	}
+	return nil
+}
+
+func (e *dbDirectory) touchParent(
+	ctx context.Context,
+	exec database.IQueryExecer,
+	entryPath string,
+	mtime int64,
+) error {
+	parentPath := path.Dir(path.Clean(entryPath))
+	parent, exists, err := e.txGetEntryInfo(ctx, exec, parentPath, nil)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("find parent collection %q: %w", parentPath, err)
+	}
+	if !exists {
+		return nil
+	}
+	statement, args, err := builder.BuildUpdate(e.table(), map[string]any{
+		"entry_id": parent.EntryId_,
+	}, map[string]any{
+		"mtime": mtime,
+	})
+	if err != nil {
+		return fmt.Errorf("build parent collection touch: %w", err)
+	}
+	if _, err := exec.ExecContext(ctx, statement, args...); err != nil {
+		return fmt.Errorf("touch parent collection: %w", err)
+	}
+	return nil
+}
+
+func (e *dbDirectory) touchEntryID(
+	ctx context.Context,
+	exec database.IExecer,
+	entryID uint64,
+	mtime int64,
+) error {
+	statement, args, err := builder.BuildUpdate(e.table(), map[string]any{
+		"entry_id": entryID,
+	}, map[string]any{
+		"mtime": mtime,
+	})
+	if err != nil {
+		return fmt.Errorf("build collection touch: %w", err)
+	}
+	if _, err := exec.ExecContext(ctx, statement, args...); err != nil {
+		return fmt.Errorf("touch collection: %w", err)
+	}
+	return nil
+}
+
+func (e *dbDirectory) recordTreeChanges(
+	ctx context.Context,
+	queryExecer database.IQueryExecer,
+	root, kind string,
+) error {
+	entry, exists, err := e.txGetEntryInfo(ctx, queryExecer, root, nil)
+	if err != nil {
+		return fmt.Errorf("find changed tree root %q: %w", root, err)
+	}
+	if !exists {
+		return os.ErrNotExist
+	}
+	var walk func(string, *directoryEntryTab) error
+	walk = func(entryPath string, current *directoryEntryTab) error {
+		if err := e.recordChange(ctx, queryExecer, entryPath, kind); err != nil {
+			return err
+		}
+		if current.FileKind_ != defaultFileKindDir {
+			return nil
+		}
+		children, err := e.txListAllDir(ctx, queryExecer, current.EntryId_)
+		if err != nil {
+			return fmt.Errorf("list changed tree %q: %w", entryPath, err)
+		}
+		for _, child := range children {
+			if err := walk(path.Join(entryPath, child.FileName_), child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return walk(path.Clean(root), entry)
 }
 
 func (e *dbDirectory) splitFilename(filename string) (string, string, bool) {
@@ -513,6 +756,7 @@ func (e *dbDirectory) txListDir(
 ) ([]*directoryEntryTab, error) {
 	where := map[string]any{
 		"parent_entry_id": parentid,
+		"_orderby":        "entry_id ASC",
 		"_limit":          []uint{offset, limit},
 	}
 	rs := make([]*directoryEntryTab, 0, limit)
@@ -520,6 +764,32 @@ func (e *dbDirectory) txListDir(
 		return nil, fmt.Errorf("list directory entries: %w", err)
 	}
 	return rs, nil
+}
+
+func (e *dbDirectory) txListDirAfter(
+	ctx context.Context,
+	q database.IQueryer,
+	parentID, lastEntryID uint64,
+	limit uint,
+) ([]*directoryEntryTab, error) {
+	where := map[string]any{
+		"parent_entry_id": parentID,
+		"entry_id >":      lastEntryID,
+		"_orderby":        "entry_id ASC",
+		"_limit":          []uint{0, limit},
+	}
+	entries := make([]*directoryEntryTab, 0, limit)
+	if err := dbkit.SimpleQuery(
+		ctx,
+		q,
+		e.table(),
+		where,
+		&entries,
+		dbkit.ScanWithTagName("json"),
+	); err != nil {
+		return nil, fmt.Errorf("list directory entries after cursor: %w", err)
+	}
+	return entries, nil
 }
 
 func (e *dbDirectory) txListAllDir(
@@ -557,31 +827,63 @@ func (e *dbDirectory) txOnSelectDir(
 	}
 	var parentid uint64
 	for idx, item := range items {
-		ent, ok, err := e.txSearchEntry(ctx, tx, parentid, item)
+		ent, err := e.txSelectDirComponent(
+			ctx,
+			tx,
+			parentid,
+			item,
+			path.Join(items[:idx+1]...),
+			allowCreate,
+		)
 		if err != nil {
-			return fmt.Errorf("search path component %q: %w", item, err)
-		}
-		if !ok {
-			if !allowCreate {
-				return os.ErrNotExist
-			}
-			pid, err := e.txCreateDir(ctx, tx, parentid, item)
-			if err != nil {
-				return fmt.Errorf("create path component %q: %w", item, err)
-			}
-			parentid = pid
-			continue
+			return err
 		}
 		if ent.FileKind_ != defaultFileKindDir {
 			return fmt.Errorf(
 				"%w: %s",
-				errPathComponentNotDirectory,
+				ErrPathComponentNotDirectory,
 				strings.Join(items[:idx+1], "/"),
 			)
 		}
 		parentid = ent.EntryId_
 	}
 	return cb(ctx, parentid, tx)
+}
+
+func (e *dbDirectory) txSelectDirComponent(
+	ctx context.Context,
+	tx database.IQueryExecer,
+	parentID uint64,
+	name, componentPath string,
+	allowCreate bool,
+) (*directoryEntryTab, error) {
+	entry, exists, err := e.txSearchEntry(ctx, tx, parentID, name)
+	if err != nil {
+		return nil, fmt.Errorf("search path component %q: %w", name, err)
+	}
+	if exists {
+		return entry, nil
+	}
+	if !allowCreate {
+		return nil, os.ErrNotExist
+	}
+	entryID, err := e.txCreateDir(ctx, tx, parentID, name)
+	if err != nil {
+		return nil, fmt.Errorf("create path component %q: %w", name, err)
+	}
+	if err := e.recordChange(ctx, tx, componentPath, "created"); err != nil {
+		return nil, err
+	}
+	if parentID != 0 {
+		if err := e.touchEntryID(ctx, tx, parentID, time.Now().UnixMilli()); err != nil {
+			return nil, err
+		}
+	}
+	return &directoryEntryTab{
+		EntryId_:  entryID,
+		FileKind_: defaultFileKindDir,
+		FileName_: name,
+	}, nil
 }
 
 func (e *dbDirectory) txGetRoot(ctx context.Context, tx database.IQueryExecer) (*directoryEntryTab, bool, error) {
@@ -686,7 +988,10 @@ func (e *dbDirectory) Mkdir(ctx context.Context, dir string) error {
 		if _, err := e.txCreateDir(ctx, tx, parentid, name); err != nil {
 			return fmt.Errorf("create directory %q: %w", name, err)
 		}
-		return nil
+		if err := e.recordChange(ctx, tx, dir, "created"); err != nil {
+			return err
+		}
+		return e.touchEntryID(ctx, tx, parentid, time.Now().UnixMilli())
 	}); err != nil {
 		return fmt.Errorf("make directory %q: %w", dir, err)
 	}
@@ -698,7 +1003,9 @@ func (e *dbDirectory) txDoIterAndCopy(
 	tx database.IQueryExecer,
 	srcinfo *directoryEntryTab,
 	dstparent uint64,
+	destination string,
 	newname string,
+	recursive bool,
 ) error {
 	now := time.Now().UnixMilli()
 	dstentid, err := e.txCreateEntry(ctx, tx, dstparent, &directoryEntryTab{
@@ -714,7 +1021,10 @@ func (e *dbDirectory) txDoIterAndCopy(
 	if err != nil {
 		return fmt.Errorf("create copied entry %q: %w", newname, err)
 	}
-	if srcinfo.FileKind_ == defaultFileKindFile { // 如果是文件, 则直接结束
+	if err := e.recordChange(ctx, tx, destination, "created"); err != nil {
+		return err
+	}
+	if srcinfo.FileKind_ == defaultFileKindFile || !recursive {
 		return nil
 	}
 	items, err := e.txListAllDir(ctx, tx, srcinfo.EntryId_)
@@ -722,14 +1032,27 @@ func (e *dbDirectory) txDoIterAndCopy(
 		return fmt.Errorf("list all dir failed, eid:%d, err:%w", srcinfo.EntryId_, err)
 	}
 	for _, item := range items { // 递归创建子节点
-		if err := e.txDoIterAndCopy(ctx, tx, item, dstentid, item.FileName_); err != nil {
+		if err := e.txDoIterAndCopy(
+			ctx,
+			tx,
+			item,
+			dstentid,
+			path.Join(destination, item.FileName_),
+			item.FileName_,
+			true,
+		); err != nil {
 			return fmt.Errorf("copy child entry %q: %w", item.FileName_, err)
 		}
 	}
 	return nil
 }
 
-func (e *dbDirectory) txDoCopy(ctx context.Context, tx database.IQueryExecer, src, dst string, overwrite bool) error {
+func (e *dbDirectory) txDoCopyDepth(
+	ctx context.Context,
+	tx database.IQueryExecer,
+	src, dst string,
+	overwrite, recursive bool,
+) error {
 	next, err := e.precheckMoveCopy(src, dst)
 	if err != nil {
 		return fmt.Errorf("precheck copy failed, err:%w", err)
@@ -743,12 +1066,12 @@ func (e *dbDirectory) txDoCopy(ctx context.Context, tx database.IQueryExecer, sr
 		return fmt.Errorf("get copy source %q: %w", src, err)
 	}
 	if !exist {
-		return fmt.Errorf("%w: %s", errCopySourceNotFound, src)
+		return fmt.Errorf("%w: %s", ErrSourceNotFound, src)
 	}
 	var dstparentid uint64
 	_, dname, isRoot := e.splitFilename(dst)
 	if isRoot {
-		return fmt.Errorf("%w: %s", errDestinationMustNotBeRoot, dst)
+		return fmt.Errorf("%w: %s", ErrDestinationMustNotBeRoot, dst)
 	}
 	dinfo, exist, err := e.txGetEntryInfo(ctx, tx, dst, &dstparentid)
 	if err != nil {
@@ -756,16 +1079,24 @@ func (e *dbDirectory) txDoCopy(ctx context.Context, tx database.IQueryExecer, sr
 	}
 	if exist {
 		if !overwrite {
-			return errDestinationExists
+			return ErrDestinationExists
 		}
 		transaction := &directoryTransaction{directory: e, tx: tx}
 		removed := make([]IDirectoryEntry, 0, 1)
-		if err := transaction.collectAndRemove(ctx, dinfo, &removed); err != nil {
+		if err := transaction.collectAndRemove(ctx, path.Clean(dst), dinfo, &removed); err != nil {
 			return fmt.Errorf("delete before copy: %w", err)
 		}
 	}
 	// 执行递归copy流程
-	if err := e.txDoIterAndCopy(ctx, tx, sinfo, dstparentid, dname); err != nil {
+	if err := e.txDoIterAndCopy(
+		ctx,
+		tx,
+		sinfo,
+		dstparentid,
+		path.Clean(dst),
+		dname,
+		recursive,
+	); err != nil {
 		return fmt.Errorf(
 			"copy tree source_parent=%d destination_parent=%d name=%q: %w",
 			sinfo.ParentEntryId_,
@@ -774,7 +1105,7 @@ func (e *dbDirectory) txDoCopy(ctx context.Context, tx database.IQueryExecer, sr
 			err,
 		)
 	}
-	return nil
+	return e.touchParent(ctx, tx, dst, time.Now().UnixMilli())
 }
 
 func (e *dbDirectory) Copy(ctx context.Context, src, dst string, overwrite bool) error {
@@ -803,10 +1134,10 @@ func (e *dbDirectory) precheckMoveCopy(src, dst string) (bool, error) {
 		return false, nil
 	}
 	if e.isArrayHasSuffix(d, s) {
-		return false, errDestinationInsideSource
+		return false, ErrDestinationInsideSource
 	}
 	if e.isArrayHasSuffix(s, d) {
-		return false, errDestinationInsideSource
+		return false, ErrDestinationInsideSource
 	}
 	return true, nil
 }
@@ -825,7 +1156,7 @@ func (e *dbDirectory) txDoMove(ctx context.Context, tx database.IQueryExecer, sr
 		return fmt.Errorf("get move source %q: %w", src, err)
 	}
 	if !ok {
-		return fmt.Errorf("%w: %s", errMoveSourceNotFound, src)
+		return fmt.Errorf("%w: %s", ErrSourceNotFound, src)
 	}
 	// 处理move流程
 	var parentid uint64
@@ -835,7 +1166,7 @@ func (e *dbDirectory) txDoMove(ctx context.Context, tx database.IQueryExecer, sr
 	}
 	_, dname, isRoot := e.splitFilename(dst)
 	if isRoot {
-		return errEntryMustNotBeRoot
+		return ErrEntryMustNotBeRoot
 	}
 	if !dexist { // 目标不存在, 那么直接把src挂到dst的parent上即可
 		if err := e.txChangeParent(ctx, tx, sinfo.EntryId_, parentid, &dname); err != nil {
@@ -844,11 +1175,11 @@ func (e *dbDirectory) txDoMove(ctx context.Context, tx database.IQueryExecer, sr
 		return nil
 	}
 	if !overwrite {
-		return errDestinationExists
+		return ErrDestinationExists
 	}
 	transaction := &directoryTransaction{directory: e, tx: tx}
 	removed := make([]IDirectoryEntry, 0, 1)
-	if err := transaction.collectAndRemove(ctx, dinfo, &removed); err != nil {
+	if err := transaction.collectAndRemove(ctx, path.Clean(dst), dinfo, &removed); err != nil {
 		return fmt.Errorf("remove overwritten move destination: %w", err)
 	}
 	if err := e.txChangeParent(ctx, tx, sinfo.EntryId_, parentid, &dname); err != nil {
@@ -911,6 +1242,61 @@ func (e *dbDirectory) List(ctx context.Context, dir string) ([]IDirectoryEntry, 
 		return nil, fmt.Errorf("list directory %q: %w", dir, err)
 	}
 	return rs, nil
+}
+
+func (e *dbDirectory) Iterate(
+	ctx context.Context,
+	dir string,
+	batch uint,
+	cb DirectoryScanCallbackFunc,
+) error {
+	if batch == 0 {
+		return errInvalidScanBatch
+	}
+	var parentID uint64
+	if err := e.onSelectDir(
+		ctx,
+		dir,
+		false,
+		func(_ context.Context, resolvedParentID uint64, _ database.IQueryExecer) error {
+			parentID = resolvedParentID
+			return nil
+		},
+	); err != nil {
+		return fmt.Errorf("iterate directory %q: %w", dir, err)
+	}
+	if err := e.txIterateDir(ctx, e.db, parentID, batch, cb); err != nil {
+		return fmt.Errorf("iterate directory %q batches: %w", dir, err)
+	}
+	return nil
+}
+
+func (e *dbDirectory) txIterateDir(
+	ctx context.Context,
+	tx database.IQueryExecer,
+	parentID uint64,
+	batch uint,
+	cb DirectoryScanCallbackFunc,
+) error {
+	var lastEntryID uint64
+	for {
+		items, err := e.txListDirAfter(ctx, tx, parentID, lastEntryID, batch)
+		if err != nil {
+			return err
+		}
+		entries := make([]IDirectoryEntry, 0, len(items))
+		for _, item := range items {
+			entries = append(entries, item.ToDirectoyEntry())
+		}
+		next, err := cb(ctx, entries)
+		if err != nil {
+			return fmt.Errorf("process directory batch: %w", err)
+		}
+		if !next || uint(len(items)) < batch {
+			return nil
+		}
+		lastEntryID = items[len(items)-1].EntryId_
+	}
 }
 
 func (e *dbDirectory) Stat(ctx context.Context, filename string) (IDirectoryEntry, error) {

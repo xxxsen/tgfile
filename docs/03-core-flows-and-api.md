@@ -363,16 +363,17 @@ DeleteObjects：
 | 元数据 purge | `POST /file/purge` | Basic |
 | 静态目录 | `/static/*` | Basic |
 | 逻辑备份 | `/backup/import`、`/backup/export` | Basic |
-| WebDAV | `/webdav/*` | Basic |
+| WebDAV Class 1/2 + sync | `/webdav/*` | Basic |
 
 直链下载只使用规范 `/defaults` 映射。Purge 只清理无引用且没有 Delete State 的旧 File；
 不会丢弃 durable 删除引用或删除 Telegram message。
 
-WebDAV 使用 Basic Auth，并通过 `webdav.root` 映射同一棵路径树。GET、HEAD、Range 和
-PROPFIND 对 layout v1/v2 透明。COPY 复制 Mapping 和现有 S3 Metadata，MOVE 保持 FileID；
-DELETE 或覆盖式 COPY/MOVE 递归收集被移除子树，在同一 SQLite 事务中更新 Mapping、
-Metadata、最后引用和 durable outbox。HTTP 成功表示该事务已提交，不表示 Telegram
-message 已同步删除。仍有其他 S3/WebDAV Mapping 的 File 必须保持 `live`。
+WebDAV 使用 Basic Auth，并通过 `webdav.root` 映射同一棵路径树。它提供强 ETag 条件读取/
+写入、原子 PUT、Depth 受限的 PROPFIND、dead properties、exclusive write LOCK/UNLOCK、
+逻辑 quota 和 `sync-collection`。GET、HEAD、Range、COPY 和 MOVE 对 layout v1/v2 透明；
+未知长度 PUT 经磁盘 spool 获得最终大小后再进入现有分片上传。DELETE 或覆盖在同一 SQLite
+事务中更新 Mapping、S3 Metadata、WebDAV 协议状态、最后引用和 durable outbox。完整协议
+语义见 [`04-webdav-protocol.md`](04-webdav-protocol.md)。
 
 逻辑备份导出路径树和完整对象字节，不保存内部 FileID、Segment、Completed Part manifest
 或 S3 Metadata。导入后的文件统一是 layout v1；对象字节和路径保持一致，但历史弱 ETag、

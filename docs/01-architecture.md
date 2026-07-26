@@ -2,7 +2,8 @@
 
 本文描述 tgfile 当前稳定的系统边界、组件职责和依赖方向。数据模型见
 [`02-data-and-storage-model.md`](02-data-and-storage-model.md)，协议语义见
-[`03-core-flows-and-api.md`](03-core-flows-and-api.md)。
+[`03-core-flows-and-api.md`](03-core-flows-and-api.md)，WebDAV 的资源、属性、锁和同步
+模型见 [`04-webdav-protocol.md`](04-webdav-protocol.md)。
 
 ## 1. 系统定位
 
@@ -18,8 +19,9 @@ tgfile 是一个以 Telegram 为主要内容后端的流式文件服务。文件
 - 文件直链上传、下载和元数据读取；
 - SQLite migration、只读审计和持久化 Telegram 删除 worker。
 
-WebDAV、逻辑备份和静态目录复用同一 FileManager。WebDAV 可以透明读取 Multipart
-Composite File，其 DELETE 和覆盖式 COPY/MOVE 也使用同一套引用与底层删除语义。
+WebDAV、逻辑备份和静态目录复用同一 FileManager。WebDAV 提供 Class 1/2 资源方法、
+持久化 dead properties、锁和 collection sync；它可以透明读取 Multipart Composite
+File，所有覆盖和删除也复用同一套引用与底层删除语义。
 
 ## 2. 组件关系
 
@@ -49,9 +51,9 @@ Directory 事务完成。
 | 包 | 稳定职责 |
 |---|---|
 | `cmd` | Cobra 子命令、配置校验、依赖组装和进程生命周期 |
-| `server` | HTTP 路由、bucket ACL、认证、S3/HTTP 协议转换 |
-| `filemgr` | 文件创建与读取、S3/Multipart 对象事务、Composite、引用判断和后台 worker |
-| `directory` | SQLite 路径树及事务内 Stat/Create/Remove/Copy/Move/Touch |
+| `server` | HTTP 路由、bucket ACL、认证、S3/HTTP/WebDAV 协议转换 |
+| `filemgr` | 文件创建与读取、S3/Multipart/WebDAV 事务、Composite、引用判断和后台 worker |
+| `directory` | SQLite 路径树、分页遍历及事务内 Stat/Create/Replace/Remove/Copy/Move/Touch |
 | `dao` | File、Part 和普通 Mapping 数据访问 |
 | `db` | migration 规划、账本、checksum 和 schema 指纹校验 |
 | `migrations` | 按版本嵌入二进制的业务 DDL 与精确 legacy schema 画像 |
@@ -151,7 +153,8 @@ Telegram 消息删除不是 Mapping 事务中的同步网络调用。以下操�
 - Multipart checksum algorithm/type 在 Create 时固化，Part 与最终 checksum 必须和对象
   Metadata 在同一事务中持久化；
 - S3 Mapping 与对象元数据在同一个 SQLite 事务中创建、覆盖、复制或删除；
-- WebDAV DELETE/COPY/MOVE 在同一事务中递归处理 Mapping、对象元数据和删除 outbox；
+- WebDAV PUT/DELETE/COPY/MOVE 在同一事务中处理 Mapping、属性、锁、对象元数据、
+  change journal 和删除 outbox；
 - 最后引用判断与 `live -> pending` 状态变化处于同一事务；
 - 非 `live` File 不能重新创建 Mapping，worker 发现引用恢复时将可恢复状态改回 `live`；
 - 外部直链 key、`file_id`、Part 顺序、FileKey 和已持久化 MD5 不被静默改写；

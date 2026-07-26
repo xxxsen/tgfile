@@ -302,6 +302,17 @@ func publishS3ObjectTx(
 	if err != nil {
 		return nil, fmt.Errorf("create S3 mapping: %w", err)
 	}
+	if current != nil {
+		if err := rebindWebDAVProtocolState(
+			ctx,
+			tx.QueryExecer(),
+			current.Link.EntryID,
+			entry.EntryID(),
+			objectPath,
+		); err != nil {
+			return nil, err
+		}
+	}
 	now := time.Now().UnixMilli()
 	stored := *metadata
 	stored.EntryID = entry.EntryID()
@@ -491,6 +502,15 @@ func copyDifferentS3ObjectTx(
 	if err != nil {
 		return nil, err
 	}
+	if destinationInfo != nil {
+		overwritten := []directory.IDirectoryEntry{linkDirectoryEntry{link: destinationInfo.Link}}
+		if err := deleteWebDAVProperties(ctx, tx.QueryExecer(), overwritten); err != nil {
+			return nil, err
+		}
+		if err := deleteWebDAVLocks(ctx, tx.QueryExecer(), overwritten); err != nil {
+			return nil, err
+		}
+	}
 	if err := ensureFileCanBeLinked(ctx, tx.QueryExecer(), sourceInfo.Link.FileId); err != nil {
 		return nil, err
 	}
@@ -512,6 +532,12 @@ func copyDifferentS3ObjectTx(
 	stored.Ctime = now
 	stored.Mtime = now
 	if err := insertS3Metadata(ctx, tx.QueryExecer(), &stored); err != nil {
+		return nil, err
+	}
+	if err := copyWebDAVProperties(ctx, tx.QueryExecer(), []directory.EntryCopy{{
+		Source:      linkDirectoryEntry{link: sourceInfo.Link},
+		Destination: entry,
+	}}); err != nil {
 		return nil, err
 	}
 	if replacedFileID != 0 && replacedFileID != sourceInfo.Link.FileId {
@@ -547,6 +573,13 @@ func (d *defaultFileManager) DeleteS3Object(
 			return fmt.Errorf("remove S3 object mapping: %w", err)
 		}
 		if err := deleteS3Metadata(ctx, tx.QueryExecer(), current.Link.EntryID); err != nil {
+			return err
+		}
+		removed := []directory.IDirectoryEntry{linkDirectoryEntry{link: current.Link}}
+		if err := deleteWebDAVProperties(ctx, tx.QueryExecer(), removed); err != nil {
+			return err
+		}
+		if err := deleteWebDAVLocks(ctx, tx.QueryExecer(), removed); err != nil {
 			return err
 		}
 		if err := markFilePendingIfUnreferenced(
