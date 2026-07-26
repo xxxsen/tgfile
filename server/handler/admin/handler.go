@@ -31,23 +31,23 @@ const (
 var errInvalidCredentialBounds = errors.New("invalid credential bounds")
 
 func New(options Options) (*Handler, error) {
-	origin, canonical, err := validateAdminHandlerOptions(options)
+	origins, secureCookie, err := validateAdminHandlerOptions(options)
 	if err != nil {
 		return nil, err
 	}
 	applyAdminHandlerDefaults(&options)
 	handler := &Handler{
-		files:             options.FileManager,
-		backups:           options.BackupManager,
-		users:             cloneStringMap(options.Users),
-		roles:             cloneStringMap(options.Roles),
-		externalCanonical: canonical,
-		secureCookie:      origin.Scheme == "https",
-		maxUploadSize:     options.MaxUploadSize,
-		maxPathBytes:      options.MaxPathBytes,
-		mutationMaxItems:  options.MutationMaxItems,
-		sessions:          newSessionStore(options.SessionIdle, options.SessionMaximum),
-		loginLimiter:      newLoginLimiter(),
+		files:            options.FileManager,
+		backups:          options.BackupManager,
+		users:            cloneStringMap(options.Users),
+		roles:            cloneStringMap(options.Roles),
+		externalOrigins:  origins,
+		secureCookie:     secureCookie,
+		maxUploadSize:    options.MaxUploadSize,
+		maxPathBytes:     options.MaxPathBytes,
+		mutationMaxItems: options.MutationMaxItems,
+		sessions:         newSessionStore(options.SessionIdle, options.SessionMaximum),
+		loginLimiter:     newLoginLimiter(),
 	}
 	if _, err := io.ReadFull(rand.Reader, handler.dummyPassword[:]); err != nil {
 		return nil, fmt.Errorf("generate admin dummy credential: %w", err)
@@ -56,25 +56,52 @@ func New(options Options) (*Handler, error) {
 	return handler, nil
 }
 
-func validateAdminHandlerOptions(options Options) (*url.URL, string, error) {
-	if options.FileManager == nil || options.BackupManager == nil ||
-		len(options.Users) == 0 || len(options.Roles) == 0 ||
-		options.SessionIdle <= 0 || options.SessionMaximum <= options.SessionIdle ||
-		options.MaxUploadSize < 1 || options.MaxPathBytes < 0 ||
-		options.MutationMaxItems < 0 {
-		return nil, "", errInvalidAdminOptions
+func validateAdminHandlerOptions(options Options) (map[string]struct{}, bool, error) {
+	if invalidAdminHandlerOptions(options) {
+		return nil, false, errInvalidAdminOptions
 	}
-	origin, canonical, err := parseOrigin(options.ExternalOrigin)
+	origins, secureCookie, err := validateAdminHandlerOrigins(options.ExternalOrigins)
 	if err != nil {
-		return nil, "", err
-	}
-	if origin.Scheme == "http" && !isLoopbackHost(origin.Hostname()) {
-		return nil, "", errInsecureAdminOrigin
+		return nil, false, err
 	}
 	if err := validateAdminHandlerUsers(options.Users, options.Roles); err != nil {
-		return nil, "", err
+		return nil, false, err
 	}
-	return origin, canonical, nil
+	return origins, secureCookie, nil
+}
+
+func invalidAdminHandlerOptions(options Options) bool {
+	return options.FileManager == nil || options.BackupManager == nil ||
+		len(options.Users) == 0 || len(options.Roles) == 0 ||
+		len(options.ExternalOrigins) == 0 ||
+		len(options.ExternalOrigins) > maxAdminOrigins ||
+		options.SessionIdle <= 0 || options.SessionMaximum <= options.SessionIdle ||
+		options.MaxUploadSize < 1 || options.MaxPathBytes < 0 ||
+		options.MutationMaxItems < 0
+}
+
+func validateAdminHandlerOrigins(values []string) (map[string]struct{}, bool, error) {
+	origins := make(map[string]struct{}, len(values))
+	scheme := ""
+	for _, value := range values {
+		origin, canonical, err := parseOrigin(value)
+		if err != nil {
+			return nil, false, err
+		}
+		if origin.Scheme == "http" && !isLoopbackHost(origin.Hostname()) {
+			return nil, false, errInsecureAdminOrigin
+		}
+		if scheme == "" {
+			scheme = origin.Scheme
+		} else if origin.Scheme != scheme {
+			return nil, false, errInvalidAdminOrigin
+		}
+		if _, exists := origins[canonical]; exists {
+			return nil, false, errInvalidAdminOrigin
+		}
+		origins[canonical] = struct{}{}
+	}
+	return origins, scheme == "https", nil
 }
 
 func validateAdminHandlerUsers(users, roles map[string]string) error {
@@ -416,7 +443,8 @@ func (h *Handler) requireOrigin(c *gin.Context) bool {
 		return false
 	}
 	_, canonical, err := parseOrigin(values[0])
-	if err != nil || canonical != h.externalCanonical {
+	_, allowed := h.externalOrigins[canonical]
+	if err != nil || !allowed {
 		h.writePublicError(c, http.StatusForbidden, "origin_invalid", "请求来源无效", err)
 		return false
 	}

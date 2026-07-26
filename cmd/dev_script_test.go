@@ -36,7 +36,11 @@ func TestDevelopmentScriptEnablesAdminWithDefaultCredentials(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "test", developmentConfig.UserInfo["test"])
 	require.True(t, developmentConfig.Admin.Enable)
-	require.Equal(t, "http://localhost:19901", developmentConfig.Admin.ExternalOrigin)
+	require.Equal(
+		t,
+		[]string{"http://localhost:19901", "http://127.0.0.1:19901"},
+		developmentConfig.Admin.ExternalOrigins,
+	)
 	require.Equal(t, "read-write", developmentConfig.Admin.Users["test"])
 	require.Equal(t, filepath.Join(dataDirectory, "backup-work"), developmentConfig.Backup.WorkDir)
 }

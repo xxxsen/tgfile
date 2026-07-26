@@ -56,7 +56,10 @@ Admin handler 不直接读写 DAO 或业务表。目录读取经 FileManager 进
   },
   "admin": {
     "enable": true,
-    "external_origin": "https://files.example.com",
+    "external_origin": [
+      "https://files.example.com",
+      "https://image.example.com"
+    ],
     "users": {
       "viewer": "read",
       "operator": "read-write"
@@ -69,8 +72,9 @@ Admin handler 不直接读写 DAO 或业务表。目录读取经 FileManager 进
 ```
 
 - `enable` 缺省为 false；关闭时不注册任何 `/_admin` 路由。
-- `external_origin` 在启用时必填，只接受没有 userinfo、path、query 和 fragment 的
-  HTTP(S) origin。生产只接受 HTTPS；HTTP 只允许 localhost 或 loopback IP。
+- `external_origin` 是数组，在启用时必填，包含 1～32 个没有 userinfo、path、query 和
+  fragment 的 HTTP(S) origin。规范化后不得重复，所有项必须使用同一种 scheme。生产只
+  接受 HTTPS；HTTP 只允许 localhost 或 loopback IP。
 - `users` 至少包含一个已存在于 `user_info` 且密码非空的账号，角色只能为 `read` 或
   `read-write`。
 - `session_idle_minutes` 缺省 30，范围 5～120。
@@ -81,7 +85,8 @@ Admin handler 不直接读写 DAO 或业务表。目录读取经 FileManager 进
 `admin.enable` 和 `backup.enable` 独立控制 HTTP 路由。任一开启都会创建并运行同一个
 backupmgr；只有 `backup.enable` 开启时才暴露 `/backup/v2`。
 
-`external_origin` 是 Cookie Secure 和 Origin 比较的唯一事实来源。服务不使用
+`external_origin` 列表是 Cookie Secure 和 Origin 比较的唯一事实来源。共同 scheme 决定
+Cookie 的 Secure 属性；请求 Origin 必须精确命中规范化后的任一列表项。服务不使用
 `Forwarded`、`X-Forwarded-Host` 或 `X-Forwarded-Proto` 推导管理安全边界。
 
 ## 4. 角色模型
@@ -110,7 +115,8 @@ backupmgr；只有 `backup.enable` 开启时才暴露 `/backup/v2`。
 {"username":"operator","password":"operator-password"}
 ```
 
-请求必须使用 `application/json`，并且 `Origin` 与规范化后的 `external_origin` 相同。
+请求必须使用 `application/json`，并且 `Origin` 精确命中规范化后的
+`external_origin` 列表。
 解析拒绝未知字段、重复字段、尾随值、非法 UTF-8、空账号和空密码。用户名最大 256 字节，
 密码最大 4096 字节；值按原始字节比较，不 trim 或执行 Unicode normalization。
 
@@ -140,6 +146,10 @@ Cookie 不设置 Domain 或持久化到期时间。合法 API 请求滑动 idle 
 expiry。进程最多保存 1024 个活动 Session，每用户最多 8 个；第九次登录撤销最旧 Session。
 服务重启和配置变更后的重启会使全部 Session 失效。
 
+Cookie 是当前域名的 host-only Cookie，不在 `external_origin` 的不同域名之间共享。用户从
+另一个允许域名访问时需要独立登录；两个域名生成的 Session 仍受同一进程级容量与每用户
+上限约束。
+
 `GET /_admin/api/v1/session` 恢复当前 Session 并返回 CSRF token；
 `DELETE /_admin/api/v1/session` 要求正确 Origin 和 CSRF，删除服务端记录并以相同 Path
 清除 Cookie。
@@ -148,7 +158,7 @@ expiry。进程最多保存 1024 个活动 Session，每用户最多 8 个；第
 
 除登录外，所有 POST、PUT、DELETE 管理请求必须同时满足：
 
-- `Origin` 与 `external_origin` 完全一致；
+- `Origin` 与 `external_origin` 列表中的一项完全一致；
 - `X-CSRF-Token` 与 Session 中的 token 常量时间一致。
 
 服务不返回 CORS 允许 header，也不处理跨域 credential。HTML 和 API 设置 `no-store`；

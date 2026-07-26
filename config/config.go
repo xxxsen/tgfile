@@ -42,7 +42,7 @@ func (c *Config) SafeLogFields() []zap.Field {
 		zap.Int64("backup_max_archive_bytes", c.Backup.MaxArchiveBytes),
 		zap.Int64("backup_max_expanded_bytes", c.Backup.MaxExpandedBytes),
 		zap.Bool("admin_enable", c.Admin.Enable),
-		zap.String("admin_external_origin", c.Admin.ExternalOrigin),
+		zap.Strings("admin_external_origins", c.Admin.ExternalOrigins),
 		zap.Int("admin_user_count", len(c.Admin.Users)),
 		zap.Int64("admin_max_upload_size", c.Admin.MaxUploadSize),
 		zap.Bool("l1_cache_enable", c.IOCache.EnableL1Cache),
@@ -111,7 +111,7 @@ type BackupConfig struct {
 
 type AdminConfig struct {
 	Enable             bool              `json:"enable"`
-	ExternalOrigin     string            `json:"external_origin"`
+	ExternalOrigins    []string          `json:"external_origin"`
 	Users              map[string]string `json:"users"`
 	SessionIdleMinutes int               `json:"session_idle_minutes"`
 	SessionMaxHours    int               `json:"session_max_hours"`
@@ -176,6 +176,7 @@ const (
 	defaultAdminSessionIdleMinutes        = 30
 	defaultAdminSessionMaxHours           = 12
 	defaultAdminMaxUploadSize       int64 = 5 * 1024 * 1024 * 1024
+	maxAdminExternalOrigins               = 32
 	maxAdminUploadSize              int64 = 10 * 1024 * 1024 * 1024 * 1024
 	maxBackupArchiveBytes           int64 = 10 * 1024 * 1024 * 1024 * 1024
 	maxBackupExpandedBytes          int64 = 100 * 1024 * 1024 * 1024 * 1024
@@ -204,11 +205,11 @@ func (c *Config) validateAdmin() error {
 	if !c.Admin.Enable {
 		return nil
 	}
-	origin, err := normalizeAdminOrigin(c.Admin.ExternalOrigin)
+	origins, err := normalizeAdminOrigins(c.Admin.ExternalOrigins)
 	if err != nil {
 		return err
 	}
-	c.Admin.ExternalOrigin = origin
+	c.Admin.ExternalOrigins = origins
 	if err := c.validateAdminUsers(); err != nil {
 		return err
 	}
@@ -292,19 +293,56 @@ func (c *Config) validateAdminUploadSize() error {
 	return nil
 }
 
+func normalizeAdminOrigins(values []string) ([]string, error) {
+	if len(values) == 0 || len(values) > maxAdminExternalOrigins {
+		return nil, invalidAdminOriginsError()
+	}
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	scheme := ""
+	for _, value := range values {
+		canonical, err := normalizeAdminOrigin(value)
+		if err != nil {
+			return nil, err
+		}
+		origin, err := url.Parse(canonical)
+		if err != nil {
+			return nil, invalidAdminOriginsError()
+		}
+		if scheme == "" {
+			scheme = origin.Scheme
+		} else if origin.Scheme != scheme {
+			return nil, fmt.Errorf(
+				"%w: admin.external_origin entries must use one common scheme",
+				errInvalidConfig,
+			)
+		}
+		if _, exists := seen[canonical]; exists {
+			return nil, fmt.Errorf(
+				"%w: admin.external_origin contains duplicate origin %q",
+				errInvalidConfig,
+				canonical,
+			)
+		}
+		seen[canonical] = struct{}{}
+		result = append(result, canonical)
+	}
+	return result, nil
+}
+
 func normalizeAdminOrigin(value string) (string, error) {
 	origin, err := url.Parse(strings.TrimSpace(value))
 	if err != nil {
-		return "", invalidAdminOriginError()
+		return "", invalidAdminOriginsError()
 	}
 	if !validAdminOriginShape(origin) {
-		return "", invalidAdminOriginError()
+		return "", invalidAdminOriginsError()
 	}
 	hostname := strings.ToLower(origin.Hostname())
 	port := canonicalAdminOriginPort(origin.Scheme, origin.Port())
 	if origin.Scheme == "http" && !isLoopbackHostname(hostname) {
 		return "", fmt.Errorf(
-			"%w: admin.external_origin must use HTTPS outside loopback",
+			"%w: admin.external_origin entries must use HTTPS outside loopback",
 			errInvalidConfig,
 		)
 	}
@@ -354,10 +392,11 @@ func canonicalAdminOriginHost(hostname, port string) string {
 	return hostname
 }
 
-func invalidAdminOriginError() error {
+func invalidAdminOriginsError() error {
 	return fmt.Errorf(
-		"%w: admin.external_origin must be an HTTP(S) origin without a path",
+		"%w: admin.external_origin must contain 1-%d HTTP(S) origins without paths",
 		errInvalidConfig,
+		maxAdminExternalOrigins,
 	)
 }
 

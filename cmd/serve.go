@@ -139,7 +139,7 @@ func logServerFeatures(serviceConfig *config.Config, appLogger *zap.Logger) {
 	appLogger.Info(
 		"-- admin feature",
 		zap.Bool("enable", serviceConfig.Admin.Enable),
-		zap.String("external_origin", serviceConfig.Admin.ExternalOrigin),
+		zap.Strings("external_origins", serviceConfig.Admin.ExternalOrigins),
 		zap.Int("user_count", len(serviceConfig.Admin.Users)),
 	)
 	appLogger.Info("current cache config")
@@ -285,7 +285,7 @@ func toServerAdminOptions(
 ) server.AdminOptions {
 	return server.AdminOptions{
 		Enabled:            input.Enable,
-		ExternalOrigin:     input.ExternalOrigin,
+		ExternalOrigins:    append([]string(nil), input.ExternalOrigins...),
 		Users:              input.Users,
 		SessionIdle:        time.Duration(input.SessionIdleMinutes) * time.Minute,
 		SessionMaximum:     time.Duration(input.SessionMaxHours) * time.Hour,

@@ -57,7 +57,7 @@ type BackupOptions struct {
 
 type AdminOptions struct {
 	Enabled            bool
-	ExternalOrigin     string
+	ExternalOrigins    []string
 	Users              map[string]string
 	SessionIdle        time.Duration
 	SessionMaximum     time.Duration

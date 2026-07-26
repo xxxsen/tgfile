@@ -79,7 +79,7 @@ func New(bind string, opts ...Option) (*Server, error) {
 			BackupManager:    c.backupManager,
 			Users:            c.userMap,
 			Roles:            c.admin.Users,
-			ExternalOrigin:   c.admin.ExternalOrigin,
+			ExternalOrigins:  c.admin.ExternalOrigins,
 			SessionIdle:      c.admin.SessionIdle,
 			SessionMaximum:   c.admin.SessionMaximum,
 			MaxUploadSize:    c.admin.MaxUploadSize,

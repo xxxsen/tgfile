@@ -72,7 +72,10 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
   },
   "admin": {
     "enable": true,
-    "external_origin": "https://files.example.com",
+    "external_origin": [
+      "https://files.example.com",
+      "https://image.example.com"
+    ],
     "users": {
       "admin-viewer": "read",
       "admin-operator": "read-write"
@@ -125,12 +128,14 @@ Web 管理后台默认关闭。启用后访问 `https://files.example.com/_admin
 导出任务，`read-write` 还可以上传、条件覆盖、导入及管理全部任务。建议使用不与 S3
 Access Key 共用的专用高强度账号。
 
-`admin.external_origin` 必须是浏览器实际访问的 origin，用于登录和所有写请求的严格 Origin
-校验；生产环境只接受 HTTPS，本地 loopback 测试可以使用 HTTP。Session 只保存在进程内存，
-服务重启后需要重新登录。`admin.enable` 与 `backup.enable` 相互独立；只启用管理后台时也会
-启动持久化导入导出 worker，但不会暴露 `/backup/v2` Basic Auth API。`backup.work_dir`
-仍必须位于持久化 volume，并为导入归档和导出 artifact 预留足够空间。反向代理的请求体
-上限和读写超时必须覆盖 `admin.max_upload_size` 与 `backup.max_archive_bytes`。
+`admin.external_origin` 是数组，必须列出浏览器实际访问的 origin；登录和所有写请求的
+`Origin`
+必须精确命中其中一项。列表中的 origin 必须使用同一种 scheme，生产环境只接受 HTTPS，
+本地 loopback 测试可以使用 HTTP。Session 只保存在进程内存，服务重启后需要重新登录。
+`admin.enable` 与 `backup.enable` 相互独立；只启用管理后台时也会启动持久化导入导出
+worker，但不会暴露 `/backup/v2` Basic Auth API。`backup.work_dir` 仍必须位于持久化
+volume，并为导入归档和导出 artifact 预留足够空间。反向代理的请求体上限和读写超时必须
+覆盖 `admin.max_upload_size` 与 `backup.max_archive_bytes`。
 
 启动前可执行无副作用校验；该命令不会初始化日志、SQLite、Telegram、缓存或 HTTP：
 

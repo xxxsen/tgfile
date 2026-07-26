@@ -26,7 +26,10 @@ import (
 	"github.com/xxxsen/tgfile/server"
 )
 
-const adminTestOrigin = "http://127.0.0.1"
+const (
+	adminTestOrigin            = "http://127.0.0.1"
+	adminTestAlternativeOrigin = "http://localhost"
+)
 
 type adminSessionResponse struct {
 	Username  string `json:"username"`
@@ -141,6 +144,20 @@ func TestAdminDisabledAndAdminSecurityHeaders(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, response.Code)
 	require.NotContains(t, response.Body.String(), "operator")
 	require.NotContains(t, response.Body.String(), "write-secret")
+
+	response = serveAdminRequest(
+		t,
+		environment.handler,
+		http.MethodPost,
+		"/_admin/api/v1/session",
+		bytes.NewBufferString(`{"username":"operator","password":"write-secret"}`),
+		map[string]string{
+			"Content-Type": "application/json",
+			"Origin":       adminTestAlternativeOrigin,
+		},
+	)
+	require.Equal(t, http.StatusOK, response.Code)
+	require.NotEmpty(t, response.Header().Values("Set-Cookie"))
 
 	response = serveAdminRequest(
 		t,
@@ -474,7 +491,11 @@ func newAdminTestEnvironment(t *testing.T) adminTestEnvironment {
 		server.WithFileManager(files),
 		server.WithBackup(server.BackupOptions{Enabled: false}, manager),
 		server.WithAdmin(server.AdminOptions{
-			Enabled: true, ExternalOrigin: adminTestOrigin,
+			Enabled: true,
+			ExternalOrigins: []string{
+				adminTestOrigin,
+				adminTestAlternativeOrigin,
+			},
 			Users:       map[string]string{"viewer": "read", "operator": "read-write"},
 			SessionIdle: 30 * time.Minute, SessionMaximum: 12 * time.Hour,
 			MaxUploadSize: 1024, MaxPathBytes: 1024, MaxMutationEntries: 1000,

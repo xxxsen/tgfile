@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	roleRead      = "read"
-	roleReadWrite = "read-write"
+	roleRead        = "read"
+	roleReadWrite   = "read-write"
+	maxAdminOrigins = 32
 )
 
 var (
@@ -31,7 +32,7 @@ type Options struct {
 	BackupManager    *backupmgr.Manager
 	Users            map[string]string
 	Roles            map[string]string
-	ExternalOrigin   string
+	ExternalOrigins  []string
 	SessionIdle      time.Duration
 	SessionMaximum   time.Duration
 	MaxUploadSize    int64
@@ -40,19 +41,19 @@ type Options struct {
 }
 
 type Handler struct {
-	files             filemgr.IFileManager
-	backups           *backupmgr.Manager
-	users             map[string]string
-	roles             map[string]string
-	externalCanonical string
-	secureCookie      bool
-	maxUploadSize     int64
-	maxPathBytes      int
-	mutationMaxItems  int
-	sessions          *sessionStore
-	loginLimiter      *loginLimiter
-	dummyPassword     [sha256.Size]byte
-	api               http.Handler
+	files            filemgr.IFileManager
+	backups          *backupmgr.Manager
+	users            map[string]string
+	roles            map[string]string
+	externalOrigins  map[string]struct{}
+	secureCookie     bool
+	maxUploadSize    int64
+	maxPathBytes     int
+	mutationMaxItems int
+	sessions         *sessionStore
+	loginLimiter     *loginLimiter
+	dummyPassword    [sha256.Size]byte
+	api              http.Handler
 }
 
 type principal struct {

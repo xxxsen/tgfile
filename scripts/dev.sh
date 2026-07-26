@@ -20,14 +20,19 @@ CONFIG_ONLY="${TGFILE_DEV_CONFIG_ONLY:-}"
 
 if [[ -n "${TGFILE_DEV_ADMIN_ORIGIN:-}" ]]; then
   ADMIN_ORIGIN="$TGFILE_DEV_ADMIN_ORIGIN"
+  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\"]"
 elif [[ "$HOST" == "::1" || "$HOST" == "[::1]" ]]; then
   ADMIN_ORIGIN="http://[::1]:$PORT"
+  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\",\"http://localhost:$PORT\"]"
 elif [[ "$HOST" == "127.0.0.1" || "$HOST" == "0.0.0.0" || "$HOST" == "localhost" ]]; then
   ADMIN_ORIGIN="http://localhost:$PORT"
+  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\",\"http://127.0.0.1:$PORT\"]"
 elif [[ "$HOST" == 127.* ]]; then
   ADMIN_ORIGIN="http://$HOST:$PORT"
+  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\"]"
 else
   ADMIN_ORIGIN="http://127.0.0.1:$PORT"
+  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\"]"
 fi
 
 if [[ "$CONFIG_PATH" != /* ]]; then
@@ -174,7 +179,7 @@ generate_config() {
   },
   "admin": {
     "enable": true,
-    "external_origin": "$ADMIN_ORIGIN",
+    "external_origin": $ADMIN_ORIGINS_JSON,
     "users": {
       "$USERNAME": "read-write"
     },
