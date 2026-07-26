@@ -256,7 +256,10 @@ func TestWebDAVExternalOriginMutationLimitAndSpoolLimit(t *testing.T) {
 		t,
 		map[string]string{"editor": "secret"},
 		server.WebDAVOptions{
-			ExternalOrigin:     "https://files.example.test",
+			ExternalOrigins: []string{
+				"https://files.example.test",
+				"https://images.example.test",
+			},
 			MaxUploadSize:      1024,
 			UploadTempDir:      tempDir,
 			MaxMutationEntries: 2,
@@ -277,6 +280,12 @@ func TestWebDAVExternalOriginMutationLimitAndSpoolLimit(t *testing.T) {
 	requireWebDAVStatus(t, doWebDAVRequest(
 		t, client, "editor", "secret", "COPY", source, nil,
 		map[string]string{"Destination": "https://files.example.test/webdav/limits/copy.txt"},
+	), http.StatusCreated)
+	requireWebDAVStatus(t, doWebDAVRequest(
+		t, client, "editor", "secret", "COPY", source, nil,
+		map[string]string{
+			"Destination": "https://images.example.test/webdav/limits/second-origin.txt",
+		},
 	), http.StatusCreated)
 	requireWebDAVStatus(t, doWebDAVRequest(
 		t, client, "editor", "secret", "COPY", source, nil,
@@ -309,7 +318,7 @@ func TestWebDAVExternalOriginMutationLimitAndSpoolLimit(t *testing.T) {
 	requireWebDAVStatus(t, lockResponse, http.StatusOK)
 	lockTokenHeader := lockResponse.Header.Get("Lock-Token")
 	lockToken := strings.Trim(lockTokenHeader, "<>")
-	taggedSource := "https://files.example.test/webdav/limits/source.txt"
+	taggedSource := "https://images.example.test/webdav/limits/source.txt"
 	requireWebDAVStatus(t, doWebDAVRequest(
 		t, client, "editor", "secret", http.MethodPut, source,
 		strings.NewReader("updated"),

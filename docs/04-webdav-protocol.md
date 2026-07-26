@@ -53,9 +53,11 @@ COPY/MOVE 的 Destination 可使用 origin-form 或 absolute-form。它必须位
 `/webdav` 或 `/webdav/` 子树，不能依赖字符串前缀接受 `/webdav2`。absolute-form 的
 scheme、host 和 port 必须与服务认定的 external origin 一致：
 
-- 配置了 `webdav.external_origin` 时，以该显式 HTTP(S) origin 为准；
+- 配置了顶层 `external_origin` 数组时，匹配其中任一规范化后的 HTTP(S) origin；
 - 未配置时，以直连请求的 TLS 状态和 Host 为准；
 - 不信任任意 `Forwarded` 或 `X-Forwarded-*` header。
+
+该顶层数组同时供管理后台执行 Origin 校验，不在 `webdav` 和 `admin` 子项重复配置。
 
 跨 origin Destination 返回 502，非法 URI 或越界路径返回 400，源和目标是同一资源返回
 403。

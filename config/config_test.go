@@ -184,17 +184,19 @@ func TestValidateBackupConfiguration(t *testing.T) {
 func TestValidateAdminConfiguration(t *testing.T) {
 	dataDir := t.TempDir()
 	value := &Config{
-		BotKind:  "localfile",
-		BotInfo:  map[string]any{"storage_dir": filepath.Join(dataDir, "blocks")},
-		DBFile:   filepath.Join(dataDir, "data.db"),
-		UserInfo: map[string]string{"viewer": "view-secret", "operator": "write-secret"},
-		S3:       S3Config{MaxObjectSize: 1024},
+		BotKind: "localfile",
+		BotInfo: map[string]any{"storage_dir": filepath.Join(dataDir, "blocks")},
+		DBFile:  filepath.Join(dataDir, "data.db"),
+		UserInfo: map[string]string{
+			"viewer": "view-secret", "operator": "write-secret",
+		},
+		ExternalOrigins: []string{
+			"https://IMAGE.example.test:443/",
+			"https://files.example.test",
+		},
+		S3: S3Config{MaxObjectSize: 1024},
 		Admin: AdminConfig{
 			Enable: true,
-			ExternalOrigins: []string{
-				"https://IMAGE.example.test:443/",
-				"https://files.example.test",
-			},
 			Users: map[string]string{
 				"viewer":   "read",
 				"operator": "read-write",
@@ -205,7 +207,7 @@ func TestValidateAdminConfiguration(t *testing.T) {
 	require.Equal(
 		t,
 		[]string{"https://image.example.test", "https://files.example.test"},
-		value.Admin.ExternalOrigins,
+		value.ExternalOrigins,
 	)
 	require.Equal(t, defaultAdminSessionIdleMinutes, value.Admin.SessionIdleMinutes)
 	require.Equal(t, defaultAdminSessionMaxHours, value.Admin.SessionMaxHours)
@@ -218,37 +220,37 @@ func TestValidateAdminConfiguration(t *testing.T) {
 		{
 			name: "origin missing",
 			mutate: func(config *Config) {
-				config.Admin.ExternalOrigins = nil
+				config.ExternalOrigins = nil
 			},
 		},
 		{
 			name: "non loopback http",
 			mutate: func(config *Config) {
-				config.Admin.ExternalOrigins = []string{"http://image.example.test"}
+				config.ExternalOrigins = []string{"http://image.example.test"}
 			},
 		},
 		{
 			name: "origin path",
 			mutate: func(config *Config) {
-				config.Admin.ExternalOrigins = []string{"https://image.example.test/admin"}
+				config.ExternalOrigins = []string{"https://image.example.test/admin"}
 			},
 		},
 		{
 			name: "origin without hostname",
 			mutate: func(config *Config) {
-				config.Admin.ExternalOrigins = []string{"https://:443"}
+				config.ExternalOrigins = []string{"https://:443"}
 			},
 		},
 		{
 			name: "origin port out of range",
 			mutate: func(config *Config) {
-				config.Admin.ExternalOrigins = []string{"https://image.example.test:65536"}
+				config.ExternalOrigins = []string{"https://image.example.test:65536"}
 			},
 		},
 		{
 			name: "duplicate canonical origin",
 			mutate: func(config *Config) {
-				config.Admin.ExternalOrigins = []string{
+				config.ExternalOrigins = []string{
 					"https://image.example.test",
 					"https://IMAGE.example.test:443/",
 				}
@@ -257,7 +259,7 @@ func TestValidateAdminConfiguration(t *testing.T) {
 		{
 			name: "mixed schemes",
 			mutate: func(config *Config) {
-				config.Admin.ExternalOrigins = []string{
+				config.ExternalOrigins = []string{
 					"https://image.example.test",
 					"http://localhost",
 				}
@@ -266,9 +268,9 @@ func TestValidateAdminConfiguration(t *testing.T) {
 		{
 			name: "too many origins",
 			mutate: func(config *Config) {
-				config.Admin.ExternalOrigins = make([]string, maxAdminExternalOrigins+1)
-				for index := range config.Admin.ExternalOrigins {
-					config.Admin.ExternalOrigins[index] = fmt.Sprintf(
+				config.ExternalOrigins = make([]string, maxExternalOrigins+1)
+				for index := range config.ExternalOrigins {
+					config.ExternalOrigins[index] = fmt.Sprintf(
 						"https://origin-%d.example.test",
 						index,
 					)
@@ -318,11 +320,8 @@ func TestValidateAdminConfiguration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			copyConfig := *value
 			copyConfig.UserInfo = cloneTestMap(value.UserInfo)
+			copyConfig.ExternalOrigins = append([]string(nil), value.ExternalOrigins...)
 			copyConfig.Admin = value.Admin
-			copyConfig.Admin.ExternalOrigins = append(
-				[]string(nil),
-				value.Admin.ExternalOrigins...,
-			)
 			copyConfig.Admin.Users = cloneTestMap(value.Admin.Users)
 			test.mutate(&copyConfig)
 			require.ErrorIs(t, copyConfig.Validate(), errInvalidConfig)
@@ -332,29 +331,29 @@ func TestValidateAdminConfiguration(t *testing.T) {
 	loopback := *value
 	loopback.Admin = value.Admin
 	loopback.Admin.Users = cloneTestMap(value.Admin.Users)
-	loopback.Admin.ExternalOrigins = []string{"http://[::1]:80/", "http://localhost:80"}
+	loopback.ExternalOrigins = []string{"http://[::1]:80/", "http://localhost:80"}
 	require.NoError(t, loopback.Validate())
 	require.Equal(
 		t,
 		[]string{"http://[::1]", "http://localhost"},
-		loopback.Admin.ExternalOrigins,
+		loopback.ExternalOrigins,
 	)
 }
 
-func TestAdminExternalOriginJSONRequiresList(t *testing.T) {
+func TestRootExternalOriginJSONRequiresList(t *testing.T) {
 	var value Config
 	require.NoError(t, json.Unmarshal(
-		[]byte(`{"admin":{"external_origin":["https://one.example","https://two.example"]}}`),
+		[]byte(`{"external_origin":["https://one.example","https://two.example"]}`),
 		&value,
 	))
 	require.Equal(
 		t,
 		[]string{"https://one.example", "https://two.example"},
-		value.Admin.ExternalOrigins,
+		value.ExternalOrigins,
 	)
 
 	require.Error(t, json.Unmarshal(
-		[]byte(`{"admin":{"external_origin":"https://one.example"}}`),
+		[]byte(`{"external_origin":"https://one.example"}`),
 		&value,
 	))
 }
@@ -367,7 +366,7 @@ func cloneTestMap(input map[string]string) map[string]string {
 	return result
 }
 
-func TestValidateWebDAVExternalOrigin(t *testing.T) {
+func TestValidateRootExternalOriginsForWebDAV(t *testing.T) {
 	value := &Config{
 		BotKind: "localfile",
 		BotInfo: map[string]any{
@@ -377,16 +376,16 @@ func TestValidateWebDAVExternalOrigin(t *testing.T) {
 		UserInfo: map[string]string{
 			"editor": "secret",
 		},
+		ExternalOrigins: []string{"https://image.example.test/"},
 		Webdav: WebdavConfig{
-			Enable:         true,
-			ExternalOrigin: "https://image.example.test/",
+			Enable: true,
 			Users: map[string]string{
 				"editor": "read-write",
 			},
 		},
 	}
 	require.NoError(t, value.Validate())
-	require.Equal(t, "https://image.example.test", value.Webdav.ExternalOrigin)
+	require.Equal(t, []string{"https://image.example.test"}, value.ExternalOrigins)
 
 	for _, origin := range []string{
 		"ftp://image.example.test",
@@ -396,8 +395,11 @@ func TestValidateWebDAVExternalOrigin(t *testing.T) {
 		"https://image.example.test?source=proxy",
 	} {
 		copyConfig := *value
-		copyConfig.Webdav = value.Webdav
-		copyConfig.Webdav.ExternalOrigin = origin
+		copyConfig.ExternalOrigins = []string{origin}
 		require.ErrorIs(t, copyConfig.Validate(), errInvalidConfig, origin)
 	}
+
+	withoutOrigins := *value
+	withoutOrigins.ExternalOrigins = nil
+	require.NoError(t, withoutOrigins.Validate())
 }

@@ -28,6 +28,7 @@ func (c *Config) SafeLogFields() []zap.Field {
 		zap.String("bind", c.Bind),
 		zap.String("db_file", c.DBFile),
 		zap.String("bot_kind", c.BotKind),
+		zap.Strings("external_origins", c.ExternalOrigins),
 		zap.Bool("s3_enable", c.S3.Enable),
 		zap.Strings("s3_buckets", c.S3.BucketNames()),
 		zap.Int("s3_multipart_expire_hours", c.S3.MultipartExpireHours),
@@ -42,7 +43,6 @@ func (c *Config) SafeLogFields() []zap.Field {
 		zap.Int64("backup_max_archive_bytes", c.Backup.MaxArchiveBytes),
 		zap.Int64("backup_max_expanded_bytes", c.Backup.MaxExpandedBytes),
 		zap.Bool("admin_enable", c.Admin.Enable),
-		zap.Strings("admin_external_origins", c.Admin.ExternalOrigins),
 		zap.Int("admin_user_count", len(c.Admin.Users)),
 		zap.Int64("admin_max_upload_size", c.Admin.MaxUploadSize),
 		zap.Bool("l1_cache_enable", c.IOCache.EnableL1Cache),
@@ -76,7 +76,6 @@ func (c S3Config) BucketNames() []string {
 type WebdavConfig struct {
 	Enable             bool              `json:"enable"`
 	Root               string            `json:"root"`
-	ExternalOrigin     string            `json:"external_origin"`
 	MaxUploadSize      int64             `json:"max_upload_size"`
 	UploadTempDir      string            `json:"upload_temp_dir"`
 	Users              map[string]string `json:"users"`
@@ -111,7 +110,6 @@ type BackupConfig struct {
 
 type AdminConfig struct {
 	Enable             bool              `json:"enable"`
-	ExternalOrigins    []string          `json:"external_origin"`
 	Users              map[string]string `json:"users"`
 	SessionIdleMinutes int               `json:"session_idle_minutes"`
 	SessionMaxHours    int               `json:"session_max_hours"`
@@ -119,18 +117,19 @@ type AdminConfig struct {
 }
 
 type Config struct {
-	Bind         string            `json:"bind"`
-	LogInfo      logger.LogConfig  `json:"log_info"`
-	DBFile       string            `json:"db_file"`
-	BotKind      string            `json:"bot_kind"`
-	BotInfo      any               `json:"bot_config"`
-	UserInfo     map[string]string `json:"user_info"`
-	S3           S3Config          `json:"s3"`
-	RotateStream int               `json:"rotate_stream"`
-	Webdav       WebdavConfig      `json:"webdav"`
-	IOCache      IOCacheConfig     `json:"io_cache"`
-	Backup       BackupConfig      `json:"backup"`
-	Admin        AdminConfig       `json:"admin"`
+	Bind            string            `json:"bind"`
+	LogInfo         logger.LogConfig  `json:"log_info"`
+	DBFile          string            `json:"db_file"`
+	BotKind         string            `json:"bot_kind"`
+	BotInfo         any               `json:"bot_config"`
+	UserInfo        map[string]string `json:"user_info"`
+	ExternalOrigins []string          `json:"external_origin"`
+	S3              S3Config          `json:"s3"`
+	RotateStream    int               `json:"rotate_stream"`
+	Webdav          WebdavConfig      `json:"webdav"`
+	IOCache         IOCacheConfig     `json:"io_cache"`
+	Backup          BackupConfig      `json:"backup"`
+	Admin           AdminConfig       `json:"admin"`
 }
 
 func Parse(f string) (*Config, error) {
@@ -176,7 +175,7 @@ const (
 	defaultAdminSessionIdleMinutes        = 30
 	defaultAdminSessionMaxHours           = 12
 	defaultAdminMaxUploadSize       int64 = 5 * 1024 * 1024 * 1024
-	maxAdminExternalOrigins               = 32
+	maxExternalOrigins                    = 32
 	maxAdminUploadSize              int64 = 10 * 1024 * 1024 * 1024 * 1024
 	maxBackupArchiveBytes           int64 = 10 * 1024 * 1024 * 1024 * 1024
 	maxBackupExpandedBytes          int64 = 100 * 1024 * 1024 * 1024 * 1024
@@ -185,6 +184,9 @@ const (
 func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("%w: config is nil", errInvalidConfig)
+	}
+	if err := c.validateExternalOrigins(); err != nil {
+		return err
 	}
 	if err := c.validateS3(); err != nil {
 		return err
@@ -205,11 +207,6 @@ func (c *Config) validateAdmin() error {
 	if !c.Admin.Enable {
 		return nil
 	}
-	origins, err := normalizeAdminOrigins(c.Admin.ExternalOrigins)
-	if err != nil {
-		return err
-	}
-	c.Admin.ExternalOrigins = origins
 	if err := c.validateAdminUsers(); err != nil {
 		return err
 	}
@@ -293,33 +290,48 @@ func (c *Config) validateAdminUploadSize() error {
 	return nil
 }
 
-func normalizeAdminOrigins(values []string) ([]string, error) {
-	if len(values) == 0 || len(values) > maxAdminExternalOrigins {
-		return nil, invalidAdminOriginsError()
+func (c *Config) validateExternalOrigins() error {
+	if len(c.ExternalOrigins) == 0 {
+		if c.Admin.Enable {
+			return invalidExternalOriginsError()
+		}
+		return nil
+	}
+	origins, err := normalizeExternalOrigins(c.ExternalOrigins)
+	if err != nil {
+		return err
+	}
+	c.ExternalOrigins = origins
+	return nil
+}
+
+func normalizeExternalOrigins(values []string) ([]string, error) {
+	if len(values) == 0 || len(values) > maxExternalOrigins {
+		return nil, invalidExternalOriginsError()
 	}
 	result := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	scheme := ""
 	for _, value := range values {
-		canonical, err := normalizeAdminOrigin(value)
+		canonical, err := normalizeExternalOrigin(value)
 		if err != nil {
 			return nil, err
 		}
 		origin, err := url.Parse(canonical)
 		if err != nil {
-			return nil, invalidAdminOriginsError()
+			return nil, invalidExternalOriginsError()
 		}
 		if scheme == "" {
 			scheme = origin.Scheme
 		} else if origin.Scheme != scheme {
 			return nil, fmt.Errorf(
-				"%w: admin.external_origin entries must use one common scheme",
+				"%w: external_origin entries must use one common scheme",
 				errInvalidConfig,
 			)
 		}
 		if _, exists := seen[canonical]; exists {
 			return nil, fmt.Errorf(
-				"%w: admin.external_origin contains duplicate origin %q",
+				"%w: external_origin contains duplicate origin %q",
 				errInvalidConfig,
 				canonical,
 			)
@@ -330,32 +342,32 @@ func normalizeAdminOrigins(values []string) ([]string, error) {
 	return result, nil
 }
 
-func normalizeAdminOrigin(value string) (string, error) {
+func normalizeExternalOrigin(value string) (string, error) {
 	origin, err := url.Parse(strings.TrimSpace(value))
 	if err != nil {
-		return "", invalidAdminOriginsError()
+		return "", invalidExternalOriginsError()
 	}
-	if !validAdminOriginShape(origin) {
-		return "", invalidAdminOriginsError()
+	if !validExternalOriginShape(origin) {
+		return "", invalidExternalOriginsError()
 	}
 	hostname := strings.ToLower(origin.Hostname())
-	port := canonicalAdminOriginPort(origin.Scheme, origin.Port())
+	port := canonicalExternalOriginPort(origin.Scheme, origin.Port())
 	if origin.Scheme == "http" && !isLoopbackHostname(hostname) {
 		return "", fmt.Errorf(
-			"%w: admin.external_origin entries must use HTTPS outside loopback",
+			"%w: external_origin entries must use HTTPS outside loopback",
 			errInvalidConfig,
 		)
 	}
-	host := canonicalAdminOriginHost(hostname, port)
+	host := canonicalExternalOriginHost(hostname, port)
 	return origin.Scheme + "://" + host, nil
 }
 
-func validAdminOriginShape(origin *url.URL) bool {
+func validExternalOriginShape(origin *url.URL) bool {
 	if origin.Scheme != "http" && origin.Scheme != "https" {
 		return false
 	}
 	if origin.Host == "" || origin.Hostname() == "" || origin.User != nil ||
-		!validAdminOriginPort(origin.Port()) {
+		!validExternalOriginPort(origin.Port()) {
 		return false
 	}
 	if origin.Path != "" && origin.Path != "/" {
@@ -364,7 +376,7 @@ func validAdminOriginShape(origin *url.URL) bool {
 	return origin.RawQuery == "" && origin.Fragment == ""
 }
 
-func validAdminOriginPort(port string) bool {
+func validExternalOriginPort(port string) bool {
 	if port == "" {
 		return true
 	}
@@ -372,7 +384,7 @@ func validAdminOriginPort(port string) bool {
 	return err == nil && value >= 1 && value <= 65535
 }
 
-func canonicalAdminOriginPort(scheme, port string) string {
+func canonicalExternalOriginPort(scheme, port string) string {
 	if scheme == "http" && port == "80" {
 		return ""
 	}
@@ -382,7 +394,7 @@ func canonicalAdminOriginPort(scheme, port string) string {
 	return port
 }
 
-func canonicalAdminOriginHost(hostname, port string) string {
+func canonicalExternalOriginHost(hostname, port string) string {
 	if port != "" {
 		return net.JoinHostPort(hostname, port)
 	}
@@ -392,11 +404,11 @@ func canonicalAdminOriginHost(hostname, port string) string {
 	return hostname
 }
 
-func invalidAdminOriginsError() error {
+func invalidExternalOriginsError() error {
 	return fmt.Errorf(
-		"%w: admin.external_origin must contain 1-%d HTTP(S) origins without paths",
+		"%w: external_origin must contain 1-%d HTTP(S) origins without paths",
 		errInvalidConfig,
-		maxAdminExternalOrigins,
+		maxExternalOrigins,
 	)
 }
 
@@ -553,9 +565,6 @@ func (c *Config) validateWebDAVPathAndUpload() error {
 	if !strings.HasPrefix(c.Webdav.Root, "/") {
 		return fmt.Errorf("%w: webdav.root must be an absolute path", errInvalidConfig)
 	}
-	if err := c.validateWebDAVExternalOrigin(); err != nil {
-		return err
-	}
 	if c.Webdav.MaxUploadSize == 0 {
 		c.Webdav.MaxUploadSize = c.S3.MaxObjectSize
 		if c.Webdav.MaxUploadSize == 0 {
@@ -575,28 +584,6 @@ func (c *Config) validateWebDAVPathAndUpload() error {
 	if strings.TrimSpace(c.Webdav.UploadTempDir) == "" {
 		c.Webdav.UploadTempDir = filepath.Join(filepath.Dir(c.DBFile), "webdav-upload")
 	}
-	return nil
-}
-
-func (c *Config) validateWebDAVExternalOrigin() error {
-	value := strings.TrimSpace(c.Webdav.ExternalOrigin)
-	if value == "" {
-		return nil
-	}
-	origin, err := url.Parse(value)
-	if err != nil ||
-		(origin.Scheme != "http" && origin.Scheme != "https") ||
-		origin.Host == "" ||
-		origin.User != nil ||
-		(origin.Path != "" && origin.Path != "/") ||
-		origin.RawQuery != "" ||
-		origin.Fragment != "" {
-		return fmt.Errorf(
-			"%w: webdav.external_origin must be an HTTP(S) origin without a path",
-			errInvalidConfig,
-		)
-	}
-	c.Webdav.ExternalOrigin = origin.Scheme + "://" + origin.Host
 	return nil
 }
 
