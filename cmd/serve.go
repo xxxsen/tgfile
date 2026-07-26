@@ -127,6 +127,10 @@ func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger 
 func logServerFeatures(serviceConfig *config.Config, appLogger *zap.Logger) {
 	appLogger.Info("current file protocol feature")
 	appLogger.Info(
+		"-- shared external origins",
+		zap.Strings("origins", serviceConfig.ExternalOrigins),
+	)
+	appLogger.Info(
 		"-- s3 feature",
 		zap.Bool("enable", serviceConfig.S3.Enable),
 		zap.Strings("buckets", serviceConfig.S3.BucketNames()),
@@ -139,7 +143,6 @@ func logServerFeatures(serviceConfig *config.Config, appLogger *zap.Logger) {
 	appLogger.Info(
 		"-- admin feature",
 		zap.Bool("enable", serviceConfig.Admin.Enable),
-		zap.Strings("external_origins", serviceConfig.Admin.ExternalOrigins),
 		zap.Int("user_count", len(serviceConfig.Admin.Users)),
 	)
 	appLogger.Info("current cache config")
@@ -179,7 +182,10 @@ func buildHTTPServer(
 		serviceConfig.Bind,
 		server.WithS3(toServerS3Options(serviceConfig.S3)),
 		server.WithUser(serviceConfig.UserInfo),
-		server.WithWebDAV(toServerWebDAVOptions(serviceConfig.Webdav)),
+		server.WithWebDAV(toServerWebDAVOptions(
+			serviceConfig.Webdav,
+			serviceConfig.ExternalOrigins,
+		)),
 		server.WithFileManager(fileManager),
 		server.WithBackup(server.BackupOptions{
 			Enabled: serviceConfig.Backup.Enable,
@@ -285,7 +291,7 @@ func toServerAdminOptions(
 ) server.AdminOptions {
 	return server.AdminOptions{
 		Enabled:            input.Enable,
-		ExternalOrigins:    append([]string(nil), input.ExternalOrigins...),
+		ExternalOrigins:    append([]string(nil), serviceConfig.ExternalOrigins...),
 		Users:              input.Users,
 		SessionIdle:        time.Duration(input.SessionIdleMinutes) * time.Minute,
 		SessionMaximum:     time.Duration(input.SessionMaxHours) * time.Hour,
@@ -295,11 +301,14 @@ func toServerAdminOptions(
 	}
 }
 
-func toServerWebDAVOptions(input config.WebdavConfig) server.WebDAVOptions {
+func toServerWebDAVOptions(
+	input config.WebdavConfig,
+	externalOrigins []string,
+) server.WebDAVOptions {
 	return server.WebDAVOptions{
 		Enabled:            input.Enable,
 		Root:               input.Root,
-		ExternalOrigin:     input.ExternalOrigin,
+		ExternalOrigins:    append([]string(nil), externalOrigins...),
 		MaxUploadSize:      input.MaxUploadSize,
 		UploadTempDir:      input.UploadTempDir,
 		Users:              input.Users,

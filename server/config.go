@@ -41,7 +41,7 @@ type S3Options struct {
 type WebDAVOptions struct {
 	Enabled            bool
 	Root               string
-	ExternalOrigin     string
+	ExternalOrigins    []string
 	MaxUploadSize      int64
 	UploadTempDir      string
 	Users              map[string]string

@@ -18,21 +18,21 @@ PASSWORD="${TGFILE_DEV_PASSWORD:-test}"
 GO="${TGFILE_DEV_GO:-go}"
 CONFIG_ONLY="${TGFILE_DEV_CONFIG_ONLY:-}"
 
-if [[ -n "${TGFILE_DEV_ADMIN_ORIGIN:-}" ]]; then
-  ADMIN_ORIGIN="$TGFILE_DEV_ADMIN_ORIGIN"
-  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\"]"
+if [[ -n "${TGFILE_DEV_EXTERNAL_ORIGIN:-}" ]]; then
+  EXTERNAL_ORIGIN="$TGFILE_DEV_EXTERNAL_ORIGIN"
+  EXTERNAL_ORIGINS_JSON="[\"$EXTERNAL_ORIGIN\"]"
 elif [[ "$HOST" == "::1" || "$HOST" == "[::1]" ]]; then
-  ADMIN_ORIGIN="http://[::1]:$PORT"
-  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\",\"http://localhost:$PORT\"]"
+  EXTERNAL_ORIGIN="http://[::1]:$PORT"
+  EXTERNAL_ORIGINS_JSON="[\"$EXTERNAL_ORIGIN\",\"http://localhost:$PORT\"]"
 elif [[ "$HOST" == "127.0.0.1" || "$HOST" == "0.0.0.0" || "$HOST" == "localhost" ]]; then
-  ADMIN_ORIGIN="http://localhost:$PORT"
-  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\",\"http://127.0.0.1:$PORT\"]"
+  EXTERNAL_ORIGIN="http://localhost:$PORT"
+  EXTERNAL_ORIGINS_JSON="[\"$EXTERNAL_ORIGIN\",\"http://127.0.0.1:$PORT\"]"
 elif [[ "$HOST" == 127.* ]]; then
-  ADMIN_ORIGIN="http://$HOST:$PORT"
-  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\"]"
+  EXTERNAL_ORIGIN="http://$HOST:$PORT"
+  EXTERNAL_ORIGINS_JSON="[\"$EXTERNAL_ORIGIN\"]"
 else
-  ADMIN_ORIGIN="http://127.0.0.1:$PORT"
-  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\"]"
+  EXTERNAL_ORIGIN="http://127.0.0.1:$PORT"
+  EXTERNAL_ORIGINS_JSON="[\"$EXTERNAL_ORIGIN\"]"
 fi
 
 if [[ "$CONFIG_PATH" != /* ]]; then
@@ -158,6 +158,7 @@ generate_config() {
   "user_info": {
     "$USERNAME": "$PASSWORD"
   },
+  "external_origin": $EXTERNAL_ORIGINS_JSON,
   "s3": {
     "enable": true,
     "buckets": [
@@ -179,7 +180,6 @@ generate_config() {
   },
   "admin": {
     "enable": true,
-    "external_origin": $ADMIN_ORIGINS_JSON,
     "users": {
       "$USERNAME": "read-write"
     },
@@ -241,7 +241,7 @@ printf '%s %s\n' "$server_pid" "$server_started" >"$PID_FILE"
 wait_for_server
 echo "[tgfile] S3 endpoint: http://$HOST:$PORT/$BUCKET"
 echo "[tgfile] WebDAV endpoint: http://$HOST:$PORT/webdav"
-echo "[tgfile] Admin endpoint: $ADMIN_ORIGIN/_admin/"
+echo "[tgfile] Admin endpoint: $EXTERNAL_ORIGIN/_admin/"
 if [[ "$CONFIG_PATH" == "$DEFAULT_CONFIG_PATH" ]]; then
   echo "[tgfile] development credentials: $USERNAME / $PASSWORD"
 fi

@@ -170,7 +170,7 @@ func (s *Server) initAPI(router *gin.RouterGroup) {
 				webdavRouter.BasePath(),
 				webdav.Options{
 					Users:              s.c.webdav.Users,
-					ExternalOrigin:     s.c.webdav.ExternalOrigin,
+					ExternalOrigins:    s.c.webdav.ExternalOrigins,
 					MaxUploadSize:      s.c.webdav.MaxUploadSize,
 					QuotaBytes:         s.c.webdav.QuotaBytes,
 					MaxMutationEntries: s.c.webdav.MaxMutationEntries,

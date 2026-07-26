@@ -27,6 +27,10 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
     "admin-viewer": "viewer-password",
     "admin-operator": "operator-password"
   },
+  "external_origin": [
+    "https://files.example.com",
+    "https://image.example.com"
+  ],
   "s3": {
     "enable": true,
     "buckets": [
@@ -45,7 +49,6 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
   "webdav": {
     "enable": true,
     "root": "/",
-    "external_origin": "https://files.example.com",
     "max_upload_size": 5368709120,
     "upload_temp_dir": "/data/webdav-upload",
     "users": {
@@ -72,10 +75,6 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
   },
   "admin": {
     "enable": true,
-    "external_origin": [
-      "https://files.example.com",
-      "https://image.example.com"
-    ],
     "users": {
       "admin-viewer": "read",
       "admin-operator": "read-write"
@@ -112,8 +111,9 @@ bucket ACL：
 
 WebDAV 使用 `user_info` 中的 Basic Auth 凭据，`webdav.users` 可把已知账号限制为
 `read` 或 `read-write`；省略该 map 时所有已认证账号均为读写。部署在 HTTPS 反向代理后
-应把 `external_origin` 配成客户端实际访问的 origin，用于严格校验 COPY/MOVE 的绝对
-`Destination`，服务不会信任任意 `Forwarded` header。未知长度 PUT 会先流式写入
+应在顶层 `external_origin` 数组中列出客户端实际访问的 origin，用于严格校验 COPY/MOVE
+的绝对 `Destination`；省略时使用直连请求的 TLS 状态和 Host，服务不会信任任意
+`Forwarded` header。未知长度 PUT 会先流式写入
 `upload_temp_dir`，完成计数后再进入 Telegram 分片上传；该目录必须位于持久化 volume 并
 预留不小于 `max_upload_size` 的空间。`quota_bytes=0` 表示不限制逻辑配额，配额按
 WebDAV root 内唯一 File 计费，COPY 同一内容不会重复计费。
@@ -128,10 +128,10 @@ Web 管理后台默认关闭。启用后访问 `https://files.example.com/_admin
 导出任务，`read-write` 还可以上传、条件覆盖、导入及管理全部任务。建议使用不与 S3
 Access Key 共用的专用高强度账号。
 
-`admin.external_origin` 是数组，必须列出浏览器实际访问的 origin；登录和所有写请求的
-`Origin`
-必须精确命中其中一项。列表中的 origin 必须使用同一种 scheme，生产环境只接受 HTTPS，
-本地 loopback 测试可以使用 HTTP。Session 只保存在进程内存，服务重启后需要重新登录。
+启用管理后台时，顶层 `external_origin` 数组必须列出浏览器实际访问的 origin；登录和
+所有写请求的 `Origin` 必须精确命中其中一项。该数组由管理后台和 WebDAV 共享，列表中的
+origin 必须使用同一种 scheme，生产环境只接受 HTTPS，本地 loopback 测试可以使用 HTTP。
+Session 只保存在进程内存，服务重启后需要重新登录。
 `admin.enable` 与 `backup.enable` 相互独立；只启用管理后台时也会启动持久化导入导出
 worker，但不会暴露 `/backup/v2` Basic Auth API。`backup.work_dir` 仍必须位于持久化
 volume，并为导入归档和导出 artifact 预留足够空间。反向代理的请求体上限和读写超时必须
@@ -362,7 +362,7 @@ make check
 S3、WebDAV 和 Web 管理后台。管理后台地址为 `http://localhost:9901/_admin/`，默认账号
 密码为 `test / test`，仅限本地开发使用。开发参数可由 `TGFILE_DEV_HOST`、
 `TGFILE_DEV_PORT`、`TGFILE_DEV_DATA_DIR`、`TGFILE_DEV_BUCKET`、`TGFILE_DEV_USERNAME`、
-`TGFILE_DEV_PASSWORD` 和 `TGFILE_DEV_ADMIN_ORIGIN` 覆盖。
+`TGFILE_DEV_PASSWORD` 和 `TGFILE_DEV_EXTERNAL_ORIGIN` 覆盖。
 
 S3/WebDAV 本地稳定性测试使用临时 SQLite、localfile、spool 和 loopback HTTP 服务，不连接
 Telegram，也不属于 `make check` 或 CI：

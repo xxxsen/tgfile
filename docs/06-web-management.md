@@ -54,12 +54,12 @@ Admin handler 不直接读写 DAO 或业务表。目录读取经 FileManager 进
     "viewer": "viewer-password",
     "operator": "operator-password"
   },
+  "external_origin": [
+    "https://files.example.com",
+    "https://image.example.com"
+  ],
   "admin": {
     "enable": true,
-    "external_origin": [
-      "https://files.example.com",
-      "https://image.example.com"
-    ],
     "users": {
       "viewer": "read",
       "operator": "read-write"
@@ -72,9 +72,9 @@ Admin handler 不直接读写 DAO 或业务表。目录读取经 FileManager 进
 ```
 
 - `enable` 缺省为 false；关闭时不注册任何 `/_admin` 路由。
-- `external_origin` 是数组，在启用时必填，包含 1～32 个没有 userinfo、path、query 和
-  fragment 的 HTTP(S) origin。规范化后不得重复，所有项必须使用同一种 scheme。生产只
-  接受 HTTPS；HTTP 只允许 localhost 或 loopback IP。
+- 顶层 `external_origin` 是管理后台和 WebDAV 共用的数组；启用管理后台时必填，包含
+  1～32 个没有 userinfo、path、query 和 fragment 的 HTTP(S) origin。规范化后不得重复，
+  所有项必须使用同一种 scheme。生产只接受 HTTPS；HTTP 只允许 localhost 或 loopback IP。
 - `users` 至少包含一个已存在于 `user_info` 且密码非空的账号，角色只能为 `read` 或
   `read-write`。
 - `session_idle_minutes` 缺省 30，范围 5～120。
@@ -85,8 +85,8 @@ Admin handler 不直接读写 DAO 或业务表。目录读取经 FileManager 进
 `admin.enable` 和 `backup.enable` 独立控制 HTTP 路由。任一开启都会创建并运行同一个
 backupmgr；只有 `backup.enable` 开启时才暴露 `/backup/v2`。
 
-`external_origin` 列表是 Cookie Secure 和 Origin 比较的唯一事实来源。共同 scheme 决定
-Cookie 的 Secure 属性；请求 Origin 必须精确命中规范化后的任一列表项。服务不使用
+顶层 `external_origin` 列表是 Cookie Secure 和 Origin 比较的唯一事实来源。共同 scheme
+决定 Cookie 的 Secure 属性；请求 Origin 必须精确命中规范化后的任一列表项。服务不使用
 `Forwarded`、`X-Forwarded-Host` 或 `X-Forwarded-Proto` 推导管理安全边界。
 
 ## 4. 角色模型

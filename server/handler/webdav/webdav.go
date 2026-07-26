@@ -71,7 +71,7 @@ var (
 
 type Options struct {
 	Users              map[string]string
-	ExternalOrigin     string
+	ExternalOrigins    []string
 	MaxUploadSize      int64
 	QuotaBytes         int64
 	MaxMutationEntries int
@@ -83,7 +83,7 @@ type WebdavHandler struct {
 	davRoot            string
 	webRoot            string
 	users              map[string]string
-	externalOrigin     *url.URL
+	externalOrigins    []*url.URL
 	maxUploadSize      int64
 	quotaBytes         int64
 	maxMutationEntries int
@@ -106,8 +106,12 @@ func NewWebdavHandler(
 	}
 	if len(options) != 0 {
 		handler.users = options[0].Users
-		if options[0].ExternalOrigin != "" {
-			handler.externalOrigin, _ = url.Parse(options[0].ExternalOrigin)
+		for _, value := range options[0].ExternalOrigins {
+			origin, err := url.Parse(value)
+			if err != nil {
+				panic(fmt.Errorf("parse WebDAV external origin %q: %w", value, err))
+			}
+			handler.externalOrigins = append(handler.externalOrigins, origin)
 		}
 		handler.maxUploadSize = options[0].MaxUploadSize
 		handler.quotaBytes = options[0].QuotaBytes
@@ -267,8 +271,7 @@ func (h *WebdavHandler) tryBuildDstPath(c *gin.Context) (string, error) {
 		return "", err
 	}
 	if uri.IsAbs() {
-		origin := h.requestOrigin(c.Request)
-		if !sameOrigin(uri, origin) {
+		if !h.absoluteOriginAllowed(uri, c.Request) {
 			return "", errDestinationOrigin
 		}
 	}
@@ -286,10 +289,22 @@ func (h *WebdavHandler) tryBuildDstPath(c *gin.Context) (string, error) {
 	return destination, nil
 }
 
-func (h *WebdavHandler) requestOrigin(request *http.Request) *url.URL {
-	if h.externalOrigin != nil {
-		return h.externalOrigin
+func (h *WebdavHandler) absoluteOriginAllowed(
+	destination *url.URL,
+	request *http.Request,
+) bool {
+	if len(h.externalOrigins) == 0 {
+		return sameOrigin(destination, requestOrigin(request))
 	}
+	for _, origin := range h.externalOrigins {
+		if sameOrigin(destination, origin) {
+			return true
+		}
+	}
+	return false
+}
+
+func requestOrigin(request *http.Request) *url.URL {
 	scheme := "http"
 	if request.TLS != nil {
 		scheme = "https"
@@ -554,8 +569,7 @@ func (h *WebdavHandler) ifResourcePath(c *gin.Context, value string) (string, er
 		return "", err
 	}
 	if uri.IsAbs() {
-		origin := h.requestOrigin(c.Request)
-		if !sameOrigin(uri, origin) {
+		if !h.absoluteOriginAllowed(uri, c.Request) {
 			return "", errInvalidIfHeader
 		}
 	}
