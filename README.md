@@ -265,6 +265,26 @@ make check
 `TGFILE_DEV_HOST`、`TGFILE_DEV_PORT`、`TGFILE_DEV_DATA_DIR`、`TGFILE_DEV_BUCKET`、
 `TGFILE_DEV_USERNAME` 和 `TGFILE_DEV_PASSWORD` 覆盖。
 
+S3/WebDAV 本地稳定性测试使用临时 SQLite、localfile、spool 和 loopback HTTP 服务，不连接
+Telegram，也不属于 `make check` 或 CI：
+
+```bash
+make soak
+make soak SOAK_DURATION=30m SOAK_WORKERS=6
+make soak SOAK_DURATION=15m SOAK_SEED=1785000000
+make soak SOAK_CLIENT_DELAY=20ms SOAK_BACKEND_DELAY=50ms
+```
+
+默认持续 15 分钟、使用 4 个并发 worker。客户端上传和下载按 8 KiB 分块，默认每块延迟
+5 ms；包装 localfile 的 mock BlockIO 按 32 KiB 分块，Upload、Download 和 Delete 默认每块
+延迟 5 ms，用于模拟服务端访问 Telegram 变慢。延迟可分别通过 `SOAK_CLIENT_DELAY` 和
+`SOAK_BACKEND_DELAY` 调整，设置为 `0s` 可关闭。
+
+测试覆盖 S3 SigV4 普通上传、Multipart、WebDAV 上传、复制、移动、锁、删除、慢速客户端和
+跨协议读取，并在结束时检查 SQLite 完整性、未完成删除状态、孤儿属性/锁/对象元数据、残留
+Mapping、localfile block 和 spool 文件。失败时临时工作目录会保留并输出；成功时自动删除。
+`SOAK_SEED` 可用于复现相同的数据和场景顺序。
+
 ## 设计文档
 
 - [系统架构](docs/01-architecture.md)
