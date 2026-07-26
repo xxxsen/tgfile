@@ -126,7 +126,7 @@ func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger 
 		serviceConfig.Bind,
 		server.WithS3(toServerS3Options(serviceConfig.S3)),
 		server.WithUser(serviceConfig.UserInfo),
-		server.WithEnableWebdav(serviceConfig.Webdav.Enable, serviceConfig.Webdav.Root),
+		server.WithWebDAV(toServerWebDAVOptions(serviceConfig.Webdav)),
 		server.WithFileManager(fileManager),
 	)
 	if err != nil {
@@ -173,6 +173,20 @@ func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger 
 		}
 	}
 	return runErr
+}
+
+func toServerWebDAVOptions(input config.WebdavConfig) server.WebDAVOptions {
+	return server.WebDAVOptions{
+		Enabled:            input.Enable,
+		Root:               input.Root,
+		ExternalOrigin:     input.ExternalOrigin,
+		MaxUploadSize:      input.MaxUploadSize,
+		UploadTempDir:      input.UploadTempDir,
+		Users:              input.Users,
+		QuotaBytes:         input.QuotaBytes,
+		MaxMutationEntries: input.MaxMutationEntries,
+		SyncPageSize:       input.SyncPageSize,
+	}
 }
 
 func toServerS3Options(input config.S3Config) server.S3Options {

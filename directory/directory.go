@@ -37,6 +37,7 @@ type IDirectoryWriter interface {
 
 type IDirectoryReader interface {
 	List(ctx context.Context, dir string) ([]IDirectoryEntry, error)
+	Iterate(ctx context.Context, dir string, batch uint, cb DirectoryScanCallbackFunc) error
 	Stat(ctx context.Context, filename string) (IDirectoryEntry, error)
 	Scan(ctx context.Context, batch uint, cb DirectoryScanCallbackFunc) error
 }
@@ -52,12 +53,25 @@ type ITransactionReader interface {
 
 type ITransactionMutation interface {
 	Create(ctx context.Context, filename string, size int64, refdata string) (IDirectoryEntry, error)
+	Mkdir(ctx context.Context, dirname string) (IDirectoryEntry, error)
+	Replace(
+		ctx context.Context,
+		filename string,
+		size int64,
+		refdata string,
+		mtime int64,
+	) (IDirectoryEntry, error)
 	Remove(ctx context.Context, filename string) ([]IDirectoryEntry, error)
 	Touch(ctx context.Context, filename string, mtime int64) error
 }
 
 type ITransactionTransfer interface {
 	Copy(ctx context.Context, source, destination string, overwrite bool) ([]EntryCopy, []IDirectoryEntry, error)
+	CopyDepth(
+		ctx context.Context,
+		source, destination string,
+		overwrite, recursive bool,
+	) ([]EntryCopy, []IDirectoryEntry, error)
 	Move(ctx context.Context, source, destination string, overwrite bool) ([]IDirectoryEntry, error)
 }
 

@@ -41,8 +41,17 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
     "multipart_expire_hours": 24
   },
   "webdav": {
-    "enable": false,
-    "root": "/"
+    "enable": true,
+    "root": "/",
+    "external_origin": "https://files.example.com",
+    "max_upload_size": 5368709120,
+    "upload_temp_dir": "/data/webdav-upload",
+    "users": {
+      "access-key": "read-write"
+    },
+    "quota_bytes": 0,
+    "max_mutation_entries": 100000,
+    "sync_page_size": 1000
   },
   "io_cache": {
     "enable_l1_cache": true,
@@ -69,6 +78,14 @@ bucket ACL：
 
 `s3.multipart_expire_hours` 控制未完成 Multipart Upload 的有效期。缺省或配置为 `0`
 时使用 24 小时，显式值只能为 1～24；到期的暂存 part 会进入异步删除状态机。
+
+WebDAV 使用 `user_info` 中的 Basic Auth 凭据，`webdav.users` 可把已知账号限制为
+`read` 或 `read-write`；省略该 map 时所有已认证账号均为读写。部署在 HTTPS 反向代理后
+应把 `external_origin` 配成客户端实际访问的 origin，用于严格校验 COPY/MOVE 的绝对
+`Destination`，服务不会信任任意 `Forwarded` header。未知长度 PUT 会先流式写入
+`upload_temp_dir`，完成计数后再进入 Telegram 分片上传；该目录必须位于持久化 volume 并
+预留不小于 `max_upload_size` 的空间。`quota_bytes=0` 表示不限制逻辑配额，配额按
+WebDAV root 内唯一 File 计费，COPY 同一内容不会重复计费。
 
 启动前可执行无副作用校验；该命令不会初始化日志、SQLite、Telegram、缓存或 HTTP：
 
@@ -216,7 +233,7 @@ worker 会在 Telegram 时限内尝试删除对应 message。WebDAV 成功响应
 | `/backup/export` | GET | Basic | 导出逻辑文件树 tar.gz |
 | `/backup/import` | POST | Basic | 导入逻辑文件树 |
 | `/static/*` | GET | Basic | 浏览目录树 |
-| `/webdav/*` | WebDAV | Basic | 映射 `webdav.root` |
+| `/webdav/*` | WebDAV Class 1/2 + sync-collection | Basic | 映射 `webdav.root` |
 
 ## 离线维护
 
@@ -253,3 +270,4 @@ make check
 - [系统架构](docs/01-architecture.md)
 - [数据与存储模型](docs/02-data-and-storage-model.md)
 - [核心流程与接口设计](docs/03-core-flows-and-api.md)
+- [WebDAV 协议与资源模型](docs/04-webdav-protocol.md)

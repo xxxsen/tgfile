@@ -16,6 +16,8 @@ erDiagram
     FILE ||--o{ MAPPING : "ref_data"
     MAPPING ||--o{ MAPPING : "parent_entry_id"
     MAPPING ||--o| S3_METADATA : "entry_id"
+    MAPPING ||--o{ WEBDAV_PROPERTY : "entry_id"
+    MAPPING ||--o| WEBDAV_LOCK : "root_entry_id"
     PART ||--|| DELETE_STATE : "file_id + file_part_id"
     MULTIPART_UPLOAD ||--o{ MULTIPART_PART : "upload_id"
     FILE ||--o| MULTIPART_PART : "file_id"
@@ -27,6 +29,7 @@ erDiagram
 - Completed Part 是 layout v2 对外暴露的永久 S3 Part 边界和 checksum manifest；
 - Mapping 是路径树条目，文件条目通过十进制 `ref_data` 引用 File；
 - S3 Metadata 绑定具体 Mapping，不绑定 File，因此同一内容的不同对象可以拥有不同元数据；
+- WebDAV Property 和 Lock 绑定 Mapping，Change Journal 以规范路径保存变更与删除墓碑；
 - Multipart Upload/Part 保存未完成上传和完成幂等所需的控制状态；
 - Delete State 绑定 Part，保存可删除 Telegram message 的引用和 durable worker 状态。
 
@@ -227,6 +230,38 @@ stateDiagram-v2
 
 终态不会自动清除 File/Part。普通 purge 也不能删除拥有 Delete State 的记录。
 
+### 2.9 `tg_webdav_property_tab`
+
+dead property 以 `(entry_id, namespace_uri, local_name)` 为主键，`value_xml` 保存 property
+元素内部的 XML，`ctime/mtime` 保存属性记录时间。`DAV:` live properties 是受保护属性，
+不写入本表。
+
+WebDAV PUT 原地替换文件表示并保留 `entry_id`，因此保留该 URL 的 dead properties；COPY
+为每个新 Mapping 复制属性，MOVE 保留属性，DELETE 和覆盖删除会在同一事务中删除属性。
+S3 普通覆盖虽然重新创建 Mapping，但会在事务内把属性重新绑定到新 `entry_id`；S3
+CopyObject 覆盖清理目标属性并复制源属性。属性行不得脱离 Mapping 成为孤立记录。
+
+### 2.10 `tg_webdav_lock_tab`
+
+第一版锁只支持 exclusive write，字段包括不透明 token、规范化 root path、root entry ID、
+`0/infinity` depth、owner XML、principal、创建/过期时间和 lock-null 标记。同一路径最多
+一个直接锁；depth infinity 锁对全部后代写操作生效。
+
+锁创建、刷新、释放和写操作的 token 校验只访问 SQLite。对不存在 URL 的 LOCK 在父
+collection 存在时创建零字节 lock-null Mapping；首次 PUT 会把它转成普通资源，未写入就
+UNLOCK 或锁过期时会在事务内删除。MOVE 更新锁根路径，DELETE 和覆盖删除清理对应锁。
+过期锁在任何锁相关访问前视为无效并顺带清理，不需要 Telegram 参与。
+
+### 2.11 `tg_webdav_change_tab`
+
+`revision` 是 SQLite AUTOINCREMENT 的全局单调版本，行同时保存规范路径、`created/updated/
+deleted` 类型和时间。所有 Directory mutation 在同一业务事务中写 journal；删除行保留
+tombstone，所以资源消失后仍可由 `sync-collection` REPORT 返回 404 response。
+
+sync token 是携带 revision 的不透明 URI。服务按 collection root、Depth 和稳定 revision
+顺序分页；初始同步先流式返回当前直接子项并签发快照 revision，增量同步只返回 token 后
+每个路径的最新变化。高于当前 revision 或无法解析的 token 无效。
+
 ## 3. Migration 账本
 
 `schema_migrations` 保存 `version`、`filename`、SQL 原文 SHA-256 和 `applied_at`。
@@ -256,9 +291,10 @@ S3 PUT、CopyObject、DeleteObject、Multipart Complete 和覆盖在 Directory �
 
 CopyObject 只创建指向同一 File 的新 Mapping。删除任一非最后引用不会改变 Delete State。
 
-WebDAV DELETE 以及覆盖式 COPY/MOVE 也使用 FileManager 的 Directory 事务。目录操作递归
-收集旧子树的所有文件，原子更新 Mapping 与 S3 Metadata，再按去重后的 FileID 判断最后
-引用。事务提交后才返回，Telegram 网络删除由 worker 异步执行。
+WebDAV PUT、DELETE 以及覆盖式 COPY/MOVE 也使用 FileManager 的 Directory 事务。目录操作
+递归收集旧子树，原子更新 Mapping、S3 Metadata、dead properties、locks 和 change journal，
+再按去重后的 FileID 判断最后引用。事务提交后才返回，Telegram 网络删除由 worker 异步
+执行。
 
 layout v1 File 的有效引用包括直接 Mapping、仍有 Mapping 的 Composite Segment 和 active
 Multipart Part。layout v2 final File 的有效引用是 Mapping。删除 layout v2 的最后
