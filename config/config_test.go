@@ -146,6 +146,39 @@ func TestLegacyBucketFieldIsNotAccepted(t *testing.T) {
 	require.ErrorIs(t, parsed.Validate(), errInvalidConfig)
 }
 
+func TestValidateBackupConfiguration(t *testing.T) {
+	dataDir := t.TempDir()
+	value := &Config{
+		BotKind:  "localfile",
+		BotInfo:  map[string]any{"storage_dir": filepath.Join(dataDir, "blocks")},
+		DBFile:   filepath.Join(dataDir, "data.db"),
+		UserInfo: map[string]string{"operator": "secret", "reader": "secret"},
+		Backup: BackupConfig{
+			Enable: true,
+			Users:  map[string]string{"operator": "read-write", "reader": "read"},
+		},
+	}
+	require.NoError(t, value.Validate())
+	require.Equal(t, filepath.Join(dataDir, "backup-work"), value.Backup.WorkDir)
+	require.Equal(t, defaultBackupMaxArchiveBytes, value.Backup.MaxArchiveBytes)
+	require.Equal(t, defaultBackupMaxExpandedBytes, value.Backup.MaxExpandedBytes)
+
+	unknown := *value
+	unknown.Backup = value.Backup
+	unknown.Backup.Users = map[string]string{"missing": "read"}
+	require.ErrorIs(t, unknown.Validate(), errInvalidConfig)
+
+	empty := *value
+	empty.Backup = value.Backup
+	empty.Backup.Users = nil
+	require.ErrorIs(t, empty.Validate(), errInvalidConfig)
+
+	conflict := *value
+	conflict.Backup = value.Backup
+	conflict.Backup.WorkDir = value.DBFile
+	require.ErrorIs(t, conflict.Validate(), errInvalidConfig)
+}
+
 func TestValidateWebDAVExternalOrigin(t *testing.T) {
 	value := &Config{
 		BotKind: "localfile",

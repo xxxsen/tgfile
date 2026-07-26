@@ -6,34 +6,38 @@ import (
 	"io"
 	"time"
 
+	"github.com/xxxsen/tgfile/backupfmt"
 	"github.com/xxxsen/tgfile/entity"
 )
 
 var (
-	ErrInvalidFileSize    = errors.New("invalid file size")
-	ErrInvalidBlockSize   = errors.New("invalid block size")
-	ErrTooManyFileParts   = errors.New("too many file parts")
-	ErrFileShortRead      = errors.New("file content shorter than declared size")
-	ErrFilePartNotFound   = errors.New("file part not found")
-	ErrInvalidFilePart    = errors.New("invalid file part id")
-	ErrFileNotOpen        = errors.New("file is not open")
-	ErrInvalidOffset      = errors.New("invalid file offset")
-	ErrSeekPastEnd        = errors.New("seek exceeds file size")
-	ErrDirectoryIO        = errors.New("operation is not supported on a directory")
-	ErrNotDirectory       = errors.New("operation requires a directory")
-	ErrInvalidCache       = errors.New("invalid file cache configuration")
-	ErrInvalidCachePath   = errors.New("invalid file cache path")
-	ErrS3Precondition     = errors.New("S3 object precondition failed")
-	ErrS3ObjectConflict   = errors.New("S3 object changed concurrently")
-	ErrInvalidS3Part      = errors.New("invalid completed S3 part manifest")
-	ErrS3PartNotFound     = errors.New("S3 object part number exceeds the completed part count")
-	ErrWebDAVPrecondition = errors.New("WebDAV precondition failed")
-	ErrWebDAVLocked       = errors.New("WebDAV resource is locked")
-	ErrWebDAVLockToken    = errors.New("WebDAV lock token does not match")
-	ErrWebDAVProperty     = errors.New("WebDAV property update is invalid")
-	ErrWebDAVQuota        = errors.New("WebDAV logical quota exceeded")
-	ErrWebDAVTooManyItems = errors.New("WebDAV mutation exceeds the configured entry limit")
-	ErrWebDAVSyncToken    = errors.New("WebDAV sync token is not valid for the current journal")
+	ErrInvalidFileSize       = errors.New("invalid file size")
+	ErrInvalidBlockSize      = errors.New("invalid block size")
+	ErrTooManyFileParts      = errors.New("too many file parts")
+	ErrFileShortRead         = errors.New("file content shorter than declared size")
+	ErrFilePartNotFound      = errors.New("file part not found")
+	ErrInvalidFilePart       = errors.New("invalid file part id")
+	ErrFileNotOpen           = errors.New("file is not open")
+	ErrInvalidOffset         = errors.New("invalid file offset")
+	ErrSeekPastEnd           = errors.New("seek exceeds file size")
+	ErrDirectoryIO           = errors.New("operation is not supported on a directory")
+	ErrNotDirectory          = errors.New("operation requires a directory")
+	ErrInvalidCache          = errors.New("invalid file cache configuration")
+	ErrInvalidCachePath      = errors.New("invalid file cache path")
+	ErrS3Precondition        = errors.New("S3 object precondition failed")
+	ErrS3ObjectConflict      = errors.New("S3 object changed concurrently")
+	ErrInvalidS3Part         = errors.New("invalid completed S3 part manifest")
+	ErrS3PartNotFound        = errors.New("S3 object part number exceeds the completed part count")
+	ErrWebDAVPrecondition    = errors.New("WebDAV precondition failed")
+	ErrWebDAVLocked          = errors.New("WebDAV resource is locked")
+	ErrWebDAVLockToken       = errors.New("WebDAV lock token does not match")
+	ErrWebDAVProperty        = errors.New("WebDAV property update is invalid")
+	ErrWebDAVQuota           = errors.New("WebDAV logical quota exceeded")
+	ErrWebDAVTooManyItems    = errors.New("WebDAV mutation exceeds the configured entry limit")
+	ErrWebDAVSyncToken       = errors.New("WebDAV sync token is not valid for the current journal")
+	ErrBackupBackendUpload   = errors.New("backup backend upload failed")
+	ErrBackupBackendReadback = errors.New("backup backend readback failed")
+	ErrBackupPublish         = errors.New("backup publish failed")
 )
 
 type WalkLinkFunc func(ctx context.Context, link string, item *entity.FileLinkMeta) (bool, error)
@@ -83,9 +87,59 @@ type IProtocolManager interface {
 type IFileManager interface {
 	IFileStorage
 	IProtocolManager
+	IBackupStorage
+	IFileLifecycle
+}
+
+type IFileLifecycle interface {
 	DiscardUnpublishedFile(ctx context.Context, fileid uint64) error
 	RunBlockDeleteWorker(ctx context.Context) error
 	RunMultipartCleanupWorker(context.Context) error
+}
+
+type BackupSnapshotRequest struct {
+	JobID           string
+	Scope           string
+	SchemaVersion   int
+	RequiredBuckets []backupfmt.RequiredBucket
+}
+
+type BackupPublishResult struct {
+	MappingsCreated  int64
+	MappingsReplaced int64
+	FilesCreated     int64
+}
+
+// IBackupStorage keeps backup business-table mutations in FileManager so HTTP,
+// CLI and the async task engine cannot bypass storage invariants.
+type IBackupStorage interface {
+	IBackupSnapshotStorage
+	IBackupImportStorage
+	IBackupPublishStorage
+}
+
+type IBackupSnapshotStorage interface {
+	BackupMaxPartSize() int64
+	CreateBackupSnapshot(context.Context, BackupSnapshotRequest) (*backupfmt.Manifest, error)
+	OpenBackupPart(context.Context, string, int) (io.ReadCloser, error)
+	ReleaseBackupSnapshot(context.Context, string) error
+}
+
+type IBackupImportStorage interface {
+	ValidateBackupImport(context.Context, *backupfmt.Manifest, string) error
+	BeginBackupImport(context.Context, string, *backupfmt.Manifest) error
+	StageBackupPart(context.Context, string, backupfmt.Part, io.Reader) error
+	FinishBackupImportFiles(context.Context, string, *backupfmt.Manifest) error
+}
+
+type IBackupPublishStorage interface {
+	PublishBackupImport(
+		context.Context,
+		string,
+		*backupfmt.Manifest,
+		string,
+	) (*BackupPublishResult, error)
+	DiscardBackupImport(context.Context, string) error
 }
 
 type S3ObjectInfo struct {

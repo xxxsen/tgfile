@@ -63,6 +63,17 @@ func fileHasLiveReference(
 	if err := queryRow(
 		ctx,
 		queryer,
+		"SELECT COUNT(*) FROM tg_backup_export_pin_tab WHERE file_id = ?",
+		fileID,
+	).Scan(&count); err != nil {
+		return false, fmt.Errorf("count backup export pins: %w", err)
+	}
+	if count != 0 {
+		return true, nil
+	}
+	if err := queryRow(
+		ctx,
+		queryer,
 		"SELECT COUNT(*) FROM tg_file_mapping_tab WHERE ref_data = ?",
 		strconv.FormatUint(fileID, 10),
 	).Scan(&count); err != nil {

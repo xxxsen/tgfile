@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/xxxsen/common/database"
 
+	"github.com/xxxsen/tgfile/backupfmt"
 	"github.com/xxxsen/tgfile/blockio"
 	"github.com/xxxsen/tgfile/db"
 	"github.com/xxxsen/tgfile/entity"
@@ -25,6 +26,8 @@ type captureBlockIO struct {
 	parts         map[string][]byte
 	order         []string
 	downloadCount int
+	deleteCount   int
+	corruptReads  bool
 }
 
 func (b *captureBlockIO) Name() string {
@@ -51,6 +54,7 @@ func (b *captureBlockIO) Upload(_ context.Context, reader io.Reader) (*blockio.U
 func (b *captureBlockIO) DeleteBlocks(_ context.Context, deleteRefs []string) error {
 	b.mutex.Lock()
 	defer b.mutex.Unlock()
+	b.deleteCount += len(deleteRefs)
 	for _, ref := range deleteRefs {
 		delete(b.parts, ref)
 	}
@@ -64,6 +68,10 @@ func (b *captureBlockIO) Download(_ context.Context, key string, position int64)
 	b.mutex.Unlock()
 	if !ok {
 		return nil, errors.New("part not found")
+	}
+	if b.corruptReads && len(raw) != 0 {
+		raw = append([]byte(nil), raw...)
+		raw[0] ^= 0xff
 	}
 	if position > int64(len(raw)) {
 		position = int64(len(raw))
@@ -224,4 +232,111 @@ func TestCreateEmptyFile(t *testing.T) {
 	require.NoError(t, rows.Scan(&extinfo))
 	require.JSONEq(t, `{"md5":"`+entity.EmptyFileMD5Sum+`"}`, extinfo)
 	require.NoError(t, rows.Err())
+}
+
+func TestStageBackupPartReadbackFailureUsesDurableDeleteState(t *testing.T) {
+	manager, block, databaseClient := newCreateFileTestManager(t, 16)
+	block.corruptReads = true
+	manifest, part := backupPartTestManifest()
+	require.NoError(t, manager.BeginBackupImport(t.Context(), "readback-job", manifest))
+
+	err := manager.StageBackupPart(
+		t.Context(),
+		"readback-job",
+		part,
+		bytes.NewBufferString("hello"),
+	)
+
+	require.ErrorIs(t, err, ErrBackupBackendReadback)
+	require.Zero(t, block.deleteCount)
+	require.Equal(
+		t,
+		1,
+		queryCount(
+			t,
+			databaseClient,
+			"SELECT COUNT(*) FROM tg_file_part_delete_state_tab WHERE delete_state = 'pending'",
+		),
+	)
+}
+
+func TestStageBackupPartPersistenceFailureDeletesUntrackedBlock(t *testing.T) {
+	manager, block, databaseClient := newCreateFileTestManager(t, 16)
+	manifest, part := backupPartTestManifest()
+	require.NoError(t, manager.BeginBackupImport(t.Context(), "persist-job", manifest))
+	_, err := databaseClient.ExecContext(t.Context(), `
+CREATE TRIGGER reject_backup_delete_state
+BEFORE INSERT ON tg_file_part_delete_state_tab
+BEGIN
+    SELECT RAISE(ABORT, 'reject delete state');
+END;`)
+	require.NoError(t, err)
+
+	err = manager.StageBackupPart(
+		t.Context(),
+		"persist-job",
+		part,
+		bytes.NewBufferString("hello"),
+	)
+
+	require.Error(t, err)
+	require.Equal(t, 1, block.deleteCount)
+	require.Empty(t, block.parts)
+	require.Zero(
+		t,
+		queryCount(t, databaseClient, "SELECT COUNT(*) FROM tg_file_part_tab"),
+	)
+}
+
+func TestStageBackupPartCursorFailurePersistsDurableCompensation(t *testing.T) {
+	manager, block, databaseClient := newCreateFileTestManager(t, 16)
+	manifest, part := backupPartTestManifest()
+	require.NoError(t, manager.BeginBackupImport(t.Context(), "cursor-job", manifest))
+	_, err := databaseClient.ExecContext(t.Context(), `
+CREATE TRIGGER reject_backup_stage_cursor
+BEFORE UPDATE ON tg_backup_job_file_tab
+BEGIN
+    SELECT RAISE(ABORT, 'reject stage cursor');
+END;`)
+	require.NoError(t, err)
+
+	err = manager.StageBackupPart(
+		t.Context(),
+		"cursor-job",
+		part,
+		bytes.NewBufferString("hello"),
+	)
+
+	require.Error(t, err)
+	require.Zero(t, block.deleteCount)
+	require.Equal(
+		t,
+		1,
+		queryCount(
+			t,
+			databaseClient,
+			"SELECT COUNT(*) FROM tg_file_part_delete_state_tab WHERE delete_state = 'pending'",
+		),
+	)
+	require.Equal(t, 1, queryCount(t, databaseClient, "SELECT COUNT(*) FROM tg_file_part_tab"))
+}
+
+func backupPartTestManifest() (*backupfmt.Manifest, backupfmt.Part) {
+	part := backupfmt.Part{
+		Index:  0,
+		Size:   5,
+		MD5:    "5d41402abc4b2a76b9719d911017c592",
+		SHA256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+		Entry:  "parts/f00000001/00000000.bin",
+	}
+	return &backupfmt.Manifest{
+		Files: []backupfmt.File{{
+			Ref:              "f00000001",
+			SourceFileID:     "1",
+			LayoutVersion:    1,
+			Size:             5,
+			CompatibilityMD5: part.MD5,
+			Parts:            []backupfmt.Part{part},
+		}},
+	}, part
 }

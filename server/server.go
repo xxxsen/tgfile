@@ -105,17 +105,16 @@ func (s *Server) initAPI(router *gin.RouterGroup) {
 		staticRouter.StaticFS("", http.FS(filemgr.ToFileSystem(context.Background(), s.c.fmgr)))
 	}
 
-	backupRouter := router.Group("/backup", mustAuthMiddleware)
-	{
-		backupHandler := backup.NewBackupHandler(s.c.fmgr)
-		backupRouter.GET("/export", backupHandler.Export)
-		importBackup := proxyutil.WrapBizFunc(
-			func(c *gin.Context, ctx context.Context, request any) {
-				backupHandler.Import(ctx, c, request)
-			},
-			&model.ImportRequest{},
-		)
-		backupRouter.POST("/import", importBackup)
+	if s.c.backup.Enabled && s.c.backupManager != nil {
+		backupHandler := backup.New(s.c.backupManager, s.c.backup.Users)
+		backupRouter := router.Group("/backup/v2", mustAuthMiddleware)
+		backupRouter.POST("/exports", backupHandler.CreateExport)
+		backupRouter.POST("/imports", backupHandler.CreateImport)
+		backupRouter.GET("/jobs/:job_id", backupHandler.GetJob)
+		backupRouter.POST("/jobs/:job_id/cancel", backupHandler.Cancel)
+		backupRouter.GET("/exports/:job_id/artifact", backupHandler.Artifact)
+		backupRouter.HEAD("/exports/:job_id/artifact", backupHandler.Artifact)
+		backupRouter.GET("/metrics", backupHandler.Metrics)
 	}
 	if s.c.s3.Enabled {
 		router.GET("", s.s3.RequestID, s.s3.ListBuckets)

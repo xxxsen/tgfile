@@ -34,6 +34,11 @@ func (c *Config) SafeLogFields() []zap.Field {
 		zap.Int64("webdav_max_upload_size", c.Webdav.MaxUploadSize),
 		zap.Int64("webdav_quota_bytes", c.Webdav.QuotaBytes),
 		zap.Int("webdav_user_count", len(c.Webdav.Users)),
+		zap.Bool("backup_enable", c.Backup.Enable),
+		zap.String("backup_work_dir", c.Backup.WorkDir),
+		zap.Int("backup_user_count", len(c.Backup.Users)),
+		zap.Int64("backup_max_archive_bytes", c.Backup.MaxArchiveBytes),
+		zap.Int64("backup_max_expanded_bytes", c.Backup.MaxExpandedBytes),
 		zap.Bool("l1_cache_enable", c.IOCache.EnableL1Cache),
 		zap.Int("l1_cache_size", c.IOCache.L1CacheSize),
 		zap.Bool("l2_cache_enable", c.IOCache.EnableL2Cache),
@@ -84,6 +89,20 @@ type IOCacheConfig struct {
 	L2CacheDir     string `json:"l2_cache_dir"`
 }
 
+type BackupConfig struct {
+	Enable                 bool              `json:"enable"`
+	WorkDir                string            `json:"work_dir"`
+	Users                  map[string]string `json:"users"`
+	MaxArchiveBytes        int64             `json:"max_archive_bytes"`
+	MaxExpandedBytes       int64             `json:"max_expanded_bytes"`
+	MaxMappingCount        int               `json:"max_mapping_count"`
+	MaxFileCount           int               `json:"max_file_count"`
+	MaxPartCount           int               `json:"max_part_count"`
+	MaxPathBytes           int               `json:"max_path_bytes"`
+	ArtifactRetentionHours int               `json:"artifact_retention_hours"`
+	JobRetentionDays       int               `json:"job_retention_days"`
+}
+
 type Config struct {
 	Bind         string            `json:"bind"`
 	LogInfo      logger.LogConfig  `json:"log_info"`
@@ -95,6 +114,7 @@ type Config struct {
 	RotateStream int               `json:"rotate_stream"`
 	Webdav       WebdavConfig      `json:"webdav"`
 	IOCache      IOCacheConfig     `json:"io_cache"`
+	Backup       BackupConfig      `json:"backup"`
 }
 
 func Parse(f string) (*Config, error) {
@@ -129,6 +149,16 @@ const (
 	defaultWebDAVMaxUploadSize      int64 = 5 * 1024 * 1024 * 1024
 	defaultWebDAVMutationEntries          = 100_000
 	defaultWebDAVSyncPageSize             = 1_000
+	defaultBackupMaxArchiveBytes    int64 = 100 * 1024 * 1024 * 1024
+	defaultBackupMaxExpandedBytes   int64 = 1024 * 1024 * 1024 * 1024
+	defaultBackupMaxMappingCount          = 100_000
+	defaultBackupMaxFileCount             = 100_000
+	defaultBackupMaxPartCount             = 1_000_000
+	defaultBackupMaxPathBytes             = 1024
+	defaultArtifactRetentionHours         = 24
+	defaultBackupJobRetentionDays         = 30
+	maxBackupArchiveBytes           int64 = 10 * 1024 * 1024 * 1024 * 1024
+	maxBackupExpandedBytes          int64 = 100 * 1024 * 1024 * 1024 * 1024
 )
 
 func (c *Config) Validate() error {
@@ -141,7 +171,131 @@ func (c *Config) Validate() error {
 	if err := c.validateWebDAV(); err != nil {
 		return err
 	}
+	if err := c.validateBackup(); err != nil {
+		return err
+	}
 	return c.validateBlockIO()
+}
+
+func (c *Config) validateBackup() error {
+	if err := c.applyBackupDefaults(); err != nil {
+		return err
+	}
+	workDir, err := c.validateBackupPath()
+	if err != nil {
+		return err
+	}
+	if err := c.validateBackupLimits(); err != nil {
+		return err
+	}
+	if err := c.validateBackupUsers(); err != nil {
+		return err
+	}
+	c.Backup.WorkDir = workDir
+	return nil
+}
+
+func (c *Config) validateBackupPath() (string, error) {
+	if !filepath.IsAbs(c.Backup.WorkDir) {
+		return "", fmt.Errorf("%w: backup.work_dir must be an absolute path", errInvalidConfig)
+	}
+	workDir := filepath.Clean(c.Backup.WorkDir)
+	if workDir == filepath.Clean(c.DBFile) ||
+		(c.IOCache.L2CacheDir != "" && workDir == filepath.Clean(c.IOCache.L2CacheDir)) ||
+		(c.Webdav.UploadTempDir != "" && workDir == filepath.Clean(c.Webdav.UploadTempDir)) {
+		return "", fmt.Errorf("%w: backup.work_dir conflicts with another data path", errInvalidConfig)
+	}
+	return workDir, nil
+}
+
+func (c *Config) validateBackupLimits() error {
+	limits := []struct {
+		value, minimum, maximum int64
+		name                    string
+	}{
+		{c.Backup.MaxArchiveBytes, 1, maxBackupArchiveBytes, "max_archive_bytes"},
+		{
+			c.Backup.MaxExpandedBytes,
+			c.Backup.MaxArchiveBytes,
+			maxBackupExpandedBytes,
+			"max_expanded_bytes",
+		},
+		{int64(c.Backup.MaxMappingCount), 1, 1_000_000, "max_mapping_count"},
+		{int64(c.Backup.MaxFileCount), 1, 1_000_000, "max_file_count"},
+		{int64(c.Backup.MaxPartCount), 1, 10_000_000, "max_part_count"},
+		{int64(c.Backup.MaxPathBytes), 1, 4096, "max_path_bytes"},
+		{int64(c.Backup.ArtifactRetentionHours), 1, 168, "artifact_retention_hours"},
+		{int64(c.Backup.JobRetentionDays), 1, 365, "job_retention_days"},
+	}
+	for _, limit := range limits {
+		if limit.value >= limit.minimum && limit.value <= limit.maximum {
+			continue
+		}
+		return fmt.Errorf(
+			"%w: backup.%s is outside the supported range",
+			errInvalidConfig,
+			limit.name,
+		)
+	}
+	return nil
+}
+
+func (c *Config) validateBackupUsers() error {
+	if c.Backup.Enable && len(c.Backup.Users) == 0 {
+		return fmt.Errorf("%w: backup.users must not be empty when backup is enabled", errInvalidConfig)
+	}
+	for username, role := range c.Backup.Users {
+		if _, exists := c.UserInfo[username]; !exists {
+			return fmt.Errorf(
+				"%w: backup.users references unknown user %q",
+				errInvalidConfig,
+				username,
+			)
+		}
+		if role != "read" && role != "read-write" {
+			return fmt.Errorf(
+				"%w: backup.users[%q] must be read or read-write",
+				errInvalidConfig,
+				username,
+			)
+		}
+	}
+	return nil
+}
+
+func (c *Config) applyBackupDefaults() error {
+	if strings.TrimSpace(c.Backup.WorkDir) == "" {
+		workDir, err := filepath.Abs(filepath.Join(filepath.Dir(c.DBFile), "backup-work"))
+		if err != nil {
+			return fmt.Errorf("%w: resolve backup.work_dir: %w", errInvalidConfig, err)
+		}
+		c.Backup.WorkDir = workDir
+	}
+	if c.Backup.MaxArchiveBytes == 0 {
+		c.Backup.MaxArchiveBytes = defaultBackupMaxArchiveBytes
+	}
+	if c.Backup.MaxExpandedBytes == 0 {
+		c.Backup.MaxExpandedBytes = defaultBackupMaxExpandedBytes
+	}
+	if c.Backup.MaxMappingCount == 0 {
+		c.Backup.MaxMappingCount = defaultBackupMaxMappingCount
+	}
+	if c.Backup.MaxFileCount == 0 {
+		c.Backup.MaxFileCount = defaultBackupMaxFileCount
+	}
+	if c.Backup.MaxPartCount == 0 {
+		c.Backup.MaxPartCount = defaultBackupMaxPartCount
+	}
+	if c.Backup.MaxPathBytes == 0 {
+		c.Backup.MaxPathBytes = defaultBackupMaxPathBytes
+	}
+	if c.Backup.ArtifactRetentionHours == 0 {
+		c.Backup.ArtifactRetentionHours = defaultArtifactRetentionHours
+	}
+	if c.Backup.JobRetentionDays == 0 {
+		c.Backup.JobRetentionDays = defaultBackupJobRetentionDays
+	}
+	return nil
 }
 
 func (c *Config) validateWebDAV() error {

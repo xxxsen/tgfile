@@ -40,12 +40,13 @@ func (f *filePartDaoImpl) CreateFilePart(
 	now := time.Now().UnixMilli()
 	err := f.dbc.OnTransation(ctx, func(ctx context.Context, tx database.IQueryExecer) error {
 		partData := []map[string]any{{
-			"file_id":       req.FileId,
-			"file_part_id":  req.FilePartId,
-			"ctime":         now,
-			"mtime":         now,
-			"file_key":      req.FileKey,
-			"file_part_md5": req.FilePartMd5,
+			"file_id":        req.FileId,
+			"file_part_id":   req.FilePartId,
+			"ctime":          now,
+			"mtime":          now,
+			"file_key":       req.FileKey,
+			"file_part_md5":  req.FilePartMd5,
+			"file_part_size": req.FilePartSize,
 		}}
 		partSQL, partArgs, err := builder.BuildInsert(f.table(), partData)
 		if err != nil {

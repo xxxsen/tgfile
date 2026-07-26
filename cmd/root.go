@@ -60,6 +60,7 @@ func newRootCommand(ctx context.Context) *cobra.Command {
 		newAuditCommand(ctx),
 		newCheckKeyCommand(),
 		newCheckConfigCommand(ctx),
+		newBackupCommand(ctx),
 	)
 	return command
 }

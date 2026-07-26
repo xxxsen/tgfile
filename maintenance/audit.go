@@ -81,11 +81,28 @@ type AuditReport struct {
 	InvalidCompletedPartChecksum     int64            `json:"invalid_completed_part_checksum_count"`
 	CompletedControlManifestMismatch int64            `json:"completed_control_manifest_mismatch_count"`
 	ObjectManifestAlgorithmMismatch  int64            `json:"object_manifest_algorithm_mismatch_count"`
+	LegacyUnknownPartSizeCount       int64            `json:"legacy_unknown_part_size_count"`
+	BackupJobCountByState            map[string]int64 `json:"backup_job_state_count"`
+	BackupTerminalJobPinCount        int64            `json:"backup_terminal_job_pin_count"`
+	BackupOrphanPinCount             int64            `json:"backup_orphan_pin_count"`
+	BackupJobFileInvalidTargetCount  int64            `json:"backup_job_file_invalid_target_count"`
+	BackupStagedFileMappedCount      int64            `json:"backup_staged_file_mapped_count"`
+	BackupExpiredArtifactCount       int64            `json:"backup_expired_artifact_count"`
+	BackupOrphanWorkFileCount        int64            `json:"backup_orphan_work_file_count"`
+	BackupOrphanWorkFileBytes        int64            `json:"backup_orphan_work_file_bytes"`
+	BackupMissingWorkFileCount       int64            `json:"backup_missing_work_file_count"`
+	BackupActiveExportMissingPin     int64            `json:"backup_active_export_missing_pin_count"`
+	BackupActiveJobMissingPath       int64            `json:"backup_active_job_missing_path_count"`
+	BackupPartMissingLiveDeleteState int64            `json:"backup_part_missing_live_delete_state_count"`
+	BackupDeleteRefTargetMismatch    int64            `json:"backup_delete_ref_target_mismatch_count"`
 }
 
 type AuditOptions struct {
-	S3Buckets   []AuditBucket
-	BackendKind string
+	S3Buckets      []AuditBucket
+	BackendKind    string
+	BackupWorkDir  string
+	TelegramBotID  int64
+	TelegramChatID int64
 }
 
 type AuditBucket struct {
@@ -258,6 +275,7 @@ func AuditWithOptions(
 		MultipartUploadCountByState:      make(map[string]int64),
 		MultipartPartCountByState:        make(map[string]int64),
 		CompletedPartCountByState:        make(map[string]int64),
+		BackupJobCountByState:            make(map[string]int64),
 	}
 	if err := readCoreAudit(ctx, database, report); err != nil {
 		return nil, err
@@ -266,6 +284,9 @@ func AuditWithOptions(
 		return nil, err
 	}
 	if err := readMultipartAudit(ctx, database, report); err != nil {
+		return nil, err
+	}
+	if err := readBackupAudit(ctx, database, report, options); err != nil {
 		return nil, err
 	}
 	return report, nil
@@ -284,6 +305,12 @@ func readCoreAudit(ctx context.Context, database *sql.DB, report *AuditReport) e
 		"SELECT COUNT(*) FROM tg_file_part_tab;",
 	).Scan(&report.FilePartCount); err != nil {
 		return fmt.Errorf("count file parts: %w", err)
+	}
+	if err := database.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM tg_file_part_tab WHERE file_part_size < 0;",
+	).Scan(&report.LegacyUnknownPartSizeCount); err != nil {
+		return fmt.Errorf("count legacy unknown part sizes: %w", err)
 	}
 	if err := database.QueryRowContext(
 		ctx,

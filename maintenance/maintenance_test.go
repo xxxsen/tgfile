@@ -430,3 +430,13 @@ func TestValidObjectChecksumMetadata(t *testing.T) {
 	require.False(t, validObjectChecksumMetadata("SHA256", "COMPOSITE", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=-0"))
 	require.False(t, validObjectChecksumMetadata("SHA256", "COMPOSITE", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=-x"))
 }
+
+func TestDecodeBackupDeleteReferenceIsStrict(t *testing.T) {
+	var target struct {
+		Version int `json:"v"`
+	}
+	require.NoError(t, decodeBackupDeleteReference(`{"v":1}`, &target))
+	require.Equal(t, 1, target.Version)
+	require.Error(t, decodeBackupDeleteReference(`{"v":1,"unknown":true}`, &target))
+	require.Error(t, decodeBackupDeleteReference(`{"v":1}{}`, &target))
+}

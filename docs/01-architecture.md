@@ -4,6 +4,8 @@
 [`02-data-and-storage-model.md`](02-data-and-storage-model.md)，协议语义见
 [`03-core-flows-and-api.md`](03-core-flows-and-api.md)，WebDAV 的资源、属性、锁和同步
 模型见 [`04-webdav-protocol.md`](04-webdav-protocol.md)。
+逻辑备份的归档与恢复状态机见
+[`05-logical-backup.md`](05-logical-backup.md)。
 
 ## 1. 系统定位
 
@@ -30,6 +32,11 @@ flowchart LR
     Client["S3 / HTTP / WebDAV 客户端"] --> Server["server<br/>路由、ACL、鉴权、协议适配"]
     Server --> Verify["s3verify<br/>SigV4 与 payload 校验"]
     Server --> FM["filemgr<br/>文件、对象和引用语义"]
+    Server --> Backup["backupmgr<br/>持久化导入导出 Job"]
+    Backup --> Format["backupfmt<br/>严格归档与离线 Verify"]
+    Backup --> FM
+    Backup --> WorkDir["0700 work dir<br/>artifact / snapshot / report"]
+    Backup --> SQLite
     FM --> Directory["directory<br/>事务性路径树"]
     FM --> DAO["dao<br/>File / Part 访问"]
     Directory --> SQLite[("SQLite<br/>元数据与 durable outbox")]
@@ -60,6 +67,8 @@ Directory 事务完成。
 | `s3checksum` | S3 checksum 算法、Base64 摘要校验、CRC 合并和 Composite 聚合 |
 | `blockio` | Telegram、localfile、mem 内容后端及可逆字节旋转 |
 | `maintenance` | 不初始化在线依赖的 SQLite 只读审计 |
+| `backupfmt` | 独立于数据库和后端的 `.tgfb` 格式、摘要及资源限制 |
+| `backupmgr` | 逻辑备份 Job、幂等、异步执行、恢复、清理和低基数指标 |
 | `entity`、`server/model` | 内部持久化模型和 HTTP 请求/响应模型 |
 
 依赖方向必须保持单向：`cmd` 负责组装，业务包不反向依赖 `cmd`；数据模型层不依赖
@@ -138,7 +147,8 @@ Telegram 消息删除不是 Mapping 事务中的同步网络调用。以下操�
 2. 初始化日志和 ID 生成器；
 3. 打开 SQLite，规划并事务性执行 migration，再校验 schema；
 4. 创建 BlockIO、缓存和 FileManager；
-5. 创建 HTTP server，同时启动 Telegram 删除 worker 和 Multipart 过期清理 worker；
+5. 创建 HTTP server，同时启动 Telegram 删除 worker、Multipart 过期清理 worker；启用
+   backup 时再启动一个 Export、一个 Import 和周期清理 worker；
 6. 任一组件非预期退出时取消其他组件并使服务退出；
 7. 收到终止信号后停止 HTTP 服务、取消 worker 并关闭数据库。
 
@@ -159,4 +169,7 @@ Telegram 消息删除不是 Mapping 事务中的同步网络调用。以下操�
 - 非 `live` File 不能重新创建 Mapping，worker 发现引用恢复时将可恢复状态改回 `live`；
 - 外部直链 key、`file_id`、Part 顺序、FileKey 和已持久化 MD5 不被静默改写；
 - 历史 S3 对象没有元数据行时只做惰性兼容读取，不批量回填或改变 ETag；
+- 逻辑 Export Pin 参与最后引用判断；Import staged File 在原子发布前没有 Mapping；
+- 逻辑恢复保留路径、Part/Segment/Completed Part 和协议元数据，但生成新的 FileID、
+  EntryID、FileKey 和 DeleteRef；
 - 缓存损坏、淘汰或清空不得影响 SQLite 或 Telegram 原始数据。

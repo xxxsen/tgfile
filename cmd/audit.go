@@ -25,8 +25,11 @@ func newAuditCommand(ctx context.Context) *cobra.Command {
 				return fmt.Errorf("read audit config: %w", err)
 			}
 			report, err := maintenance.AuditWithOptions(ctx, auditConfig.DatabaseFile, maintenance.AuditOptions{
-				S3Buckets:   auditConfig.S3Buckets,
-				BackendKind: auditConfig.BackendKind,
+				S3Buckets:      auditConfig.S3Buckets,
+				BackendKind:    auditConfig.BackendKind,
+				BackupWorkDir:  auditConfig.BackupWorkDir,
+				TelegramBotID:  auditConfig.TelegramBotID,
+				TelegramChatID: auditConfig.TelegramChatID,
 			})
 			if err != nil {
 				return fmt.Errorf("audit database: %w", err)

@@ -22,13 +22,14 @@ type MarkFileReadyRequest struct {
 type MarkFileReadyResponse struct{}
 
 type CreateFilePartRequest struct {
-	FileId      uint64
-	FilePartId  int32
-	FileKey     string // 真实的, 用于换取文件信息的key
-	FilePartMd5 string
-	BackendKind string
-	DeleteRef   string
-	UploadedAt  int64
+	FileId       uint64
+	FilePartId   int32
+	FileKey      string // 真实的, 用于换取文件信息的key
+	FilePartMd5  string
+	FilePartSize int64
+	BackendKind  string
+	DeleteRef    string
+	UploadedAt   int64
 }
 
 type CreateFilePartResponse struct{}

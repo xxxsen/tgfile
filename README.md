@@ -53,6 +53,21 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
     "max_mutation_entries": 100000,
     "sync_page_size": 1000
   },
+  "backup": {
+    "enable": false,
+    "work_dir": "/data/backup-work",
+    "users": {
+      "access-key": "read-write"
+    },
+    "max_archive_bytes": 107374182400,
+    "max_expanded_bytes": 1099511627776,
+    "max_mapping_count": 100000,
+    "max_file_count": 100000,
+    "max_part_count": 1000000,
+    "max_path_bytes": 1024,
+    "artifact_retention_hours": 24,
+    "job_retention_days": 30
+  },
   "io_cache": {
     "enable_l1_cache": true,
     "l1_cache_size": 16777216,
@@ -86,6 +101,11 @@ WebDAV 使用 `user_info` 中的 Basic Auth 凭据，`webdav.users` 可把已知
 `upload_temp_dir`，完成计数后再进入 Telegram 分片上传；该目录必须位于持久化 volume 并
 预留不小于 `max_upload_size` 的空间。`quota_bytes=0` 表示不限制逻辑配额，配额按
 WebDAV root 内唯一 File 计费，COPY 同一内容不会重复计费。
+
+逻辑备份默认关闭。开启时 `backup.users` 必须引用 `user_info` 中的账号：`read` 可以创建
+导出、查询自己的任务和下载自己的归档；`read-write` 还可以导入、查看全部任务、取消任务
+和读取备份指标。`work_dir` 必须是绝对路径并预留归档空间；服务创建该目录为 `0700`，
+其中 artifact、snapshot 和报告为 `0600`。
 
 启动前可执行无副作用校验；该命令不会初始化日志、SQLite、Telegram、缓存或 HTTP：
 
@@ -230,10 +250,57 @@ worker 会在 Telegram 时限内尝试删除对应 message。WebDAV 成功响应
 | `/file/download/:key` | GET | 匿名 | 直链下载，支持 Range |
 | `/file/meta/:key` | GET | 匿名 | 直链元数据 |
 | `/file/purge` | POST | Basic | 清理没有删除状态的旧无引用元数据 |
-| `/backup/export` | GET | Basic | 导出逻辑文件树 tar.gz |
-| `/backup/import` | POST | Basic | 导入逻辑文件树 |
+| `/backup/v2/exports` | POST | Basic + backup role | 创建异步逻辑导出 |
+| `/backup/v2/imports` | POST | Basic + read-write | 接收 `.tgfb` 并创建异步导入 |
+| `/backup/v2/jobs/:job_id` | GET | Basic + backup role | 查询任务 |
+| `/backup/v2/jobs/:job_id/cancel` | POST | Basic + read-write | 取消未发布任务 |
+| `/backup/v2/exports/:job_id/artifact` | GET/HEAD | Basic + backup role | 下载完成归档 |
+| `/backup/v2/metrics` | GET | Basic + read-write | Prometheus 文本指标 |
 | `/static/*` | GET | Basic | 浏览目录树 |
 | `/webdav/*` | WebDAV Class 1/2 + sync-collection | Basic | 映射 `webdav.root` |
+
+## 逻辑备份
+
+归档扩展名为 `.tgfb`，媒体类型为
+`application/vnd.tgfile.backup.v2+tar+gzip`。HTTP Import 请求体直接发送归档，并要求
+`Content-Length`、`Idempotency-Key` 和 `X-Tgfile-Artifact-SHA256`。例如：
+
+```bash
+curl -u access-key:secret-key \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: export-001' \
+  -d '{"scope":"/"}' \
+  https://your-tgfile.example/backup/v2/exports
+
+curl -u access-key:secret-key \
+  -H 'Content-Type: application/vnd.tgfile.backup.v2+tar+gzip' \
+  -H 'Idempotency-Key: import-001' \
+  -H "X-Tgfile-Artifact-SHA256: $(sha256sum full.tgfb | cut -d' ' -f1)" \
+  --data-binary @full.tgfb \
+  'https://your-tgfile.example/backup/v2/imports?conflict=fail&dry_run=false'
+```
+
+离线命令复用同一格式和持久化任务引擎：
+
+```bash
+./tgfile backup export \
+  --config=/config/config.json \
+  --scope=/ \
+  --output=/backup/full.tgfb
+
+./tgfile backup verify \
+  --config=/config/config.json \
+  --input=/backup/full.tgfb
+
+./tgfile backup import \
+  --config=/config/config.json \
+  --input=/backup/full.tgfb \
+  --conflict=fail
+```
+
+`verify` 不连接数据库或 Telegram。导入前建议先运行 `--dry-run`；`fail` 遇到现有文件即
+失败，`replace` 原子覆盖同路径文件并让旧内容进入 durable 删除状态机。完整格式、恢复
+事务、权限和限制见 [逻辑备份格式与恢复模型](docs/05-logical-backup.md)。
 
 ## 离线维护
 
@@ -271,3 +338,4 @@ make check
 - [数据与存储模型](docs/02-data-and-storage-model.md)
 - [核心流程与接口设计](docs/03-core-flows-and-api.md)
 - [WebDAV 协议与资源模型](docs/04-webdav-protocol.md)
+- [逻辑备份格式与恢复模型](docs/05-logical-backup.md)

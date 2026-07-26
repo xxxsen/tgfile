@@ -233,8 +233,8 @@ func (d *defaultFileManager) CreateFilePart(ctx context.Context, fileid uint64, 
 		return fmt.Errorf("%w: %d", ErrInvalidFilePart, partid)
 	}
 	md5v := NewMD5CompatibilityHash()
-	r = io.TeeReader(r, md5v)
-	upload, err := d.bkio.Upload(ctx, r)
+	counted := &countingReader{reader: io.TeeReader(r, md5v)}
+	upload, err := d.bkio.Upload(ctx, counted)
 	if err != nil {
 		return fmt.Errorf("upload part failed, err:%w", err)
 	}
@@ -242,13 +242,14 @@ func (d *defaultFileManager) CreateFilePart(ctx context.Context, fileid uint64, 
 		return errInvalidUploadDeleteReference
 	}
 	if _, err := d.filePartDao.CreateFilePart(ctx, &entity.CreateFilePartRequest{
-		FileId:      fileid,
-		FilePartId:  int32(partid),
-		FileKey:     upload.FileKey,
-		FilePartMd5: hex.EncodeToString(md5v.Sum(nil)),
-		BackendKind: d.bkio.Name(),
-		DeleteRef:   upload.DeleteRef,
-		UploadedAt:  upload.UploadedAt,
+		FileId:       fileid,
+		FilePartId:   int32(partid),
+		FileKey:      upload.FileKey,
+		FilePartMd5:  hex.EncodeToString(md5v.Sum(nil)),
+		FilePartSize: counted.count,
+		BackendKind:  d.bkio.Name(),
+		DeleteRef:    upload.DeleteRef,
+		UploadedAt:   upload.UploadedAt,
 	}); err != nil {
 		compensationContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), deleteTimeout)
 		deleteErr := d.bkio.DeleteBlocks(compensationContext, []string{upload.DeleteRef})

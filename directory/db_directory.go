@@ -199,7 +199,11 @@ func (t *directoryTransaction) Replace(
 	if _, err := t.tx.ExecContext(ctx, statement, args...); err != nil {
 		return nil, fmt.Errorf("replace transaction entry: %w", err)
 	}
-	previous := entry.ToDirectoyEntry()
+	// Preserve the pre-replacement identity for callers that must release the
+	// old File reference. Returning the mutable row itself caused RefData to be
+	// overwritten below, so cleanup accidentally targeted the new File.
+	previousRow := *entry
+	previous := previousRow.ToDirectoyEntry()
 	if err := t.directory.recordChange(ctx, t.tx, filename, "updated"); err != nil {
 		return nil, err
 	}
