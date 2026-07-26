@@ -265,6 +265,60 @@ make check
 `TGFILE_DEV_HOST`、`TGFILE_DEV_PORT`、`TGFILE_DEV_DATA_DIR`、`TGFILE_DEV_BUCKET`、
 `TGFILE_DEV_USERNAME` 和 `TGFILE_DEV_PASSWORD` 覆盖。
 
+S3/WebDAV 本地稳定性测试使用临时 SQLite、localfile、spool 和 loopback HTTP 服务，不连接
+Telegram，也不属于 `make check` 或 CI：
+
+```bash
+make soak
+make soak SOAK_DURATION=30m SOAK_WORKERS=6
+make soak SOAK_DURATION=15m SOAK_SEED=1785000000
+make soak SOAK_CLIENT_DELAY=20ms SOAK_BACKEND_DELAY=50ms
+```
+
+默认持续 15 分钟、使用 4 个并发 worker。客户端上传和下载按 8 KiB 分块，默认每块延迟
+5 ms；包装 localfile 的 mock BlockIO 按 32 KiB 分块，Upload、Download 和 Delete 默认每块
+延迟 5 ms，用于模拟服务端访问 Telegram 变慢。延迟可分别通过 `SOAK_CLIENT_DELAY` 和
+`SOAK_BACKEND_DELAY` 调整，设置为 `0s` 可关闭。
+
+测试覆盖 S3 SigV4 普通上传、Multipart、WebDAV 上传、复制、移动、锁、删除、慢速客户端和
+跨协议读取，并在结束时检查 SQLite 完整性、未完成删除状态、孤儿属性/锁/对象元数据、残留
+Mapping、localfile block 和 spool 文件。失败时临时工作目录会保留并输出；成功时自动删除。
+`SOAK_SEED` 可用于复现相同的数据和场景顺序。
+
+S3/WebDAV 本地压力测试同样只允许用户手动执行，不属于 `make check` 或 CI。它默认关闭
+客户端和 mock 后端延迟，按 1、4、8、16、32 并发各运行 1 分钟，再以单并发运行 30 秒恢复
+验证：
+
+```bash
+make stress
+make stress STRESS_STEPS=1,8,16,32,64 STRESS_STEP_DURATION=2m
+make stress STRESS_PROFILE=s3
+make stress STRESS_PROFILE=webdav
+make stress STRESS_PROFILE=cross
+make stress STRESS_MAX_ERROR_RATE=0.005 STRESS_MAX_P99=2s
+make stress STRESS_MUTATION_INTERVAL=100
+make stress STRESS_CLIENT_DELAY=10ms STRESS_BACKEND_DELAY=20ms
+make stress STRESS_SEED=1785000000
+```
+
+`STRESS_PROFILE` 支持 `mixed`、`s3`、`webdav` 和 `cross`。默认负载使用受控 fixture
+执行高频 S3 HEAD/GET、WebDAV PROPFIND/GET 和跨协议读取；每 1000 个操作插入一次对应
+profile 的完整写删生命周期，覆盖 S3 PUT/DELETE、WebDAV PUT/DELETE 以及 S3 写入、
+WebDAV 读取/覆盖、S3 回读、WebDAV 删除组成的跨协议路径。`mixed` 均匀混合三类负载。
+`STRESS_MUTATION_INTERVAL` 可调整写删周期；数值越小，写压力和 durable outbox 积压越大，
+最终清理所需时间也越长。
+
+每个并发阶梯输出操作数、请求数、吞吐、操作错误率、HTTP 4xx/5xx，以及请求和完整操作的
+p50/p95/p99/mean/max 延迟。默认在操作错误率超过 1% 或请求 p99 超过 5 秒时停止继续升压；
+阈值可分别用 `STRESS_MAX_ERROR_RATE` 和 `STRESS_MAX_P99` 调整。单次操作默认 15 秒超时，
+可通过 `STRESS_OPERATION_TIMEOUT` 调整。
+
+压力阈值被突破、恢复阶段仍有错误或最终审计失败时命令返回非零，并保留输出中列出的临时
+工作目录；无论是否触及压力阈值，测试都会尝试执行单并发恢复验证、资源清理和与 soak 相同的
+SQLite/Mapping/outbox/localfile/spool 一致性审计。该测试使用临时 SQLite、loopback HTTP
+和 localfile mock，不会连接 Telegram，因此结果用于比较版本、定位进程内瓶颈和验证过载
+恢复，不代表 Telegram 生产链路的绝对容量。
+
 ## 设计文档
 
 - [系统架构](docs/01-architecture.md)

@@ -199,7 +199,8 @@ func (t *directoryTransaction) Replace(
 	if _, err := t.tx.ExecContext(ctx, statement, args...); err != nil {
 		return nil, fmt.Errorf("replace transaction entry: %w", err)
 	}
-	previous := entry.ToDirectoyEntry()
+	previousValue := *entry
+	previous := previousValue.ToDirectoyEntry()
 	if err := t.directory.recordChange(ctx, t.tx, filename, "updated"); err != nil {
 		return nil, err
 	}
