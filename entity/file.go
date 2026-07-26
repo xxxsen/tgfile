@@ -2,6 +2,9 @@ package entity
 
 import "encoding/json"
 
+// EmptyFileMD5Sum is the standard hexadecimal MD5 digest of an empty byte sequence.
+const EmptyFileMD5Sum = "d41d8cd98f00b204e9800998ecf8427e"
+
 type CreateFileDraftRequest struct {
 	FileSize      int64
 	FilePartCount int32
@@ -60,14 +63,15 @@ func (f *FileInfoItem) ToFileMeta() *FileMeta {
 		FilePartCount: f.FilePartCount,
 		LayoutVersion: f.FileLayoutVersion,
 	}
-	if len(f.Extinfo) == 0 || f.Extinfo == "{}" {
-		return fm
+	if len(f.Extinfo) != 0 && f.Extinfo != "{}" {
+		var extinfo FileExtInfo
+		if err := json.Unmarshal([]byte(f.Extinfo), &extinfo); err == nil {
+			fm.Md5Sum = extinfo.Md5
+		}
 	}
-	var extinfo FileExtInfo
-	if err := json.Unmarshal([]byte(f.Extinfo), &extinfo); err == nil {
-		fm.Md5Sum = extinfo.Md5
+	if f.FileSize == 0 && fm.Md5Sum == "" {
+		fm.Md5Sum = EmptyFileMD5Sum
 	}
-
 	return fm
 }
 

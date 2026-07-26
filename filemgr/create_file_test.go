@@ -16,6 +16,7 @@ import (
 
 	"github.com/xxxsen/tgfile/blockio"
 	"github.com/xxxsen/tgfile/db"
+	"github.com/xxxsen/tgfile/entity"
 )
 
 type captureBlockIO struct {
@@ -201,7 +202,7 @@ END;`)
 }
 
 func TestCreateEmptyFile(t *testing.T) {
-	manager, block, _ := newCreateFileTestManager(t, 4)
+	manager, block, databaseClient := newCreateFileTestManager(t, 4)
 	fileID, err := manager.CreateFile(context.Background(), 0, bytes.NewReader(nil))
 	require.NoError(t, err)
 	require.Empty(t, block.order)
@@ -209,4 +210,18 @@ func TestCreateEmptyFile(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, meta.FilePartCount)
 	require.Zero(t, meta.FileSize)
+	require.Equal(t, entity.EmptyFileMD5Sum, meta.Md5Sum)
+
+	rows, err := databaseClient.QueryContext(
+		t.Context(),
+		"SELECT extinfo FROM tg_file_tab WHERE file_id = ?",
+		fileID,
+	)
+	require.NoError(t, err)
+	defer rows.Close()
+	require.True(t, rows.Next())
+	var extinfo string
+	require.NoError(t, rows.Scan(&extinfo))
+	require.JSONEq(t, `{"md5":"`+entity.EmptyFileMD5Sum+`"}`, extinfo)
+	require.NoError(t, rows.Err())
 }

@@ -274,7 +274,7 @@ func (d *defaultFileManager) FinishFileCreate(ctx context.Context, fileid uint64
 	if err != nil {
 		return fmt.Errorf("list file parts: %w", err)
 	}
-	md5v := ""
+	md5v := entity.EmptyFileMD5Sum
 	if len(fps.List) == 1 {
 		md5v = fps.List[0].FilePartMd5
 	}

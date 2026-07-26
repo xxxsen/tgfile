@@ -60,8 +60,11 @@ BlockIO Part；layout v2 不复制这些行。
 | `file_part_md5` | 分片内容 MD5，属于存量格式 |
 | `ctime`、`mtime` | 创建和修改时间 |
 
-零字节 File 没有 Part。单分片 File 的文件级 MD5 等于分片 MD5；多分片 File 对按顺序
-拼接的分片 MD5 十六进制文本再计算 MD5。MD5 只用于协议和存量兼容，不用于认证。
+零字节 File 没有 Part，其文件级 MD5 固定为标准空内容摘要
+`d41d8cd98f00b204e9800998ecf8427e`。新建零字节 File 时持久化该值；历史记录中的
+空值或无效扩展信息在读取时归一化为该值，不需要迁移或改写数据库。单分片 File 的文件级
+MD5 等于分片 MD5；多分片 File 对按顺序拼接的分片 MD5 十六进制文本再计算 MD5。
+MD5 只用于协议和存量兼容，不用于认证。
 
 ### 2.3 `tg_file_mapping_tab`
 
