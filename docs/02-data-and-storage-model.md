@@ -290,6 +290,11 @@ source File。Pin 在 snapshot 读取和插入所在的同一个事务建立，�
 Backup 表不使用数据库外键，以便任务恢复和补偿顺序由状态机显式控制。终态 Import 的
 Job File 可以保留到 Job retention 到期，用于审计新 File 和 Delete State。
 
+管理后台 Session 和 CSRF token 只存在于进程内存，不写入数据库。管理目录分页使用
+`tg_file_mapping_tab(parent_entry_id, file_kind, file_name COLLATE BINARY, entry_id)` 索引；
+Job 全局和按 owner 分页分别使用 `(created_at DESC, job_id DESC)` 与
+`(owner, created_at DESC, job_id DESC)` 索引。这些索引不改变业务行或存量对象语义。
+
 ## 3. Migration 账本
 
 `schema_migrations` 保存 `version`、`filename`、SQL 原文 SHA-256 和 `applied_at`。

@@ -38,6 +38,8 @@ var (
 	ErrBackupBackendUpload   = errors.New("backup backend upload failed")
 	ErrBackupBackendReadback = errors.New("backup backend readback failed")
 	ErrBackupPublish         = errors.New("backup publish failed")
+	ErrInvalidFileLinkPage   = errors.New("invalid file link page request")
+	ErrFileLinkCursorStale   = errors.New("file link page cursor is stale")
 )
 
 type WalkLinkFunc func(ctx context.Context, link string, item *entity.FileLinkMeta) (bool, error)
@@ -62,7 +64,30 @@ type IFileStorage interface {
 
 type ILinkReader interface {
 	StatFileLink(ctx context.Context, link string) (*entity.FileLinkMeta, error)
+	ListFileLinksPage(
+		ctx context.Context,
+		request FileLinkPageRequest,
+	) (*FileLinkPageResult, error)
 	WalkFileLink(ctx context.Context, prefix string, cb WalkLinkFunc) error
+}
+
+type FileLinkPageCursor struct {
+	ParentEntryID uint64
+	IsDir         bool
+	Name          string
+	EntryID       uint64
+}
+
+type FileLinkPageRequest struct {
+	Path   string
+	Cursor *FileLinkPageCursor
+	Limit  int
+}
+
+type FileLinkPageResult struct {
+	ParentEntryID uint64
+	Items         []*entity.FileLinkMeta
+	NextCursor    *FileLinkPageCursor
 }
 
 type ILinkWriter interface {

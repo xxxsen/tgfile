@@ -38,7 +38,7 @@ func TestBackupV2HTTPExportAuthorizationAndArtifact(t *testing.T) {
 
 	manager, err := backupmgr.New(databaseClient, files, backupmgr.Options{
 		WorkDir: filepath.Join(t.TempDir(), "backup-work"),
-		Limits:  backupfmt.DefaultLimits(), SchemaVersion: 12,
+		Limits:  backupfmt.DefaultLimits(), SchemaVersion: 13,
 		MaxPartSize:       files.BackupMaxPartSize(),
 		ArtifactRetention: time.Hour, JobRetention: 24 * time.Hour,
 	})

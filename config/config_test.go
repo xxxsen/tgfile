@@ -179,6 +179,129 @@ func TestValidateBackupConfiguration(t *testing.T) {
 	require.ErrorIs(t, conflict.Validate(), errInvalidConfig)
 }
 
+func TestValidateAdminConfiguration(t *testing.T) {
+	dataDir := t.TempDir()
+	value := &Config{
+		BotKind:  "localfile",
+		BotInfo:  map[string]any{"storage_dir": filepath.Join(dataDir, "blocks")},
+		DBFile:   filepath.Join(dataDir, "data.db"),
+		UserInfo: map[string]string{"viewer": "view-secret", "operator": "write-secret"},
+		S3:       S3Config{MaxObjectSize: 1024},
+		Admin: AdminConfig{
+			Enable:         true,
+			ExternalOrigin: "https://IMAGE.example.test:443/",
+			Users: map[string]string{
+				"viewer":   "read",
+				"operator": "read-write",
+			},
+		},
+	}
+	require.NoError(t, value.Validate())
+	require.Equal(t, "https://image.example.test", value.Admin.ExternalOrigin)
+	require.Equal(t, defaultAdminSessionIdleMinutes, value.Admin.SessionIdleMinutes)
+	require.Equal(t, defaultAdminSessionMaxHours, value.Admin.SessionMaxHours)
+	require.Equal(t, int64(1024), value.Admin.MaxUploadSize)
+
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{
+			name: "origin missing",
+			mutate: func(config *Config) {
+				config.Admin.ExternalOrigin = ""
+			},
+		},
+		{
+			name: "non loopback http",
+			mutate: func(config *Config) {
+				config.Admin.ExternalOrigin = "http://image.example.test"
+			},
+		},
+		{
+			name: "origin path",
+			mutate: func(config *Config) {
+				config.Admin.ExternalOrigin = "https://image.example.test/admin"
+			},
+		},
+		{
+			name: "origin without hostname",
+			mutate: func(config *Config) {
+				config.Admin.ExternalOrigin = "https://:443"
+			},
+		},
+		{
+			name: "origin port out of range",
+			mutate: func(config *Config) {
+				config.Admin.ExternalOrigin = "https://image.example.test:65536"
+			},
+		},
+		{
+			name: "unknown user",
+			mutate: func(config *Config) {
+				config.Admin.Users = map[string]string{"missing": "read"}
+			},
+		},
+		{
+			name: "invalid role",
+			mutate: func(config *Config) {
+				config.Admin.Users = map[string]string{"viewer": "admin"}
+			},
+		},
+		{
+			name: "empty password",
+			mutate: func(config *Config) {
+				config.UserInfo = map[string]string{"viewer": ""}
+				config.Admin.Users = map[string]string{"viewer": "read"}
+			},
+		},
+		{
+			name: "idle too short",
+			mutate: func(config *Config) {
+				config.Admin.SessionIdleMinutes = 4
+			},
+		},
+		{
+			name: "maximum not longer than idle",
+			mutate: func(config *Config) {
+				config.Admin.SessionIdleMinutes = 60
+				config.Admin.SessionMaxHours = 1
+			},
+		},
+		{
+			name: "upload too large",
+			mutate: func(config *Config) {
+				config.Admin.MaxUploadSize = maxAdminUploadSize + 1
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			copyConfig := *value
+			copyConfig.UserInfo = cloneTestMap(value.UserInfo)
+			copyConfig.Admin = value.Admin
+			copyConfig.Admin.Users = cloneTestMap(value.Admin.Users)
+			test.mutate(&copyConfig)
+			require.ErrorIs(t, copyConfig.Validate(), errInvalidConfig)
+		})
+	}
+
+	loopback := *value
+	loopback.Admin = value.Admin
+	loopback.Admin.Users = cloneTestMap(value.Admin.Users)
+	loopback.Admin.ExternalOrigin = "http://[::1]:80/"
+	require.NoError(t, loopback.Validate())
+	require.Equal(t, "http://[::1]", loopback.Admin.ExternalOrigin)
+}
+
+func cloneTestMap(input map[string]string) map[string]string {
+	result := make(map[string]string, len(input))
+	for key, value := range input {
+		result[key] = value
+	}
+	return result
+}
+
 func TestValidateWebDAVExternalOrigin(t *testing.T) {
 	value := &Config{
 		BotKind: "localfile",

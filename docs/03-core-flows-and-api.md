@@ -364,6 +364,7 @@ DeleteObjects：
 | 静态目录 | `/static/*` | Basic |
 | 逻辑备份 | `/backup/v2/*` | Basic + backup role |
 | WebDAV Class 1/2 + sync | `/webdav/*` | Basic |
+| Web 管理后台 | `/_admin/*` | 管理 Session + CSRF |
 
 直链下载只使用规范 `/defaults` 映射。Purge 只清理无引用且没有 Delete State 的旧 File；
 不会丢弃 durable 删除引用或删除 Telegram message。
@@ -380,6 +381,12 @@ layout v2 Segment、Completed Part、S3 Metadata 和 WebDAV dead property；恢�
 内部 FileID、EntryID、FileKey 和 DeleteRef，并在单一 SQLite 事务发布全部路径和协议
 元数据。完整格式、API、权限和恢复语义见
 [`05-logical-backup.md`](05-logical-backup.md)。
+
+Web 管理后台内嵌于服务二进制，提供路径浏览、下载、条件上传、Export、Import 和 Job 管理。
+它使用独立的进程内 Session、严格 Origin/CSRF 校验和 `read`/`read-write` 角色，不复用
+协议入口的 Basic Auth 会话。管理上传发布为普通 Mapping，因此 S3、WebDAV 和管理入口
+立即看到同一内容；管理下载透明读取 layout v1 和 layout v2。完整语义见
+[`06-web-management.md`](06-web-management.md)。
 
 ## 10. 命令
 

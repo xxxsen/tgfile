@@ -1,6 +1,8 @@
 package server
 
 import (
+	"time"
+
 	"github.com/xxxsen/tgfile/backupmgr"
 	"github.com/xxxsen/tgfile/filemgr"
 )
@@ -11,6 +13,7 @@ type config struct {
 	webdav        WebDAVOptions
 	backup        BackupOptions
 	backupManager *backupmgr.Manager
+	admin         AdminOptions
 	fmgr          filemgr.IFileManager
 }
 
@@ -50,6 +53,17 @@ type WebDAVOptions struct {
 type BackupOptions struct {
 	Enabled bool
 	Users   map[string]string
+}
+
+type AdminOptions struct {
+	Enabled            bool
+	ExternalOrigin     string
+	Users              map[string]string
+	SessionIdle        time.Duration
+	SessionMaximum     time.Duration
+	MaxUploadSize      int64
+	MaxPathBytes       int
+	MaxMutationEntries int
 }
 
 func WithS3(options S3Options) Option {
@@ -95,5 +109,11 @@ func WithBackup(options BackupOptions, manager *backupmgr.Manager) Option {
 	return func(c *config) {
 		c.backup = options
 		c.backupManager = manager
+	}
+}
+
+func WithAdmin(options AdminOptions) Option {
+	return func(c *config) {
+		c.admin = options
 	}
 }

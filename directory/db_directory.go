@@ -29,6 +29,8 @@ var (
 	errNoRowsInserted          = errors.New("no rows inserted")
 	errRootNotFoundAfterCreate = errors.New("root entry not found after creation")
 	errInvalidScanBatch        = errors.New("invalid directory scan batch size")
+	errInvalidPageLimit        = errors.New("invalid directory page limit")
+	errInvalidPageCursor       = errors.New("invalid directory page cursor")
 )
 
 type IDGenFunc func() uint64
@@ -1246,6 +1248,87 @@ func (e *dbDirectory) List(ctx context.Context, dir string) ([]IDirectoryEntry, 
 		return nil, fmt.Errorf("list directory %q: %w", dir, err)
 	}
 	return rs, nil
+}
+
+func (e *dbDirectory) ListPage(
+	ctx context.Context,
+	dir string,
+	cursor *PageCursor,
+	limit uint,
+) (*DirectoryPage, error) {
+	const maxPageLimit uint = 500
+	if limit == 0 || limit > maxPageLimit {
+		return nil, fmt.Errorf("%w: %d", errInvalidPageLimit, limit)
+	}
+	if cursor != nil && (cursor.Name == "" || cursor.EntryID == 0) {
+		return nil, errInvalidPageCursor
+	}
+	page := &DirectoryPage{Entries: make([]IDirectoryEntry, 0, limit)}
+	err := e.onSelectDir(
+		ctx,
+		dir,
+		false,
+		func(ctx context.Context, parentID uint64, tx database.IQueryExecer) error {
+			page.ParentEntryID = parentID
+			entries, err := e.txListDirPage(ctx, tx, parentID, cursor, limit+1)
+			if err != nil {
+				return err
+			}
+			if uint(len(entries)) > limit {
+				page.HasMore = true
+				entries = entries[:limit]
+			}
+			for _, entry := range entries {
+				page.Entries = append(page.Entries, entry.ToDirectoyEntry())
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list directory %q page: %w", dir, err)
+	}
+	return page, nil
+}
+
+func (e *dbDirectory) txListDirPage(
+	ctx context.Context,
+	queryer database.IQueryer,
+	parentID uint64,
+	cursor *PageCursor,
+	limit uint,
+) ([]*directoryEntryTab, error) {
+	where := map[string]any{
+		"parent_entry_id": parentID,
+		"_orderby":        "file_kind ASC,file_name COLLATE BINARY ASC,entry_id ASC",
+		"_limit":          []uint{0, limit},
+	}
+	if cursor != nil {
+		kind := int32(defaultFileKindFile)
+		if cursor.IsDir {
+			kind = defaultFileKindDir
+		}
+		where["_or"] = []map[string]any{
+			{"file_kind >": kind},
+			{"file_kind": kind, "file_name >": cursor.Name},
+			{
+				"file_kind":  kind,
+				"file_name":  cursor.Name,
+				"entry_id >": cursor.EntryID,
+			},
+		}
+	}
+	entries := make([]*directoryEntryTab, 0, limit)
+	if err := dbkit.SimpleQuery(
+		ctx,
+		queryer,
+		e.table(),
+		where,
+		&entries,
+		dbkit.ScanWithTagName("json"),
+	); err != nil {
+		return nil, fmt.Errorf("query directory page: %w", err)
+	}
+	return entries, nil
 }
 
 func (e *dbDirectory) Iterate(

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
@@ -76,6 +77,33 @@ type CreateImportRequest struct {
 	ContentLength  int64
 	ArtifactSHA256 string
 	Body           io.Reader
+}
+
+type CreateImportUploadRequest struct {
+	Owner          string
+	IdempotencyKey string
+	ConflictPolicy string
+	DryRun         bool
+	ContentLength  int64
+	Body           io.Reader
+}
+
+type JobCursor struct {
+	CreatedAt int64
+	JobID     string
+}
+
+type ListJobsRequest struct {
+	Owner  string
+	Kind   string
+	State  string
+	Cursor *JobCursor
+	Limit  int
+}
+
+type JobPage struct {
+	Jobs       []*Job
+	NextCursor *JobCursor
 }
 
 type Progress struct {
@@ -167,28 +195,52 @@ func (m *Manager) CreateImport(
 	ctx context.Context,
 	request CreateImportRequest,
 ) (*Job, error) {
-	if request.ConflictPolicy == "" {
-		request.ConflictPolicy = "fail"
-	}
-	if request.ContentLength > m.options.Limits.MaxArchiveBytes {
-		return nil, backupfmt.ErrLimitExceeded
-	}
-	if request.Owner == "" || !validIdempotencyKey(request.IdempotencyKey) ||
-		(request.ConflictPolicy != "fail" && request.ConflictPolicy != "replace") ||
-		request.ContentLength < 1 ||
-		!validSHA256(request.ArtifactSHA256) || request.Body == nil {
+	if !validSHA256(request.ArtifactSHA256) {
 		return nil, ErrInvalidRequest
 	}
-	if err := ensureFreeSpace(m.options.WorkDir, request.ContentLength); err != nil {
+	return m.createImport(ctx, importReceiveRequest{
+		Owner:          request.Owner,
+		IdempotencyKey: request.IdempotencyKey,
+		ConflictPolicy: request.ConflictPolicy,
+		DryRun:         request.DryRun,
+		ContentLength:  request.ContentLength,
+		ExpectedSHA256: request.ArtifactSHA256,
+		Body:           request.Body,
+	})
+}
+
+func (m *Manager) CreateImportUpload(
+	ctx context.Context,
+	request CreateImportUploadRequest,
+) (*Job, error) {
+	return m.createImport(ctx, importReceiveRequest{
+		Owner:          request.Owner,
+		IdempotencyKey: request.IdempotencyKey,
+		ConflictPolicy: request.ConflictPolicy,
+		DryRun:         request.DryRun,
+		ContentLength:  request.ContentLength,
+		Body:           request.Body,
+	})
+}
+
+type importReceiveRequest struct {
+	Owner          string
+	IdempotencyKey string
+	ConflictPolicy string
+	DryRun         bool
+	ContentLength  int64
+	ExpectedSHA256 string
+	Body           io.Reader
+}
+
+func (m *Manager) createImport(
+	ctx context.Context,
+	request importReceiveRequest,
+) (*Job, error) {
+	fingerprint, err := m.prepareImportRequest(&request)
+	if err != nil {
 		return nil, err
 	}
-	fingerprint := requestFingerprint(
-		"import",
-		request.ConflictPolicy,
-		strconv.FormatBool(request.DryRun),
-		strconv.FormatInt(request.ContentLength, 10),
-		request.ArtifactSHA256,
-	)
 	job, created, err := m.insertJob(
 		ctx,
 		"import",
@@ -203,18 +255,68 @@ func (m *Manager) CreateImport(
 	if err != nil || !created {
 		return job, err
 	}
+	if err := m.receiveAndQueueImport(ctx, job, request); err != nil {
+		return nil, err
+	}
+	return m.GetJob(ctx, job.JobID)
+}
+
+func (m *Manager) prepareImportRequest(request *importReceiveRequest) (string, error) {
+	if request.ConflictPolicy == "" {
+		request.ConflictPolicy = "fail"
+	}
+	if request.ContentLength > m.options.Limits.MaxArchiveBytes {
+		return "", backupfmt.ErrLimitExceeded
+	}
+	if request.Owner == "" || !validIdempotencyKey(request.IdempotencyKey) {
+		return "", ErrInvalidRequest
+	}
+	if request.ConflictPolicy != "fail" && request.ConflictPolicy != "replace" {
+		return "", ErrInvalidRequest
+	}
+	if request.ContentLength < 1 || request.Body == nil {
+		return "", ErrInvalidRequest
+	}
+	if err := ensureFreeSpace(m.options.WorkDir, request.ContentLength); err != nil {
+		return "", err
+	}
+	fingerprintValues := []string{
+		"import",
+		request.ConflictPolicy,
+		strconv.FormatBool(request.DryRun),
+		strconv.FormatInt(request.ContentLength, 10),
+	}
+	if request.ExpectedSHA256 != "" {
+		fingerprintValues = append(fingerprintValues, request.ExpectedSHA256)
+	}
+	return requestFingerprint(fingerprintValues...), nil
+}
+
+func (m *Manager) receiveAndQueueImport(
+	ctx context.Context,
+	job *Job,
+	request importReceiveRequest,
+) error {
 	partialName := job.JobID + ".receive.partial"
 	artifactName := job.JobID + ".tgfb"
 	partialPath := filepath.Join(m.options.WorkDir, partialName)
 	artifactPath := filepath.Join(m.options.WorkDir, artifactName)
-	if err := receiveArtifact(ctx, partialPath, artifactPath, request); err != nil {
+	artifactSHA256, err := receiveArtifact(
+		ctx,
+		partialPath,
+		artifactPath,
+		request.ContentLength,
+		request.Body,
+		request.ExpectedSHA256,
+	)
+	if err != nil {
 		_ = os.Remove(partialPath)
 		_ = os.Remove(artifactPath)
 		_ = m.finishJob(context.WithoutCancel(ctx), job.JobID, "canceled", "canceled", "artifact receive failed")
-		return nil, err
+		return err
 	}
 	now := time.Now().UnixMilli()
-	if _, err := m.db.ExecContext(
+	result, err := m.db.ExecContext(
 		ctx,
 		`UPDATE tg_backup_job_tab
 SET job_state = 'queued', artifact_path = ?, artifact_size = ?,
@@ -222,14 +324,34 @@ artifact_sha256 = ?, updated_at = ?
 WHERE job_id = ? AND job_state = 'receiving'`,
 		artifactName,
 		request.ContentLength,
-		request.ArtifactSHA256,
+		artifactSHA256,
 		now,
 		job.JobID,
-	); err != nil {
+	)
+	if err != nil {
 		_ = os.Remove(artifactPath)
-		return nil, fmt.Errorf("queue received backup import: %w", err)
+		_ = m.finishJob(
+			context.WithoutCancel(ctx),
+			job.JobID,
+			"canceled",
+			"canceled",
+			"artifact queue failed",
+		)
+		return fmt.Errorf("queue received backup import: %w", err)
 	}
-	return m.GetJob(ctx, job.JobID)
+	affected, _ := result.RowsAffected()
+	if affected != 1 {
+		_ = os.Remove(artifactPath)
+		_ = m.finishJob(
+			context.WithoutCancel(ctx),
+			job.JobID,
+			"canceled",
+			"canceled",
+			"artifact queue state changed",
+		)
+		return fmt.Errorf("queue received backup import: %w", errJobClaimed)
+	}
+	return nil
 }
 
 func (m *Manager) createQueuedJob(
@@ -298,21 +420,23 @@ idempotency_key, request_fingerprint, created_at, updated_at
 func receiveArtifact(
 	ctx context.Context,
 	partialPath, artifactPath string,
-	request CreateImportRequest,
-) error {
+	contentLength int64,
+	body io.Reader,
+	expectedSHA256 string,
+) (string, error) {
 	file, err := os.OpenFile(partialPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return fmt.Errorf("create import partial artifact: %w", err)
+		return "", fmt.Errorf("create import partial artifact: %w", err)
 	}
 	hash := sha256.New()
 	spaceChecked := &spaceCheckingReader{
-		reader:    request.Body,
+		reader:    body,
 		workDir:   filepath.Dir(partialPath),
-		total:     request.ContentLength,
+		total:     contentLength,
 		lastCheck: time.Now(),
 	}
 	counted := &contextReader{ctx: ctx, reader: spaceChecked}
-	written, copyErr := io.CopyN(io.MultiWriter(file, hash), counted, request.ContentLength)
+	written, copyErr := io.CopyN(io.MultiWriter(file, hash), counted, contentLength)
 	var extra [1]byte
 	extraCount, extraErr := counted.Read(extra[:])
 	if extraErr != nil && !errors.Is(extraErr, io.EOF) {
@@ -321,14 +445,28 @@ func receiveArtifact(
 	sum := hex.EncodeToString(hash.Sum(nil))
 	syncErr := file.Sync()
 	closeErr := file.Close()
-	if err := errors.Join(copyErr, syncErr, closeErr); err != nil ||
-		written != request.ContentLength || extraCount != 0 || sum != request.ArtifactSHA256 {
-		return fmt.Errorf("receive import artifact: %w", errors.Join(err, backupfmt.ErrChecksum))
+	var checksumErr error
+	if expectedSHA256 != "" &&
+		subtle.ConstantTimeCompare([]byte(sum), []byte(expectedSHA256)) != 1 {
+		checksumErr = backupfmt.ErrChecksum
+	}
+	receiveErr := errors.Join(copyErr, syncErr, closeErr, checksumErr)
+	if written != contentLength || extraCount != 0 {
+		receiveErr = errors.Join(receiveErr, backupfmt.ErrChecksum)
+	}
+	if receiveErr != nil {
+		return "", fmt.Errorf(
+			"receive import artifact: %w",
+			receiveErr,
+		)
 	}
 	if err := os.Rename(partialPath, artifactPath); err != nil {
-		return fmt.Errorf("publish received import artifact: %w", err)
+		return "", fmt.Errorf("publish received import artifact: %w", err)
 	}
-	return syncDirectory(filepath.Dir(artifactPath))
+	if err := syncDirectory(filepath.Dir(artifactPath)); err != nil {
+		return "", err
+	}
+	return sum, nil
 }
 
 type contextReader struct {
@@ -350,20 +488,34 @@ func (r *contextReader) Read(buffer []byte) (int, error) {
 	return count, nil
 }
 
-func (m *Manager) GetJob(ctx context.Context, jobID string) (*Job, error) {
-	if !validJobID(jobID) {
-		return nil, ErrJobNotFound
-	}
-	const query = `SELECT job_id, job_kind, owner, job_state, dry_run,
+const jobSelectColumns = `job_id, job_kind, owner, job_state, dry_run,
 conflict_policy, scope, artifact_sha256, artifact_path, artifact_expires_at,
 files_total, files_completed, parts_total, parts_completed, bytes_total,
 bytes_completed, mappings_created, mappings_replaced, files_created,
 error_code, error_message, cancel_requested, created_at, updated_at, completed_at,
-request_fingerprint
+request_fingerprint`
+
+func (m *Manager) GetJob(ctx context.Context, jobID string) (*Job, error) {
+	if !validJobID(jobID) {
+		return nil, ErrJobNotFound
+	}
+	query := `SELECT ` + jobSelectColumns + `
 FROM tg_backup_job_tab WHERE job_id = ?`
+	job, err := scanJob(queryJobRow(ctx, m.db, query, jobID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrJobNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read backup job: %w", err)
+	}
+	m.setArtifactAvailability(job)
+	return job, nil
+}
+
+func scanJob(scanner rowScanner) (*Job, error) {
 	var job Job
 	var dryRun, cancelRequested int
-	err := queryJobRow(ctx, m.db, query, jobID).Scan(
+	err := scanner.Scan(
 		&job.JobID,
 		&job.Kind,
 		&job.Owner,
@@ -391,21 +543,144 @@ FROM tg_backup_job_tab WHERE job_id = ?`
 		&job.CompletedAt,
 		&job.fingerprint,
 	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrJobNotFound
-	}
 	if err != nil {
-		return nil, fmt.Errorf("read backup job: %w", err)
+		return nil, fmt.Errorf("scan backup job: %w", err)
 	}
 	job.DryRun = dryRun != 0
 	job.cancelRequested = cancelRequested != 0
+	return &job, nil
+}
+
+func (m *Manager) setArtifactAvailability(job *Job) {
 	if job.State == "succeeded" && job.Kind == "export" && job.artifactPath != "" &&
 		filepath.Base(job.artifactPath) == job.artifactPath &&
 		(job.artifactExpiresAt == 0 || job.artifactExpiresAt > time.Now().UnixMilli()) {
 		_, err := os.Stat(filepath.Join(m.options.WorkDir, job.artifactPath))
 		job.ArtifactAvailable = err == nil
 	}
-	return &job, nil
+}
+
+func (m *Manager) ListJobs(
+	ctx context.Context,
+	request ListJobsRequest,
+) (*JobPage, error) {
+	if !validListJobsRequest(request) {
+		return nil, ErrInvalidRequest
+	}
+	cursorCreatedAt := int64(0)
+	cursorJobID := ""
+	if request.Cursor != nil {
+		cursorCreatedAt = request.Cursor.CreatedAt
+		cursorJobID = request.Cursor.JobID
+	}
+	rows, err := m.queryJobPage(
+		ctx,
+		request,
+		cursorCreatedAt,
+		cursorJobID,
+		request.Limit+1,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	jobs := make([]*Job, 0, request.Limit+1)
+	for rows.Next() {
+		job, err := scanJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan backup job page: %w", err)
+		}
+		m.setArtifactAvailability(job)
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate backup job page: %w", err)
+	}
+	page := &JobPage{}
+	if len(jobs) > request.Limit {
+		jobs = jobs[:request.Limit]
+		last := jobs[len(jobs)-1]
+		page.NextCursor = &JobCursor{CreatedAt: last.CreatedAt, JobID: last.JobID}
+	}
+	page.Jobs = jobs
+	return page, nil
+}
+
+func validListJobsRequest(request ListJobsRequest) bool {
+	if request.Limit < 1 || request.Limit > 200 {
+		return false
+	}
+	if request.Owner != "" && !validOwner(request.Owner) {
+		return false
+	}
+	if request.Kind != "" && request.Kind != "export" && request.Kind != "import" {
+		return false
+	}
+	if request.State != "" && !validJobState(request.State) {
+		return false
+	}
+	return request.Cursor == nil ||
+		request.Cursor.CreatedAt >= 1 && validJobID(request.Cursor.JobID)
+}
+
+func (m *Manager) queryJobPage(
+	ctx context.Context,
+	request ListJobsRequest,
+	cursorCreatedAt int64,
+	cursorJobID string,
+	limit int,
+) (*sql.Rows, error) {
+	const allJobsQuery = `SELECT ` + jobSelectColumns + `
+FROM tg_backup_job_tab
+WHERE (? = '' OR job_kind = ?)
+  AND (? = '' OR job_state = ?)
+  AND (? = 0 OR created_at < ? OR (created_at = ? AND job_id < ?))
+ORDER BY created_at DESC, job_id DESC
+LIMIT ?`
+	const ownerJobsQuery = `SELECT ` + jobSelectColumns + `
+FROM tg_backup_job_tab
+WHERE owner = ?
+  AND (? = '' OR job_kind = ?)
+  AND (? = '' OR job_state = ?)
+  AND (? = 0 OR created_at < ? OR (created_at = ? AND job_id < ?))
+ORDER BY created_at DESC, job_id DESC
+LIMIT ?`
+	var rows *sql.Rows
+	var err error
+	if request.Owner == "" {
+		rows, err = m.db.QueryContext(
+			ctx,
+			allJobsQuery,
+			request.Kind,
+			request.Kind,
+			request.State,
+			request.State,
+			cursorCreatedAt,
+			cursorCreatedAt,
+			cursorCreatedAt,
+			cursorJobID,
+			limit,
+		)
+	} else {
+		rows, err = m.db.QueryContext(
+			ctx,
+			ownerJobsQuery,
+			request.Owner,
+			request.Kind,
+			request.Kind,
+			request.State,
+			request.State,
+			cursorCreatedAt,
+			cursorCreatedAt,
+			cursorCreatedAt,
+			cursorJobID,
+			limit,
+		)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list backup jobs: %w", err)
+	}
+	return rows, nil
 }
 
 func (m *Manager) getJobByIdempotency(
@@ -1672,6 +1947,37 @@ func boolInt(value bool) int {
 
 func isTerminal(state string) bool {
 	return state == "succeeded" || state == "failed" || state == "canceled"
+}
+
+func validOwner(value string) bool {
+	if len(value) < 1 || len(value) > 256 {
+		return false
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func validJobState(state string) bool {
+	switch state {
+	case "receiving",
+		"queued",
+		"snapshotting",
+		"building",
+		"validating",
+		"staging",
+		"publishing",
+		"canceling",
+		"succeeded",
+		"failed",
+		"canceled":
+		return true
+	default:
+		return false
+	}
 }
 
 func classifyError(err error) string {

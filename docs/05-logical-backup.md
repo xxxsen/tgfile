@@ -32,6 +32,7 @@ BlockIO 后端。它保证：
 | `backupmgr` | 持久化 Job、幂等、异步执行、恢复、取消、报告、清理和指标 |
 | `filemgr` | snapshot、Export Pin、精确 Part restore、Composite 重建和原子发布 |
 | `server/handler/backup` | Basic Auth、backup 角色、HTTP 参数和 artifact 响应 |
+| `server/handler/admin` | 管理 Session、管理角色、Job 列表和浏览器上传下载 |
 | `cmd` | `backup export`、`backup verify`、`backup import` 离线入口 |
 | `maintenance` | Job、Pin、staged File、DeleteRef 和 work dir 的只读审计 |
 
@@ -211,6 +212,16 @@ backup 功能默认关闭。开启后，所有路由先通过 `user_info` Basic 
 artifact 支持 HEAD、Range 和 HTTP 条件请求，返回 Content-Length、媒体类型、下载文件名、
 带引号的 artifact SHA-256 ETag、摘要 header 和 `Cache-Control: private, no-store`。
 partial 文件永远不可下载。backup API 不接受普通 S3 Access Key 签名，也不接受 URL 拉取。
+
+管理后台是同一 Job 引擎的独立入口。`admin.enable` 可以在不暴露 `/backup/v2` 的情况下
+启动 backup manager；管理角色与 `backup.users` 互不继承。管理 Export 固定以登录用户名
+作为 owner，管理 Job 列表使用 `(created_at, job_id)` keyset 分页。`read` 只能查看、下载
+和取消自己的 Export；`read-write` 可以查看和取消所有可取消 Job，并执行 Import。
+
+直接 `/backup/v2/imports` 继续要求客户端提交 artifact SHA-256。管理 Import 面向浏览器，
+不要求浏览器预先计算摘要：manager 在接收 partial 文件时流式计算 SHA-256，完成 fsync 和
+原子 rename 后把实际值持久化到 Job，再进入 queued。两种入口共享空间检查、接收、状态机、
+归档校验、staging、发布和补偿逻辑。
 
 ## 9. 离线命令
 

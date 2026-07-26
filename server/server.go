@@ -20,6 +20,7 @@ import (
 	"github.com/xxxsen/common/webapi/proxyutil"
 
 	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/server/handler/admin"
 	"github.com/xxxsen/tgfile/server/handler/backup"
 	"github.com/xxxsen/tgfile/server/handler/file"
 	"github.com/xxxsen/tgfile/server/handler/s3"
@@ -34,17 +35,21 @@ func init() {
 	gin.SetMode(gin.ReleaseMode)
 }
 
+var errAdminBackupManagerRequired = errors.New("admin requires a backup manager")
+
 type Server struct {
 	c             *config
 	engine        webapi.IWebEngine
 	bind          string
 	s3            *s3.S3Handler
 	webdavHandler *webdav.WebdavHandler
+	adminHandler  *admin.Handler
 }
 
 func New(bind string, opts ...Option) (*Server, error) {
 	c := applyOpts(opts...)
 	svr := &Server{c: c, bind: bind}
+	var err error
 	if c.webdav.Enabled {
 		if err := cleanupStaleWebDAVUploads(c.webdav.UploadTempDir, 24*time.Hour); err != nil {
 			return nil, err
@@ -65,7 +70,26 @@ func New(bind string, opts ...Option) (*Server, error) {
 			Users:                c.userMap,
 		})
 	}
-	var err error
+	if c.admin.Enabled {
+		if c.backupManager == nil {
+			return nil, errAdminBackupManagerRequired
+		}
+		svr.adminHandler, err = admin.New(admin.Options{
+			FileManager:      c.fmgr,
+			BackupManager:    c.backupManager,
+			Users:            c.userMap,
+			Roles:            c.admin.Users,
+			ExternalOrigin:   c.admin.ExternalOrigin,
+			SessionIdle:      c.admin.SessionIdle,
+			SessionMaximum:   c.admin.SessionMaximum,
+			MaxUploadSize:    c.admin.MaxUploadSize,
+			MaxPathBytes:     c.admin.MaxPathBytes,
+			MutationMaxItems: c.admin.MaxMutationEntries,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("initialize admin handler: %w", err)
+		}
+	}
 	svr.engine, err = webapi.NewEngine(
 		"/",
 		bind,
@@ -83,6 +107,10 @@ func New(bind string, opts ...Option) (*Server, error) {
 
 func (s *Server) initAPI(router *gin.RouterGroup) {
 	mustAuthMiddleware := middleware.MustAuthMiddleware()
+
+	if s.adminHandler != nil {
+		s.adminHandler.Register(router)
+	}
 
 	// handler here
 	fileHandler := file.NewFileHandler(s.c.fmgr)
@@ -167,7 +195,7 @@ func (s *Server) noRoute(c *gin.Context) {
 	}
 	first, _, _ := strings.Cut(strings.TrimPrefix(c.Request.URL.Path, "/"), "/")
 	switch first {
-	case "", "file", "static", "backup", "webdav":
+	case "", "_admin", "file", "static", "backup", "webdav":
 		c.Status(http.StatusNotFound)
 		return
 	}
@@ -193,6 +221,9 @@ func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if s.c != nil && s.c.webdav.Enabled && isWebDAVRequestPath(request.URL.Path) {
 		writer.Header().Set("Cache-Control", "private, no-cache")
 		writer.Header().Set("Vary", "Authorization")
+	}
+	if s.adminHandler != nil {
+		request = admin.PreserveUnknownContentLength(request)
 	}
 	prepared, closePrepared, ok := s.prepareWebDAVPut(writer, request)
 	if !ok {

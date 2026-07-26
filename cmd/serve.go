@@ -110,7 +110,7 @@ func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger 
 	}
 	logServerFeatures(serviceConfig, appLogger)
 	var backupManager *backupmgr.Manager
-	if serviceConfig.Backup.Enable {
+	if serviceConfig.Backup.Enable || serviceConfig.Admin.Enable {
 		backupManager, err = buildBackupManager(serviceConfig, fileManager)
 		if err != nil {
 			return err
@@ -135,6 +135,12 @@ func logServerFeatures(serviceConfig *config.Config, appLogger *zap.Logger) {
 		"-- webdav feature",
 		zap.Bool("enable", serviceConfig.Webdav.Enable),
 		zap.String("root", serviceConfig.Webdav.Root),
+	)
+	appLogger.Info(
+		"-- admin feature",
+		zap.Bool("enable", serviceConfig.Admin.Enable),
+		zap.String("external_origin", serviceConfig.Admin.ExternalOrigin),
+		zap.Int("user_count", len(serviceConfig.Admin.Users)),
 	)
 	appLogger.Info("current cache config")
 	appLogger.Info(
@@ -179,6 +185,7 @@ func buildHTTPServer(
 			Enabled: serviceConfig.Backup.Enable,
 			Users:   serviceConfig.Backup.Users,
 		}, backupManager),
+		server.WithAdmin(toServerAdminOptions(serviceConfig.Admin, serviceConfig)),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("init server: %w", err)
@@ -265,10 +272,26 @@ func toBackupManagerOptions(
 			MaxUserMetaBytes: backupfmt.DefaultLimits().MaxUserMetaBytes,
 		},
 		RequiredBuckets:   buckets,
-		SchemaVersion:     12,
+		SchemaVersion:     13,
 		MaxPartSize:       maxPartSize,
 		ArtifactRetention: time.Duration(serviceConfig.Backup.ArtifactRetentionHours) * time.Hour,
 		JobRetention:      time.Duration(serviceConfig.Backup.JobRetentionDays) * 24 * time.Hour,
+	}
+}
+
+func toServerAdminOptions(
+	input config.AdminConfig,
+	serviceConfig *config.Config,
+) server.AdminOptions {
+	return server.AdminOptions{
+		Enabled:            input.Enable,
+		ExternalOrigin:     input.ExternalOrigin,
+		Users:              input.Users,
+		SessionIdle:        time.Duration(input.SessionIdleMinutes) * time.Minute,
+		SessionMaximum:     time.Duration(input.SessionMaxHours) * time.Hour,
+		MaxUploadSize:      input.MaxUploadSize,
+		MaxPathBytes:       serviceConfig.Backup.MaxPathBytes,
+		MaxMutationEntries: serviceConfig.Webdav.MaxMutationEntries,
 	}
 }
 

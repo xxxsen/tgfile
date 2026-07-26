@@ -8,6 +8,18 @@ import (
 
 type DirectoryScanCallbackFunc func(ctx context.Context, res []IDirectoryEntry) (bool, error)
 
+type PageCursor struct {
+	IsDir   bool
+	Name    string
+	EntryID uint64
+}
+
+type DirectoryPage struct {
+	ParentEntryID uint64
+	Entries       []IDirectoryEntry
+	HasMore       bool
+}
+
 type IDirectoryEntryIdentity interface {
 	EntryID() uint64
 	RefData() string
@@ -37,6 +49,12 @@ type IDirectoryWriter interface {
 
 type IDirectoryReader interface {
 	List(ctx context.Context, dir string) ([]IDirectoryEntry, error)
+	ListPage(
+		ctx context.Context,
+		dir string,
+		cursor *PageCursor,
+		limit uint,
+	) (*DirectoryPage, error)
 	Iterate(ctx context.Context, dir string, batch uint, cb DirectoryScanCallbackFunc) error
 	Stat(ctx context.Context, filename string) (IDirectoryEntry, error)
 	Scan(ctx context.Context, batch uint, cb DirectoryScanCallbackFunc) error

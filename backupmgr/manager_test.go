@@ -7,9 +7,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -210,6 +213,125 @@ func TestImportDryRunAndIdempotencyDoNotWriteBusinessData(t *testing.T) {
 	require.Zero(t, queryInt(t, targetDB, "SELECT COUNT(*) FROM tg_file_mapping_tab"))
 }
 
+func TestCreateImportUploadComputesChecksumAndDirectImportStillVerifiesIt(t *testing.T) {
+	sourceDB, sourceFiles := newBackupTestStorage(t, 4)
+	fileID, err := sourceFiles.CreateFile(t.Context(), 3, bytes.NewBufferString("abc"))
+	require.NoError(t, err)
+	require.NoError(t, sourceFiles.CreateFileLink(t.Context(), "/data.bin", fileID, 3, false))
+	sourceManager := newBackupTestManager(
+		t,
+		sourceDB,
+		sourceFiles,
+		filepath.Join(t.TempDir(), "source"),
+	)
+	exportJob, err := sourceManager.CreateExport(t.Context(), backupmgr.CreateExportRequest{
+		Owner: "operator", IdempotencyKey: "server-hash-export", Scope: "/",
+	})
+	require.NoError(t, err)
+	_, err = sourceManager.ProcessUntilTerminal(t.Context(), exportJob.JobID)
+	require.NoError(t, err)
+	artifact, _, err := sourceManager.Artifact(t.Context(), exportJob.JobID)
+	require.NoError(t, err)
+	raw, err := os.ReadFile(artifact)
+	require.NoError(t, err)
+	sum := sha256.Sum256(raw)
+	expected := hex.EncodeToString(sum[:])
+
+	targetDB, targetFiles := newBackupTestStorage(t, 4)
+	targetManager := newBackupTestManager(
+		t,
+		targetDB,
+		targetFiles,
+		filepath.Join(t.TempDir(), "target"),
+	)
+	importJob, err := targetManager.CreateImportUpload(
+		t.Context(),
+		backupmgr.CreateImportUploadRequest{
+			Owner: "operator", IdempotencyKey: "server-hash-import",
+			ConflictPolicy: "fail", DryRun: true,
+			ContentLength: int64(len(raw)), Body: bytes.NewReader(raw),
+		},
+	)
+	require.NoError(t, err)
+	require.Equal(t, expected, importJob.ArtifactSHA256)
+	importJob, err = targetManager.ProcessUntilTerminal(t.Context(), importJob.JobID)
+	require.NoError(t, err)
+	require.Equal(t, "succeeded", importJob.State)
+	require.Zero(t, queryInt(t, targetDB, "SELECT COUNT(*) FROM tg_file_tab"))
+
+	_, err = targetManager.CreateImport(t.Context(), backupmgr.CreateImportRequest{
+		Owner: "operator", IdempotencyKey: "bad-client-hash",
+		ConflictPolicy: "fail", DryRun: true,
+		ContentLength:  int64(len(raw)),
+		ArtifactSHA256: strings.Repeat("0", sha256.Size*2),
+		Body:           bytes.NewReader(raw),
+	})
+	require.ErrorIs(t, err, backupfmt.ErrChecksum)
+}
+
+func TestListJobsUsesOwnerFiltersAndKeysetPagination(t *testing.T) {
+	databaseClient, files := newBackupTestStorage(t, 8)
+	manager := newBackupTestManager(
+		t,
+		databaseClient,
+		files,
+		filepath.Join(t.TempDir(), "work"),
+	)
+	for index, owner := range []string{"reader", "operator", "reader", "operator", "reader"} {
+		_, err := manager.CreateExport(t.Context(), backupmgr.CreateExportRequest{
+			Owner: owner, IdempotencyKey: fmt.Sprintf("list-export-%d", index), Scope: "/",
+		})
+		require.NoError(t, err)
+	}
+
+	var (
+		cursor *backupmgr.JobCursor
+		all    []*backupmgr.Job
+	)
+	for {
+		page, err := manager.ListJobs(t.Context(), backupmgr.ListJobsRequest{
+			Cursor: cursor, Limit: 2,
+		})
+		require.NoError(t, err)
+		all = append(all, page.Jobs...)
+		cursor = page.NextCursor
+		if cursor == nil {
+			break
+		}
+	}
+	require.Len(t, all, 5)
+	seen := make(map[string]struct{}, len(all))
+	for _, job := range all {
+		_, duplicate := seen[job.JobID]
+		require.False(t, duplicate)
+		seen[job.JobID] = struct{}{}
+	}
+	require.True(t, sort.SliceIsSorted(all, func(left, right int) bool {
+		if all[left].CreatedAt != all[right].CreatedAt {
+			return all[left].CreatedAt > all[right].CreatedAt
+		}
+		return all[left].JobID > all[right].JobID
+	}))
+
+	reader, err := manager.ListJobs(t.Context(), backupmgr.ListJobsRequest{
+		Owner: "reader", Kind: "export", State: "queued", Limit: 10,
+	})
+	require.NoError(t, err)
+	require.Len(t, reader.Jobs, 3)
+	for _, job := range reader.Jobs {
+		require.Equal(t, "reader", job.Owner)
+		require.Equal(t, "export", job.Kind)
+		require.Equal(t, "queued", job.State)
+	}
+
+	_, err = manager.ListJobs(t.Context(), backupmgr.ListJobsRequest{Limit: 201})
+	require.ErrorIs(t, err, backupmgr.ErrInvalidRequest)
+	_, err = manager.ListJobs(t.Context(), backupmgr.ListJobsRequest{
+		State: "unknown", Limit: 1,
+	})
+	require.ErrorIs(t, err, backupmgr.ErrInvalidRequest)
+}
+
 func TestInvalidImportWritesSafeReportAndRemovesReceivedArtifact(t *testing.T) {
 	databaseClient, files := newBackupTestStorage(t, 8)
 	workDir := filepath.Join(t.TempDir(), "work")
@@ -277,7 +399,7 @@ func TestImportDoesNotBecomeTerminalBeforeDurableCompensation(t *testing.T) {
 		},
 		backupmgr.Options{
 			WorkDir: filepath.Join(t.TempDir(), "work"),
-			Limits:  backupfmt.DefaultLimits(), SchemaVersion: 12,
+			Limits:  backupfmt.DefaultLimits(), SchemaVersion: 13,
 			MaxPartSize:       files.BackupMaxPartSize(),
 			ArtifactRetention: time.Hour, JobRetention: 24 * time.Hour,
 		},
@@ -526,7 +648,7 @@ func newBackupTestManager(
 	manager, err := backupmgr.New(databaseClient, files, backupmgr.Options{
 		WorkDir: workDir, Limits: backupfmt.DefaultLimits(),
 		RequiredBuckets: []backupfmt.RequiredBucket{{Name: "bucket", ACL: "private"}},
-		SchemaVersion:   12, MaxPartSize: files.BackupMaxPartSize(),
+		SchemaVersion:   13, MaxPartSize: files.BackupMaxPartSize(),
 		ArtifactRetention: time.Hour, JobRetention: 24 * time.Hour,
 	})
 	require.NoError(t, err)

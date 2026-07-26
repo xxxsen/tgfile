@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"go.uber.org/zap"
@@ -39,6 +41,10 @@ func (c *Config) SafeLogFields() []zap.Field {
 		zap.Int("backup_user_count", len(c.Backup.Users)),
 		zap.Int64("backup_max_archive_bytes", c.Backup.MaxArchiveBytes),
 		zap.Int64("backup_max_expanded_bytes", c.Backup.MaxExpandedBytes),
+		zap.Bool("admin_enable", c.Admin.Enable),
+		zap.String("admin_external_origin", c.Admin.ExternalOrigin),
+		zap.Int("admin_user_count", len(c.Admin.Users)),
+		zap.Int64("admin_max_upload_size", c.Admin.MaxUploadSize),
 		zap.Bool("l1_cache_enable", c.IOCache.EnableL1Cache),
 		zap.Int("l1_cache_size", c.IOCache.L1CacheSize),
 		zap.Bool("l2_cache_enable", c.IOCache.EnableL2Cache),
@@ -103,6 +109,15 @@ type BackupConfig struct {
 	JobRetentionDays       int               `json:"job_retention_days"`
 }
 
+type AdminConfig struct {
+	Enable             bool              `json:"enable"`
+	ExternalOrigin     string            `json:"external_origin"`
+	Users              map[string]string `json:"users"`
+	SessionIdleMinutes int               `json:"session_idle_minutes"`
+	SessionMaxHours    int               `json:"session_max_hours"`
+	MaxUploadSize      int64             `json:"max_upload_size"`
+}
+
 type Config struct {
 	Bind         string            `json:"bind"`
 	LogInfo      logger.LogConfig  `json:"log_info"`
@@ -115,6 +130,7 @@ type Config struct {
 	Webdav       WebdavConfig      `json:"webdav"`
 	IOCache      IOCacheConfig     `json:"io_cache"`
 	Backup       BackupConfig      `json:"backup"`
+	Admin        AdminConfig       `json:"admin"`
 }
 
 func Parse(f string) (*Config, error) {
@@ -157,6 +173,10 @@ const (
 	defaultBackupMaxPathBytes             = 1024
 	defaultArtifactRetentionHours         = 24
 	defaultBackupJobRetentionDays         = 30
+	defaultAdminSessionIdleMinutes        = 30
+	defaultAdminSessionMaxHours           = 12
+	defaultAdminMaxUploadSize       int64 = 5 * 1024 * 1024 * 1024
+	maxAdminUploadSize              int64 = 10 * 1024 * 1024 * 1024 * 1024
 	maxBackupArchiveBytes           int64 = 10 * 1024 * 1024 * 1024 * 1024
 	maxBackupExpandedBytes          int64 = 100 * 1024 * 1024 * 1024 * 1024
 )
@@ -174,7 +194,183 @@ func (c *Config) Validate() error {
 	if err := c.validateBackup(); err != nil {
 		return err
 	}
+	if err := c.validateAdmin(); err != nil {
+		return err
+	}
 	return c.validateBlockIO()
+}
+
+func (c *Config) validateAdmin() error {
+	if !c.Admin.Enable {
+		return nil
+	}
+	origin, err := normalizeAdminOrigin(c.Admin.ExternalOrigin)
+	if err != nil {
+		return err
+	}
+	c.Admin.ExternalOrigin = origin
+	if err := c.validateAdminUsers(); err != nil {
+		return err
+	}
+	if err := c.validateAdminSession(); err != nil {
+		return err
+	}
+	return c.validateAdminUploadSize()
+}
+
+func (c *Config) validateAdminUsers() error {
+	if len(c.Admin.Users) == 0 {
+		return fmt.Errorf("%w: admin.users must not be empty when admin is enabled", errInvalidConfig)
+	}
+	for username, role := range c.Admin.Users {
+		password, exists := c.UserInfo[username]
+		if !exists || password == "" || len(password) > 4096 {
+			return fmt.Errorf(
+				"%w: admin.users references unknown or empty-password user %q",
+				errInvalidConfig,
+				username,
+			)
+		}
+		if username == "" || len(username) > 256 ||
+			strings.IndexFunc(username, isControlCharacter) >= 0 {
+			return fmt.Errorf("%w: admin username %q is invalid", errInvalidConfig, username)
+		}
+		if role != "read" && role != "read-write" {
+			return fmt.Errorf(
+				"%w: admin.users[%q] must be read or read-write",
+				errInvalidConfig,
+				username,
+			)
+		}
+	}
+	return nil
+}
+
+func (c *Config) validateAdminSession() error {
+	if c.Admin.SessionIdleMinutes == 0 {
+		c.Admin.SessionIdleMinutes = defaultAdminSessionIdleMinutes
+	}
+	if c.Admin.SessionIdleMinutes < 5 || c.Admin.SessionIdleMinutes > 120 {
+		return fmt.Errorf(
+			"%w: admin.session_idle_minutes must be between 5 and 120",
+			errInvalidConfig,
+		)
+	}
+	if c.Admin.SessionMaxHours == 0 {
+		c.Admin.SessionMaxHours = defaultAdminSessionMaxHours
+	}
+	if c.Admin.SessionMaxHours < 1 || c.Admin.SessionMaxHours > 24 ||
+		c.Admin.SessionMaxHours*60 <= c.Admin.SessionIdleMinutes {
+		return fmt.Errorf(
+			"%w: admin.session_max_hours must be between 1 and 24 and exceed the idle timeout",
+			errInvalidConfig,
+		)
+	}
+	return nil
+}
+
+func (c *Config) validateAdminUploadSize() error {
+	if c.Admin.MaxUploadSize == 0 {
+		c.Admin.MaxUploadSize = c.S3.MaxObjectSize
+		if c.Admin.MaxUploadSize == 0 {
+			c.Admin.MaxUploadSize = defaultAdminMaxUploadSize
+		}
+	}
+	if c.Admin.MaxUploadSize < 1 || c.Admin.MaxUploadSize > maxAdminUploadSize {
+		return fmt.Errorf(
+			"%w: admin.max_upload_size is outside the supported range",
+			errInvalidConfig,
+		)
+	}
+	if c.BotKind == "telegram" &&
+		c.Admin.MaxUploadSize > maxFilePartCount*telegramBlockSize {
+		return fmt.Errorf(
+			"%w: admin.max_upload_size exceeds Telegram storage limit",
+			errInvalidConfig,
+		)
+	}
+	return nil
+}
+
+func normalizeAdminOrigin(value string) (string, error) {
+	origin, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return "", invalidAdminOriginError()
+	}
+	if !validAdminOriginShape(origin) {
+		return "", invalidAdminOriginError()
+	}
+	hostname := strings.ToLower(origin.Hostname())
+	port := canonicalAdminOriginPort(origin.Scheme, origin.Port())
+	if origin.Scheme == "http" && !isLoopbackHostname(hostname) {
+		return "", fmt.Errorf(
+			"%w: admin.external_origin must use HTTPS outside loopback",
+			errInvalidConfig,
+		)
+	}
+	host := canonicalAdminOriginHost(hostname, port)
+	return origin.Scheme + "://" + host, nil
+}
+
+func validAdminOriginShape(origin *url.URL) bool {
+	if origin.Scheme != "http" && origin.Scheme != "https" {
+		return false
+	}
+	if origin.Host == "" || origin.Hostname() == "" || origin.User != nil ||
+		!validAdminOriginPort(origin.Port()) {
+		return false
+	}
+	if origin.Path != "" && origin.Path != "/" {
+		return false
+	}
+	return origin.RawQuery == "" && origin.Fragment == ""
+}
+
+func validAdminOriginPort(port string) bool {
+	if port == "" {
+		return true
+	}
+	value, err := strconv.Atoi(port)
+	return err == nil && value >= 1 && value <= 65535
+}
+
+func canonicalAdminOriginPort(scheme, port string) string {
+	if scheme == "http" && port == "80" {
+		return ""
+	}
+	if scheme == "https" && port == "443" {
+		return ""
+	}
+	return port
+}
+
+func canonicalAdminOriginHost(hostname, port string) string {
+	if port != "" {
+		return net.JoinHostPort(hostname, port)
+	}
+	if strings.Contains(hostname, ":") {
+		return "[" + hostname + "]"
+	}
+	return hostname
+}
+
+func invalidAdminOriginError() error {
+	return fmt.Errorf(
+		"%w: admin.external_origin must be an HTTP(S) origin without a path",
+		errInvalidConfig,
+	)
+}
+
+func isLoopbackHostname(hostname string) bool {
+	if strings.EqualFold(hostname, "localhost") {
+		return true
+	}
+	address := net.ParseIP(hostname)
+	return address != nil && address.IsLoopback()
+}
+
+func isControlCharacter(value rune) bool {
+	return value < 0x20 || value == 0x7f
 }
 
 func (c *Config) validateBackup() error {

@@ -6,7 +6,7 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
 
 ## 配置
 
-下面是 Telegram + S3 的最小完整示例：
+下面是包含 Telegram、S3、WebDAV、逻辑备份与管理后台的完整配置示例：
 
 ```json
 {
@@ -23,7 +23,9 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
     "upload_min_interval_ms": 1000
   },
   "user_info": {
-    "access-key": "secret-key"
+    "access-key": "secret-key",
+    "admin-viewer": "viewer-password",
+    "admin-operator": "operator-password"
   },
   "s3": {
     "enable": true,
@@ -68,6 +70,17 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
     "artifact_retention_hours": 24,
     "job_retention_days": 30
   },
+  "admin": {
+    "enable": true,
+    "external_origin": "https://files.example.com",
+    "users": {
+      "admin-viewer": "read",
+      "admin-operator": "read-write"
+    },
+    "session_idle_minutes": 30,
+    "session_max_hours": 12,
+    "max_upload_size": 5368709120
+  },
   "io_cache": {
     "enable_l1_cache": true,
     "l1_cache_size": 16777216,
@@ -106,6 +119,18 @@ WebDAV root 内唯一 File 计费，COPY 同一内容不会重复计费。
 导出、查询自己的任务和下载自己的归档；`read-write` 还可以导入、查看全部任务、取消任务
 和读取备份指标。`work_dir` 必须是绝对路径并预留归档空间；服务创建该目录为 `0700`，
 其中 artifact、snapshot 和报告为 `0600`。
+
+Web 管理后台默认关闭。启用后访问 `https://files.example.com/_admin/`，账号密码来自
+`user_info`，权限由独立的 `admin.users` 指定：`read` 可以浏览、下载、导出及管理自己的
+导出任务，`read-write` 还可以上传、条件覆盖、导入及管理全部任务。建议使用不与 S3
+Access Key 共用的专用高强度账号。
+
+`admin.external_origin` 必须是浏览器实际访问的 origin，用于登录和所有写请求的严格 Origin
+校验；生产环境只接受 HTTPS，本地 loopback 测试可以使用 HTTP。Session 只保存在进程内存，
+服务重启后需要重新登录。`admin.enable` 与 `backup.enable` 相互独立；只启用管理后台时也会
+启动持久化导入导出 worker，但不会暴露 `/backup/v2` Basic Auth API。`backup.work_dir`
+仍必须位于持久化 volume，并为导入归档和导出 artifact 预留足够空间。反向代理的请求体
+上限和读写超时必须覆盖 `admin.max_upload_size` 与 `backup.max_archive_bytes`。
 
 启动前可执行无副作用校验；该命令不会初始化日志、SQLite、Telegram、缓存或 HTTP：
 
@@ -328,9 +353,11 @@ make install-golangci-lint
 make check
 ```
 
-`make dev` 默认使用 `.dev-data/` 中的 localfile 和 SQLite，不连接 Telegram。开发参数可由
-`TGFILE_DEV_HOST`、`TGFILE_DEV_PORT`、`TGFILE_DEV_DATA_DIR`、`TGFILE_DEV_BUCKET`、
-`TGFILE_DEV_USERNAME` 和 `TGFILE_DEV_PASSWORD` 覆盖。
+`make dev` 默认使用 `.dev-data/` 中的 localfile 和 SQLite，不连接 Telegram，并启用
+S3、WebDAV 和 Web 管理后台。管理后台地址为 `http://localhost:9901/_admin/`，默认账号
+密码为 `test / test`，仅限本地开发使用。开发参数可由 `TGFILE_DEV_HOST`、
+`TGFILE_DEV_PORT`、`TGFILE_DEV_DATA_DIR`、`TGFILE_DEV_BUCKET`、`TGFILE_DEV_USERNAME`、
+`TGFILE_DEV_PASSWORD` 和 `TGFILE_DEV_ADMIN_ORIGIN` 覆盖。
 
 ## 设计文档
 
@@ -339,3 +366,4 @@ make check
 - [核心流程与接口设计](docs/03-core-flows-and-api.md)
 - [WebDAV 协议与资源模型](docs/04-webdav-protocol.md)
 - [逻辑备份格式与恢复模型](docs/05-logical-backup.md)
+- [Web 管理后台](docs/06-web-management.md)

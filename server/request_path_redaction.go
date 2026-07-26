@@ -13,8 +13,9 @@ const redactedPathComponent = "_redacted_"
 type originalRequestPathKey struct{}
 
 type originalRequestPath struct {
-	path    string
-	rawPath string
+	path     string
+	rawPath  string
+	rawQuery string
 }
 
 func (s *Server) requestWithRedactedLogPath(request *http.Request) *http.Request {
@@ -23,19 +24,26 @@ func (s *Server) requestWithRedactedLogPath(request *http.Request) *http.Request
 		return request
 	}
 	original := originalRequestPath{
-		path:    request.URL.Path,
-		rawPath: request.URL.RawPath,
+		path:     request.URL.Path,
+		rawPath:  request.URL.RawPath,
+		rawQuery: request.URL.RawQuery,
 	}
 	ctx := context.WithValue(request.Context(), originalRequestPathKey{}, original)
 	clone := request.Clone(ctx)
 	cloneURL := *request.URL
 	cloneURL.Path = redacted
 	cloneURL.RawPath = ""
+	if strings.HasPrefix(request.URL.Path, "/_admin/api/") {
+		cloneURL.RawQuery = ""
+	}
 	clone.URL = &cloneURL
 	return clone
 }
 
 func (s *Server) redactedRequestPath(requestPath string) (string, bool) {
+	if strings.HasPrefix(requestPath, "/_admin/api/") {
+		return "/_admin/api/" + redactedPathComponent, true
+	}
 	for _, prefix := range []string{"/file/download/", "/file/meta/"} {
 		if strings.HasPrefix(requestPath, prefix) && len(requestPath) > len(prefix) {
 			return prefix + redactedPathComponent, true
@@ -55,7 +63,7 @@ func (s *Server) redactedRequestPath(requestPath string) (string, bool) {
 		return requestPath, false
 	}
 	switch bucketName {
-	case "", "backup", "file", "static", "webdav":
+	case "", "_admin", "backup", "file", "static", "webdav":
 		return requestPath, false
 	}
 	return "/" + bucketName + "/" + redactedPathComponent, true
@@ -67,9 +75,22 @@ func restoreOriginalRequestPath(c *gin.Context) {
 		c.Next()
 		return
 	}
+	redacted := originalRequestPath{
+		path:     c.Request.URL.Path,
+		rawPath:  c.Request.URL.RawPath,
+		rawQuery: c.Request.URL.RawQuery,
+	}
+	redactedParams := append(gin.Params(nil), c.Params...)
+	defer func() {
+		c.Request.URL.Path = redacted.path
+		c.Request.URL.RawPath = redacted.rawPath
+		c.Request.URL.RawQuery = redacted.rawQuery
+		c.Params = redactedParams
+	}()
 	cloneURL := *c.Request.URL
 	cloneURL.Path = original.path
 	cloneURL.RawPath = original.rawPath
+	cloneURL.RawQuery = original.rawQuery
 	c.Request.URL = &cloneURL
 	restoreOriginalPathParameters(c, original.path)
 	c.Next()
