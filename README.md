@@ -285,6 +285,40 @@ make soak SOAK_CLIENT_DELAY=20ms SOAK_BACKEND_DELAY=50ms
 Mapping、localfile block 和 spool 文件。失败时临时工作目录会保留并输出；成功时自动删除。
 `SOAK_SEED` 可用于复现相同的数据和场景顺序。
 
+S3/WebDAV 本地压力测试同样只允许用户手动执行，不属于 `make check` 或 CI。它默认关闭
+客户端和 mock 后端延迟，按 1、4、8、16、32 并发各运行 1 分钟，再以单并发运行 30 秒恢复
+验证：
+
+```bash
+make stress
+make stress STRESS_STEPS=1,8,16,32,64 STRESS_STEP_DURATION=2m
+make stress STRESS_PROFILE=s3
+make stress STRESS_PROFILE=webdav
+make stress STRESS_PROFILE=cross
+make stress STRESS_MAX_ERROR_RATE=0.005 STRESS_MAX_P99=2s
+make stress STRESS_MUTATION_INTERVAL=100
+make stress STRESS_CLIENT_DELAY=10ms STRESS_BACKEND_DELAY=20ms
+make stress STRESS_SEED=1785000000
+```
+
+`STRESS_PROFILE` 支持 `mixed`、`s3`、`webdav` 和 `cross`。默认负载使用受控 fixture
+执行高频 S3 HEAD/GET、WebDAV PROPFIND/GET 和跨协议读取；每 1000 个操作插入一次对应
+profile 的完整写删生命周期，覆盖 S3 PUT/DELETE、WebDAV PUT/DELETE 以及 S3 写入、
+WebDAV 读取/覆盖、S3 回读、WebDAV 删除组成的跨协议路径。`mixed` 均匀混合三类负载。
+`STRESS_MUTATION_INTERVAL` 可调整写删周期；数值越小，写压力和 durable outbox 积压越大，
+最终清理所需时间也越长。
+
+每个并发阶梯输出操作数、请求数、吞吐、操作错误率、HTTP 4xx/5xx，以及请求和完整操作的
+p50/p95/p99/mean/max 延迟。默认在操作错误率超过 1% 或请求 p99 超过 5 秒时停止继续升压；
+阈值可分别用 `STRESS_MAX_ERROR_RATE` 和 `STRESS_MAX_P99` 调整。单次操作默认 15 秒超时，
+可通过 `STRESS_OPERATION_TIMEOUT` 调整。
+
+压力阈值被突破、恢复阶段仍有错误或最终审计失败时命令返回非零，并保留输出中列出的临时
+工作目录；无论是否触及压力阈值，测试都会尝试执行单并发恢复验证、资源清理和与 soak 相同的
+SQLite/Mapping/outbox/localfile/spool 一致性审计。该测试使用临时 SQLite、loopback HTTP
+和 localfile mock，不会连接 Telegram，因此结果用于比较版本、定位进程内瓶颈和验证过载
+恢复，不代表 Telegram 生产链路的绝对容量。
+
 ## 设计文档
 
 - [系统架构](docs/01-architecture.md)

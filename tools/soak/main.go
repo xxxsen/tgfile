@@ -1,4 +1,4 @@
-// Command soak runs the manually triggered local S3 and WebDAV stability test.
+// Command soak runs manually triggered local S3 and WebDAV protocol tests.
 package main
 
 import (
@@ -22,6 +22,8 @@ import (
 )
 
 const (
+	testModeSoak          = "soak"
+	testModeStress        = "stress"
 	defaultSoakDuration   = 15 * time.Minute
 	defaultSoakWorkers    = 4
 	defaultClientDelay    = 5 * time.Millisecond
@@ -31,6 +33,7 @@ const (
 )
 
 var (
+	errInvalidTestMode     = errors.New("invalid protocol test mode")
 	errInvalidDuration     = errors.New("TGFILE_SOAK_DURATION must be a positive duration")
 	errInvalidWorkers      = errors.New("TGFILE_SOAK_WORKERS must be a positive integer")
 	errInvalidSeed         = errors.New("TGFILE_SOAK_SEED must be an integer")
@@ -60,12 +63,23 @@ type outputEvent struct {
 
 func main() {
 	if err := execute(); err != nil {
-		log.New(os.Stderr, "tgfile soak: ", 0).Print(err)
+		log.New(os.Stderr, "tgfile protocol test: ", 0).Print(err)
 		os.Exit(1)
 	}
 }
 
 func execute() error {
+	mode, err := requestedMode(os.Args[1:])
+	if err != nil {
+		return err
+	}
+	if mode == testModeStress {
+		return executeStress()
+	}
+	return executeSoak()
+}
+
+func executeSoak() error {
 	config, err := loadSoakConfig()
 	if err != nil {
 		return err
@@ -108,6 +122,21 @@ func execute() error {
 		Workspace:   workspace,
 		SoakSummary: summary,
 	})
+}
+
+func requestedMode(arguments []string) (string, error) {
+	if len(arguments) == 0 {
+		return testModeSoak, nil
+	}
+	if len(arguments) != 1 {
+		return "", fmt.Errorf("%w: expected soak or stress", errInvalidTestMode)
+	}
+	switch arguments[0] {
+	case testModeSoak, testModeStress:
+		return arguments[0], nil
+	default:
+		return "", fmt.Errorf("%w: %q", errInvalidTestMode, arguments[0])
+	}
 }
 
 func loadSoakConfig() (soakConfig, error) {
@@ -165,17 +194,39 @@ func parseNonNegativeDuration(raw string, invalid error) (time.Duration, error) 
 }
 
 func runLocalSoak(config soakConfig, workspace string) (*soakSummary, error) {
+	localConfig := localTestConfig{
+		seed:         config.seed,
+		clientDelay:  config.clientDelay,
+		backendDelay: config.backendDelay,
+	}
+	return runLocalProtocolTest(localConfig, workspace, func(runner *soakRunner) (*soakSummary, error) {
+		return runner.run(config.duration, config.workers)
+	})
+}
+
+type localTestConfig struct {
+	seed         uint64
+	clientDelay  time.Duration
+	backendDelay time.Duration
+}
+
+func runLocalProtocolTest[T any](
+	config localTestConfig,
+	workspace string,
+	run func(*soakRunner) (T, error),
+) (T, error) {
+	var zero T
 	logger.Init(filepath.Join(workspace, "server.log"), "error", 1, 10*1024*1024, 1, false)
 	databaseClient, err := db.Open(filepath.Join(workspace, "soak.db"))
 	if err != nil {
-		return nil, fmt.Errorf("open soak database: %w", err)
+		return zero, fmt.Errorf("open protocol test database: %w", err)
 	}
 	defer func() {
 		_ = databaseClient.Close()
 	}()
 	block, err := localfile.New(filepath.Join(workspace, "blocks"), localBlockSize)
 	if err != nil {
-		return nil, fmt.Errorf("create localfile backend: %w", err)
+		return zero, fmt.Errorf("create localfile backend: %w", err)
 	}
 	block = newSlowBlockIO(block, config.backendDelay, defaultDelayChunkSize)
 	cache, err := filemgr.NewFileIOCache(&filemgr.FileIOCacheConfig{
@@ -183,7 +234,7 @@ func runLocalSoak(config soakConfig, workspace string) (*soakSummary, error) {
 		DisableL2Cache: true,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create file cache: %w", err)
+		return zero, fmt.Errorf("create file cache: %w", err)
 	}
 	manager := filemgr.NewFileManager(databaseClient, block, cache)
 	handler, err := server.New(
@@ -210,7 +261,7 @@ func runLocalSoak(config soakConfig, workspace string) (*soakSummary, error) {
 		server.WithFileManager(manager),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("create soak HTTP server: %w", err)
+		return zero, fmt.Errorf("create protocol test HTTP server: %w", err)
 	}
 	testServer := httptest.NewServer(handler)
 	defer testServer.Close()
@@ -238,7 +289,7 @@ func runLocalSoak(config soakConfig, workspace string) (*soakSummary, error) {
 		config.seed,
 		config.clientDelay,
 	)
-	return runner.run(config.duration, config.workers)
+	return run(runner)
 }
 
 func writeEvent(event outputEvent) error {

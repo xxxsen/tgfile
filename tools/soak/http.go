@@ -29,6 +29,12 @@ type httpResult struct {
 	body   []byte
 }
 
+type requestObservation struct {
+	elapsed time.Duration
+	status  int
+	err     error
+}
+
 func (r *soakRunner) expectS3Status(
 	ctx context.Context,
 	method, key, rawQuery string,
@@ -250,6 +256,24 @@ func (r *soakRunner) doRequest(
 	readChunkSize int,
 ) (*httpResult, error) {
 	r.requests.Add(1)
+	startedAt := time.Now()
+	result, err := r.executeRequest(request, readDelay, readChunkSize)
+	if r.requestObserver != nil {
+		status := httpStatus(result)
+		r.requestObserver(requestObservation{
+			elapsed: time.Since(startedAt),
+			status:  status,
+			err:     err,
+		})
+	}
+	return result, err
+}
+
+func (r *soakRunner) executeRequest(
+	request *http.Request,
+	readDelay time.Duration,
+	readChunkSize int,
+) (*httpResult, error) {
 	response, err := r.transport.RoundTrip(request)
 	if err != nil {
 		return nil, fmt.Errorf("execute %s request: %w", request.Method, err)
@@ -273,6 +297,13 @@ func (r *soakRunner) doRequest(
 		header: response.Header.Clone(),
 		body:   body,
 	}, nil
+}
+
+func httpStatus(result *httpResult) int {
+	if result == nil {
+		return 0
+	}
+	return result.status
 }
 
 func expectStatus(result *httpResult, expected ...int) error {

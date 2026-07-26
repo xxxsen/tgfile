@@ -77,6 +77,8 @@ make check                  # 格式、vet、test、race、lint 全量门禁
 - 数据库、缓存和文件必须使用 `t.TempDir()`，不得使用固定 `/tmp/*.db`。
 - 自动化测试不得连接生产配置、生产数据库、Telegram 或外部 S3 服务。
 - HTTP 测试使用 `httptest`；允许 loopback，不依赖预先运行的本地服务。
+- `make soak` 和 `make stress` 只允许用户手动执行，不得加入 `make check`、CI、tag
+  构建或日常单元测试；两者必须使用本地 mock 后端，禁止连接 Telegram。
 - 每个修复至少覆盖正常、异常和关键边界路径。
 - 新增数据迁移时，测试必须验证 dry-run、前置条件、提交后状态和备份恢复路径。
 

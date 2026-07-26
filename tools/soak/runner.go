@@ -23,28 +23,29 @@ const (
 var errSoakOperation = errors.New("soak operation failed")
 
 type soakRunner struct {
-	transport    http.RoundTripper
-	baseURL      string
-	database     database.IDatabase
-	blockDir     string
-	spoolDir     string
-	seed         uint64
-	clientDelay  time.Duration
-	startedAt    time.Time
-	requests     atomic.Uint64
-	cycles       atomic.Uint64
-	s3Cycles     atomic.Uint64
-	webDAVCycles atomic.Uint64
-	lockCycles   atomic.Uint64
-	multiCycles  atomic.Uint64
-	slowCycles   atomic.Uint64
-	nextID       atomic.Uint64
-	activeMu     sync.Mutex
-	activeKeys   map[string]struct{}
-	activeUpload map[string]string
-	maxHeapBytes atomic.Uint64
-	maxGoroutine atomic.Int64
-	maxFDs       atomic.Int64
+	transport       http.RoundTripper
+	baseURL         string
+	database        database.IDatabase
+	blockDir        string
+	spoolDir        string
+	seed            uint64
+	clientDelay     time.Duration
+	requestObserver func(requestObservation)
+	startedAt       time.Time
+	requests        atomic.Uint64
+	cycles          atomic.Uint64
+	s3Cycles        atomic.Uint64
+	webDAVCycles    atomic.Uint64
+	lockCycles      atomic.Uint64
+	multiCycles     atomic.Uint64
+	slowCycles      atomic.Uint64
+	nextID          atomic.Uint64
+	activeMu        sync.Mutex
+	activeKeys      map[string]struct{}
+	activeUpload    map[string]string
+	maxHeapBytes    atomic.Uint64
+	maxGoroutine    atomic.Int64
+	maxFDs          atomic.Int64
 }
 
 type soakSummary struct {
