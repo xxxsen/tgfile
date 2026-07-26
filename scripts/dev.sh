@@ -13,9 +13,27 @@ CONFIG_PATH="${TGFILE_DEV_CONFIG:-${1:-$DEFAULT_CONFIG_PATH}}"
 PORT="${TGFILE_DEV_PORT:-9901}"
 HOST="${TGFILE_DEV_HOST:-127.0.0.1}"
 BUCKET="${TGFILE_DEV_BUCKET:-hackmd}"
-USERNAME="${TGFILE_DEV_USERNAME:-dev}"
-PASSWORD="${TGFILE_DEV_PASSWORD:-dev-secret}"
+USERNAME="${TGFILE_DEV_USERNAME:-test}"
+PASSWORD="${TGFILE_DEV_PASSWORD:-test}"
 GO="${TGFILE_DEV_GO:-go}"
+CONFIG_ONLY="${TGFILE_DEV_CONFIG_ONLY:-}"
+
+if [[ -n "${TGFILE_DEV_ADMIN_ORIGIN:-}" ]]; then
+  ADMIN_ORIGIN="$TGFILE_DEV_ADMIN_ORIGIN"
+  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\"]"
+elif [[ "$HOST" == "::1" || "$HOST" == "[::1]" ]]; then
+  ADMIN_ORIGIN="http://[::1]:$PORT"
+  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\",\"http://localhost:$PORT\"]"
+elif [[ "$HOST" == "127.0.0.1" || "$HOST" == "0.0.0.0" || "$HOST" == "localhost" ]]; then
+  ADMIN_ORIGIN="http://localhost:$PORT"
+  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\",\"http://127.0.0.1:$PORT\"]"
+elif [[ "$HOST" == 127.* ]]; then
+  ADMIN_ORIGIN="http://$HOST:$PORT"
+  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\"]"
+else
+  ADMIN_ORIGIN="http://127.0.0.1:$PORT"
+  ADMIN_ORIGINS_JSON="[\"$ADMIN_ORIGIN\"]"
+fi
 
 if [[ "$CONFIG_PATH" != /* ]]; then
   CONFIG_PATH="$ROOT/$CONFIG_PATH"
@@ -34,6 +52,11 @@ require_command() {
     echo "[tgfile] required command not found: $command_name" >&2
     exit 1
   fi
+}
+
+tcp_ready() {
+  timeout 1 bash -c 'exec 3<>"/dev/tcp/$1/$2"' bash "$HOST" "$PORT" \
+    >/dev/null 2>&1
 }
 
 proc_start_time() {
@@ -99,7 +122,7 @@ wait_for_server() {
       wait "$server_pid" 2>/dev/null || true
       exit 1
     fi
-    if (exec 3<>"/dev/tcp/$HOST/$PORT") 2>/dev/null; then
+    if tcp_ready; then
       echo "[tgfile] server is ready on http://$HOST:$PORT"
       return 0
     fi
@@ -151,6 +174,19 @@ generate_config() {
     "enable": true,
     "root": "/"
   },
+  "backup": {
+    "work_dir": "$DEV_DATA_DIR/backup-work"
+  },
+  "admin": {
+    "enable": true,
+    "external_origin": $ADMIN_ORIGINS_JSON,
+    "users": {
+      "$USERNAME": "read-write"
+    },
+    "session_idle_minutes": 30,
+    "session_max_hours": 12,
+    "max_upload_size": 5368709120
+  },
   "io_cache": {
     "enable_l1_cache": true,
     "l1_cache_size": 16777216,
@@ -169,6 +205,7 @@ require_command "$GO"
 require_command awk
 require_command cksum
 require_command pgrep
+require_command timeout
 
 mkdir -p "$DEV_DATA_DIR"
 if [[ "$CONFIG_PATH" == "$DEFAULT_CONFIG_PATH" ]]; then
@@ -178,8 +215,13 @@ elif [[ ! -f "$CONFIG_PATH" ]]; then
   exit 1
 fi
 
+if [[ "$CONFIG_ONLY" == "1" ]]; then
+  echo "[tgfile] generated development config: $CONFIG_PATH"
+  exit 0
+fi
+
 cleanup_previous
-if (exec 3<>"/dev/tcp/$HOST/$PORT") 2>/dev/null; then
+if tcp_ready; then
   echo "[tgfile] port already in use: $HOST:$PORT" >&2
   exit 1
 fi
@@ -199,6 +241,7 @@ printf '%s %s\n' "$server_pid" "$server_started" >"$PID_FILE"
 wait_for_server
 echo "[tgfile] S3 endpoint: http://$HOST:$PORT/$BUCKET"
 echo "[tgfile] WebDAV endpoint: http://$HOST:$PORT/webdav"
+echo "[tgfile] Admin endpoint: $ADMIN_ORIGIN/_admin/"
 if [[ "$CONFIG_PATH" == "$DEFAULT_CONFIG_PATH" ]]; then
   echo "[tgfile] development credentials: $USERNAME / $PASSWORD"
 fi

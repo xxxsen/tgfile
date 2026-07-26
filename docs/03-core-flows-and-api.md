@@ -362,8 +362,9 @@ DeleteObjects：
 | 直链元数据 | `GET /file/meta/{key}` | 匿名 |
 | 元数据 purge | `POST /file/purge` | Basic |
 | 静态目录 | `/static/*` | Basic |
-| 逻辑备份 | `/backup/import`、`/backup/export` | Basic |
+| 逻辑备份 | `/backup/v2/*` | Basic + backup role |
 | WebDAV Class 1/2 + sync | `/webdav/*` | Basic |
+| Web 管理后台 | `/_admin/*` | 管理 Session + CSRF |
 
 直链下载只使用规范 `/defaults` 映射。Purge 只清理无引用且没有 Delete State 的旧 File；
 不会丢弃 durable 删除引用或删除 Telegram message。
@@ -375,10 +376,17 @@ WebDAV 使用 Basic Auth，并通过 `webdav.root` 映射同一棵路径树。�
 事务中更新 Mapping、S3 Metadata、WebDAV 协议状态、最后引用和 durable outbox。完整协议
 语义见 [`04-webdav-protocol.md`](04-webdav-protocol.md)。
 
-逻辑备份导出路径树和完整对象字节，不保存内部 FileID、Segment、Completed Part manifest
-或 S3 Metadata。导入后的文件统一是 layout v1；对象字节和路径保持一致，但历史弱 ETag、
-推断元数据和 `partNumber=1` 整对象语义生效，GetObjectAttributes 不返回 ObjectParts。
-因此逻辑备份不能替代 SQLite 与运行目录的协议元数据备份。
+逻辑备份使用版本化 `.tgfb` 归档和持久化异步 Job。它保存 layout v1 Part 边界、
+layout v2 Segment、Completed Part、S3 Metadata 和 WebDAV dead property；恢复时生成新的
+内部 FileID、EntryID、FileKey 和 DeleteRef，并在单一 SQLite 事务发布全部路径和协议
+元数据。完整格式、API、权限和恢复语义见
+[`05-logical-backup.md`](05-logical-backup.md)。
+
+Web 管理后台内嵌于服务二进制，提供路径浏览、下载、条件上传、Export、Import 和 Job 管理。
+它使用独立的进程内 Session、严格 Origin/CSRF 校验和 `read`/`read-write` 角色，不复用
+协议入口的 Basic Auth 会话。管理上传发布为普通 Mapping，因此 S3、WebDAV 和管理入口
+立即看到同一内容；管理下载透明读取 layout v1 和 layout v2。完整语义见
+[`06-web-management.md`](06-web-management.md)。
 
 ## 10. 命令
 
@@ -389,6 +397,10 @@ WebDAV 使用 Basic Auth，并通过 `webdav.root` 映射同一棵路径树。�
 - `check-config --config=...`：仅解析和校验配置，无日志、数据库或网络副作用；
 - `audit --config=... --output=...`：只读审计 SQLite；
 - `check-key --key=...`：纯计算校验直链 key。
+- `backup export --config=... --scope=... --output=...`：生成并验证逻辑归档；
+- `backup verify --config=... --input=...`：不连接数据库和后端的离线校验；
+- `backup import --config=... --input=... --conflict=...`：恢复并等待持久化 Job 终态。
 
-离线命令不得初始化 Telegram、缓存或 HTTP 服务。根命令不接受把不同运行模式混在一起的
-业务参数。
+`check-config`、`audit`、`check-key` 和 `backup verify` 不得初始化 Telegram、缓存或
+HTTP 服务。`backup export/import` 需要数据库和配置的 BlockIO，但不启动 HTTP。根命令
+不接受把不同运行模式混在一起的业务参数。

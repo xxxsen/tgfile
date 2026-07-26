@@ -3,7 +3,9 @@ package filemgr
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
@@ -50,6 +52,77 @@ END;`)
 		t,
 		databaseClient,
 		"SELECT COUNT(*) FROM tg_s3_object_metadata_tab",
+	))
+}
+
+func TestS3OverwriteWithEmptyFileDeletesUnreferencedOldBlocks(t *testing.T) {
+	managerInterface, block, databaseClient := newCreateFileTestManager(t, 4)
+	manager := managerInterface.(*defaultFileManager)
+	oldContent := []byte("stored data")
+	oldFileID, err := manager.CreateFile(
+		t.Context(),
+		int64(len(oldContent)),
+		bytes.NewReader(oldContent),
+	)
+	require.NoError(t, err)
+	_, err = manager.PublishS3Object(
+		t.Context(),
+		"/bucket/object",
+		oldFileID,
+		int64(len(oldContent)),
+		testObjectMetadata(`"old"`),
+		nil,
+	)
+	require.NoError(t, err)
+
+	emptyFileID, err := manager.CreateFile(t.Context(), 0, bytes.NewReader(nil))
+	require.NoError(t, err)
+	_, err = manager.PublishS3Object(
+		t.Context(),
+		"/bucket/object",
+		emptyFileID,
+		0,
+		testObjectMetadata(`"`+entity.EmptyFileMD5Sum+`"`),
+		nil,
+	)
+	require.NoError(t, err)
+
+	info, err := manager.StatS3Object(t.Context(), "/bucket/object")
+	require.NoError(t, err)
+	require.Equal(t, emptyFileID, info.Link.FileId)
+	require.Zero(t, info.Link.FileSize)
+	stream, err := manager.OpenFile(t.Context(), emptyFileID)
+	require.NoError(t, err)
+	content, err := io.ReadAll(stream)
+	require.NoError(t, err)
+	require.NoError(t, stream.Close())
+	require.Empty(t, content)
+
+	oldFileIDText := strconv.FormatUint(oldFileID, 10)
+	require.Equal(t, 3, queryCount(
+		t,
+		databaseClient,
+		`SELECT COUNT(*) FROM tg_file_part_delete_state_tab
+WHERE file_id = `+oldFileIDText+` AND delete_state = 'pending'`,
+	))
+	require.Len(t, block.parts, 3)
+	require.NoError(t, manager.processBlockDeleteBatch(t.Context()))
+	require.Empty(t, block.parts)
+	require.Equal(t, 3, queryCount(
+		t,
+		databaseClient,
+		`SELECT COUNT(*) FROM tg_file_part_delete_state_tab
+WHERE file_id = `+oldFileIDText+` AND delete_state = 'deleted'`,
+	))
+	require.Equal(t, 3, queryCount(
+		t,
+		databaseClient,
+		`SELECT COUNT(*) FROM tg_file_part_tab WHERE file_id = `+oldFileIDText,
+	))
+	require.Zero(t, queryCount(
+		t,
+		databaseClient,
+		`SELECT COUNT(*) FROM tg_file_part_tab WHERE file_id = `+strconv.FormatUint(emptyFileID, 10),
 	))
 }
 

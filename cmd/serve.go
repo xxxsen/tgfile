@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"github.com/xxxsen/tgfile/backupfmt"
+	"github.com/xxxsen/tgfile/backupmgr"
 	"github.com/xxxsen/tgfile/blockio"
 	_ "github.com/xxxsen/tgfile/blockio/register"
 	"github.com/xxxsen/tgfile/config"
@@ -25,6 +28,11 @@ var (
 	errIntegerRange          = errors.New("integer value exceeds platform range")
 	errUnexpectedServiceExit = errors.New("service component exited unexpectedly")
 )
+
+type componentResult struct {
+	name string
+	err  error
+}
 
 func newServeCommand(ctx context.Context) *cobra.Command {
 	var configFile string
@@ -100,6 +108,23 @@ func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger 
 	if err != nil {
 		return fmt.Errorf("init storage: %w", err)
 	}
+	logServerFeatures(serviceConfig, appLogger)
+	var backupManager *backupmgr.Manager
+	if serviceConfig.Backup.Enable || serviceConfig.Admin.Enable {
+		backupManager, err = buildBackupManager(serviceConfig, fileManager)
+		if err != nil {
+			return err
+		}
+	}
+	httpServer, err := buildHTTPServer(serviceConfig, fileManager, backupManager)
+	if err != nil {
+		return err
+	}
+	appLogger.Info("init server succ, start it...")
+	return runServerComponents(ctx, httpServer, fileManager, backupManager)
+}
+
+func logServerFeatures(serviceConfig *config.Config, appLogger *zap.Logger) {
 	appLogger.Info("current file protocol feature")
 	appLogger.Info(
 		"-- s3 feature",
@@ -110,6 +135,12 @@ func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger 
 		"-- webdav feature",
 		zap.Bool("enable", serviceConfig.Webdav.Enable),
 		zap.String("root", serviceConfig.Webdav.Root),
+	)
+	appLogger.Info(
+		"-- admin feature",
+		zap.Bool("enable", serviceConfig.Admin.Enable),
+		zap.Strings("external_origins", serviceConfig.Admin.ExternalOrigins),
+		zap.Int("user_count", len(serviceConfig.Admin.Users)),
 	)
 	appLogger.Info("current cache config")
 	appLogger.Info(
@@ -122,24 +153,59 @@ func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger 
 		zap.Bool("enable", serviceConfig.IOCache.EnableL2Cache),
 		zap.Int("max_cache_storage_usage_bytes", serviceConfig.IOCache.L2CacheSize),
 	)
+}
+
+func buildBackupManager(
+	serviceConfig *config.Config,
+	fileManager filemgr.IFileManager,
+) (*backupmgr.Manager, error) {
+	manager, err := backupmgr.New(
+		db.GetClient(),
+		fileManager,
+		toBackupManagerOptions(serviceConfig, fileManager.BackupMaxPartSize()),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("init backup manager: %w", err)
+	}
+	return manager, nil
+}
+
+func buildHTTPServer(
+	serviceConfig *config.Config,
+	fileManager filemgr.IFileManager,
+	backupManager *backupmgr.Manager,
+) (*server.Server, error) {
 	httpServer, err := server.New(
 		serviceConfig.Bind,
 		server.WithS3(toServerS3Options(serviceConfig.S3)),
 		server.WithUser(serviceConfig.UserInfo),
 		server.WithWebDAV(toServerWebDAVOptions(serviceConfig.Webdav)),
 		server.WithFileManager(fileManager),
+		server.WithBackup(server.BackupOptions{
+			Enabled: serviceConfig.Backup.Enable,
+			Users:   serviceConfig.Backup.Users,
+		}, backupManager),
+		server.WithAdmin(toServerAdminOptions(serviceConfig.Admin, serviceConfig)),
 	)
 	if err != nil {
-		return fmt.Errorf("init server: %w", err)
+		return nil, fmt.Errorf("init server: %w", err)
 	}
-	appLogger.Info("init server succ, start it...")
+	return httpServer, nil
+}
+
+func runServerComponents(
+	ctx context.Context,
+	httpServer *server.Server,
+	fileManager filemgr.IFileManager,
+	backupManager *backupmgr.Manager,
+) error {
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	type componentResult struct {
-		name string
-		err  error
+	componentCount := 3
+	if backupManager != nil {
+		componentCount++
 	}
-	componentDone := make(chan componentResult, 3)
+	componentDone := make(chan componentResult, componentCount)
 	go func() {
 		componentDone <- componentResult{
 			name: "block delete worker",
@@ -155,11 +221,20 @@ func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger 
 	go func() {
 		componentDone <- componentResult{name: "HTTP server", err: httpServer.Run(runContext)}
 	}()
+	if backupManager != nil {
+		go func() {
+			componentDone <- componentResult{name: "backup worker", err: backupManager.Run(runContext)}
+		}()
+	}
 
 	first := <-componentDone
 	contextWasDone := ctx.Err() != nil
 	cancel()
-	results := []componentResult{first, <-componentDone, <-componentDone}
+	results := make([]componentResult, 0, componentCount)
+	results = append(results, first)
+	for len(results) < componentCount {
+		results = append(results, <-componentDone)
+	}
 	var runErr error
 	for index, result := range results {
 		if result.err != nil && !errors.Is(result.err, context.Canceled) {
@@ -173,6 +248,51 @@ func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger 
 		}
 	}
 	return runErr
+}
+
+func toBackupManagerOptions(
+	serviceConfig *config.Config,
+	maxPartSize int64,
+) backupmgr.Options {
+	buckets := make([]backupfmt.RequiredBucket, 0, len(serviceConfig.S3.Buckets))
+	for _, bucket := range serviceConfig.S3.Buckets {
+		buckets = append(buckets, backupfmt.RequiredBucket{Name: bucket.Name, ACL: bucket.ACL})
+	}
+	return backupmgr.Options{
+		WorkDir: serviceConfig.Backup.WorkDir,
+		Limits: backupfmt.Limits{
+			MaxArchiveBytes:  serviceConfig.Backup.MaxArchiveBytes,
+			MaxExpandedBytes: serviceConfig.Backup.MaxExpandedBytes,
+			MaxMappingCount:  serviceConfig.Backup.MaxMappingCount,
+			MaxFileCount:     serviceConfig.Backup.MaxFileCount,
+			MaxPartCount:     serviceConfig.Backup.MaxPartCount,
+			MaxPathBytes:     serviceConfig.Backup.MaxPathBytes,
+			MaxManifestBytes: backupfmt.DefaultLimits().MaxManifestBytes,
+			MaxPropertyBytes: backupfmt.DefaultLimits().MaxPropertyBytes,
+			MaxUserMetaBytes: backupfmt.DefaultLimits().MaxUserMetaBytes,
+		},
+		RequiredBuckets:   buckets,
+		SchemaVersion:     13,
+		MaxPartSize:       maxPartSize,
+		ArtifactRetention: time.Duration(serviceConfig.Backup.ArtifactRetentionHours) * time.Hour,
+		JobRetention:      time.Duration(serviceConfig.Backup.JobRetentionDays) * 24 * time.Hour,
+	}
+}
+
+func toServerAdminOptions(
+	input config.AdminConfig,
+	serviceConfig *config.Config,
+) server.AdminOptions {
+	return server.AdminOptions{
+		Enabled:            input.Enable,
+		ExternalOrigins:    append([]string(nil), input.ExternalOrigins...),
+		Users:              input.Users,
+		SessionIdle:        time.Duration(input.SessionIdleMinutes) * time.Minute,
+		SessionMaximum:     time.Duration(input.SessionMaxHours) * time.Hour,
+		MaxUploadSize:      input.MaxUploadSize,
+		MaxPathBytes:       serviceConfig.Backup.MaxPathBytes,
+		MaxMutationEntries: serviceConfig.Webdav.MaxMutationEntries,
+	}
 }
 
 func toServerWebDAVOptions(input config.WebdavConfig) server.WebDAVOptions {

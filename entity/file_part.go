@@ -6,12 +6,13 @@ type GetFilePartInfoRequest struct {
 }
 
 type FilePartInfoItem struct {
-	FileId      uint64 `json:"file_id"`
-	FilePartId  int32  `json:"file_part_id"`
-	FileKey     string `json:"file_key"`
-	Ctime       int64  `json:"ctime"`
-	Mtime       int64  `json:"mtime"`
-	FilePartMd5 string `json:"file_part_md5"`
+	FileId       uint64 `json:"file_id"`
+	FilePartId   int32  `json:"file_part_id"`
+	FileKey      string `json:"file_key"`
+	Ctime        int64  `json:"ctime"`
+	Mtime        int64  `json:"mtime"`
+	FilePartMd5  string `json:"file_part_md5"`
+	FilePartSize int64  `json:"file_part_size"`
 }
 
 type GetFilePartInfoResponse struct {

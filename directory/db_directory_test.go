@@ -110,6 +110,92 @@ func TestListDir(t *testing.T) {
 	assert.Equal(t, 1000, len(files))
 }
 
+func TestListPageUsesStableBoundedKeysetOrder(t *testing.T) {
+	setupDirectoryTest(t)
+	ctx := t.Context()
+	for _, name := range []string{"z-dir", "A-dir", "目录"} {
+		require.NoError(t, dav.Mkdir(ctx, "/paged/"+name))
+	}
+	for _, name := range []string{"z.txt", "A.txt", "é.txt", "空.txt"} {
+		require.NoError(t, dav.Create(ctx, "/paged/"+name, 1, "1"))
+	}
+
+	var (
+		cursor    *PageCursor
+		collected []string
+		parentID  uint64
+	)
+	for {
+		page, err := dav.ListPage(ctx, "/paged", cursor, 2)
+		require.NoError(t, err)
+		require.LessOrEqual(t, len(page.Entries), 2)
+		if parentID == 0 {
+			parentID = page.ParentEntryID
+		}
+		require.Equal(t, parentID, page.ParentEntryID)
+		for _, entry := range page.Entries {
+			kind := "file:"
+			if entry.IsDir() {
+				kind = "dir:"
+			}
+			collected = append(collected, kind+entry.Name())
+		}
+		if !page.HasMore {
+			break
+		}
+		last := page.Entries[len(page.Entries)-1]
+		cursor = &PageCursor{
+			IsDir:   last.IsDir(),
+			Name:    last.Name(),
+			EntryID: last.EntryID(),
+		}
+	}
+	require.Equal(t, []string{
+		"dir:A-dir",
+		"dir:z-dir",
+		"dir:目录",
+		"file:A.txt",
+		"file:z.txt",
+		"file:é.txt",
+		"file:空.txt",
+	}, collected)
+
+	_, err := dav.ListPage(ctx, "/paged", nil, 0)
+	require.ErrorIs(t, err, errInvalidPageLimit)
+	_, err = dav.ListPage(ctx, "/paged", &PageCursor{Name: "x"}, 1)
+	require.ErrorIs(t, err, errInvalidPageCursor)
+}
+
+func TestListPageBoundaries(t *testing.T) {
+	setupDirectoryTest(t)
+	require.NoError(t, dav.Mkdir(t.Context(), "/empty-page"))
+	empty, err := dav.ListPage(t.Context(), "/empty-page", nil, 500)
+	require.NoError(t, err)
+	require.Empty(t, empty.Entries)
+	require.False(t, empty.HasMore)
+
+	for index := range 501 {
+		require.NoError(t, dav.Create(
+			t.Context(),
+			fmt.Sprintf("/boundary/%03d.bin", index),
+			0,
+			"1",
+		))
+	}
+	first, err := dav.ListPage(t.Context(), "/boundary", nil, 500)
+	require.NoError(t, err)
+	require.Len(t, first.Entries, 500)
+	require.True(t, first.HasMore)
+	last := first.Entries[len(first.Entries)-1]
+	second, err := dav.ListPage(t.Context(), "/boundary", &PageCursor{
+		IsDir: last.IsDir(), Name: last.Name(), EntryID: last.EntryID(),
+	}, 500)
+	require.NoError(t, err)
+	require.Len(t, second.Entries, 1)
+	require.False(t, second.HasMore)
+	require.Equal(t, "500.bin", second.Entries[0].Name())
+}
+
 func TestRemove(t *testing.T) {
 	setupDirectoryTest(t)
 	ctx := context.Background()

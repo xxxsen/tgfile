@@ -4,6 +4,10 @@
 [`02-data-and-storage-model.md`](02-data-and-storage-model.md)，协议语义见
 [`03-core-flows-and-api.md`](03-core-flows-and-api.md)，WebDAV 的资源、属性、锁和同步
 模型见 [`04-webdav-protocol.md`](04-webdav-protocol.md)。
+逻辑备份的归档与恢复状态机见
+[`05-logical-backup.md`](05-logical-backup.md)。
+Web 管理后台的会话、安全边界和管理接口见
+[`06-web-management.md`](06-web-management.md)。
 
 ## 1. 系统定位
 
@@ -19,7 +23,7 @@ tgfile 是一个以 Telegram 为主要内容后端的流式文件服务。文件
 - 文件直链上传、下载和元数据读取；
 - SQLite migration、只读审计和持久化 Telegram 删除 worker。
 
-WebDAV、逻辑备份和静态目录复用同一 FileManager。WebDAV 提供 Class 1/2 资源方法、
+WebDAV、Web 管理后台、逻辑备份和静态目录复用同一 FileManager。WebDAV 提供 Class 1/2 资源方法、
 持久化 dead properties、锁和 collection sync；它可以透明读取 Multipart Composite
 File，所有覆盖和删除也复用同一套引用与底层删除语义。
 
@@ -28,8 +32,17 @@ File，所有覆盖和删除也复用同一套引用与底层删除语义。
 ```mermaid
 flowchart LR
     Client["S3 / HTTP / WebDAV 客户端"] --> Server["server<br/>路由、ACL、鉴权、协议适配"]
+    Browser["管理浏览器"] --> Admin["admin handler<br/>Session / CSRF / UI"]
+    Admin --> Server
+    Admin --> FM
+    Admin --> Backup
     Server --> Verify["s3verify<br/>SigV4 与 payload 校验"]
     Server --> FM["filemgr<br/>文件、对象和引用语义"]
+    Server --> Backup["backupmgr<br/>持久化导入导出 Job"]
+    Backup --> Format["backupfmt<br/>严格归档与离线 Verify"]
+    Backup --> FM
+    Backup --> WorkDir["0700 work dir<br/>artifact / snapshot / report"]
+    Backup --> SQLite
     FM --> Directory["directory<br/>事务性路径树"]
     FM --> DAO["dao<br/>File / Part 访问"]
     Directory --> SQLite[("SQLite<br/>元数据与 durable outbox")]
@@ -51,7 +64,8 @@ Directory 事务完成。
 | 包 | 稳定职责 |
 |---|---|
 | `cmd` | Cobra 子命令、配置校验、依赖组装和进程生命周期 |
-| `server` | HTTP 路由、bucket ACL、认证、S3/HTTP/WebDAV 协议转换 |
+| `server` | HTTP 路由、bucket ACL、认证、S3/HTTP/WebDAV/管理协议转换 |
+| `server/handler/admin` | 内嵌管理 UI、Session、CSRF、角色校验和管理 API |
 | `filemgr` | 文件创建与读取、S3/Multipart/WebDAV 事务、Composite、引用判断和后台 worker |
 | `directory` | SQLite 路径树、分页遍历及事务内 Stat/Create/Replace/Remove/Copy/Move/Touch |
 | `dao` | File、Part 和普通 Mapping 数据访问 |
@@ -60,6 +74,8 @@ Directory 事务完成。
 | `s3checksum` | S3 checksum 算法、Base64 摘要校验、CRC 合并和 Composite 聚合 |
 | `blockio` | Telegram、localfile、mem 内容后端及可逆字节旋转 |
 | `maintenance` | 不初始化在线依赖的 SQLite 只读审计 |
+| `backupfmt` | 独立于数据库和后端的 `.tgfb` 格式、摘要及资源限制 |
+| `backupmgr` | 逻辑备份 Job、幂等、异步执行、恢复、清理和低基数指标 |
 | `entity`、`server/model` | 内部持久化模型和 HTTP 请求/响应模型 |
 
 依赖方向必须保持单向：`cmd` 负责组装，业务包不反向依赖 `cmd`；数据模型层不依赖
@@ -79,6 +95,10 @@ bucket 必须显式配置以下 ACL 之一：
 客户端一旦提交认证信息，认证失败就返回错误，不能因 bucket 可公开读取而降级为匿名。
 未知 bucket 对匿名请求返回 AccessDenied，对已认证请求返回 NoSuchBucket，避免私有部署
 被匿名枚举。
+
+`/_admin/` 不使用 Basic Auth 或 S3 签名。它使用 `user_info` 校验登录密码，再由
+`admin.users` 授予管理角色，并签发进程内 HttpOnly Session Cookie。管理角色不扩展
+S3、WebDAV 或直接 Backup API 的权限，反向亦然。
 
 ## 5. BlockIO 与 Telegram 边界
 
@@ -138,7 +158,8 @@ Telegram 消息删除不是 Mapping 事务中的同步网络调用。以下操�
 2. 初始化日志和 ID 生成器；
 3. 打开 SQLite，规划并事务性执行 migration，再校验 schema；
 4. 创建 BlockIO、缓存和 FileManager；
-5. 创建 HTTP server，同时启动 Telegram 删除 worker 和 Multipart 过期清理 worker；
+5. 创建 HTTP server，同时启动 Telegram 删除 worker、Multipart 过期清理 worker；启用
+   backup 或 Web 管理后台时再启动一个 Export、一个 Import 和周期清理 worker；
 6. 任一组件非预期退出时取消其他组件并使服务退出；
 7. 收到终止信号后停止 HTTP 服务、取消 worker 并关闭数据库。
 
@@ -159,4 +180,7 @@ Telegram 消息删除不是 Mapping 事务中的同步网络调用。以下操�
 - 非 `live` File 不能重新创建 Mapping，worker 发现引用恢复时将可恢复状态改回 `live`；
 - 外部直链 key、`file_id`、Part 顺序、FileKey 和已持久化 MD5 不被静默改写；
 - 历史 S3 对象没有元数据行时只做惰性兼容读取，不批量回填或改变 ETag；
+- 逻辑 Export Pin 参与最后引用判断；Import staged File 在原子发布前没有 Mapping；
+- 逻辑恢复保留路径、Part/Segment/Completed Part 和协议元数据，但生成新的 FileID、
+  EntryID、FileKey 和 DeleteRef；
 - 缓存损坏、淘汰或清空不得影响 SQLite 或 Telegram 原始数据。

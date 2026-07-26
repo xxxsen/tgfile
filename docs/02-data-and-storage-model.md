@@ -2,7 +2,8 @@
 
 本文定义 tgfile 的持久化对象、关系、状态和兼容性不变量。组件职责见
 [`01-architecture.md`](01-architecture.md)，接口流程见
-[`03-core-flows-and-api.md`](03-core-flows-and-api.md)。
+[`03-core-flows-and-api.md`](03-core-flows-and-api.md)，逻辑备份模型见
+[`05-logical-backup.md`](05-logical-backup.md)。
 
 ## 1. 对象关系
 
@@ -21,6 +22,10 @@ erDiagram
     PART ||--|| DELETE_STATE : "file_id + file_part_id"
     MULTIPART_UPLOAD ||--o{ MULTIPART_PART : "upload_id"
     FILE ||--o| MULTIPART_PART : "file_id"
+    BACKUP_JOB ||--o{ BACKUP_JOB_FILE : "job_id"
+    BACKUP_JOB ||--o{ EXPORT_PIN : "job_id"
+    FILE ||--o{ BACKUP_JOB_FILE : "target_file_id"
+    FILE ||--o{ EXPORT_PIN : "file_id"
 ```
 
 - File 是内部内容对象；
@@ -32,6 +37,7 @@ erDiagram
 - WebDAV Property 和 Lock 绑定 Mapping，Change Journal 以规范路径保存变更与删除墓碑；
 - Multipart Upload/Part 保存未完成上传和完成幂等所需的控制状态；
 - Delete State 绑定 Part，保存可删除 Telegram message 的引用和 durable worker 状态。
+- Backup Job File 保存不可见恢复阶段的新 File，Export Pin 在导出期间提供临时有效引用。
 
 数据库不使用外键表达这些关系，完整性由事务、唯一约束、审计和 FileManager 维护。
 
@@ -58,10 +64,14 @@ BlockIO Part；layout v2 不复制这些行。
 |---|---|
 | `file_key` | BlockIO 下载使用的不透明标识 |
 | `file_part_md5` | 分片内容 MD5，属于存量格式 |
+| `file_part_size` | 精确物理 Part 字节数；历史未知值为 `-1`，首次 Export 时确定并回填 |
 | `ctime`、`mtime` | 创建和修改时间 |
 
-零字节 File 没有 Part。单分片 File 的文件级 MD5 等于分片 MD5；多分片 File 对按顺序
-拼接的分片 MD5 十六进制文本再计算 MD5。MD5 只用于协议和存量兼容，不用于认证。
+零字节 File 没有 Part，其文件级 MD5 固定为标准空内容摘要
+`d41d8cd98f00b204e9800998ecf8427e`。新建零字节 File 时持久化该值；历史记录中的
+空值或无效扩展信息在读取时归一化为该值，不需要迁移或改写数据库。单分片 File 的文件级
+MD5 等于分片 MD5；多分片 File 对按顺序拼接的分片 MD5 十六进制文本再计算 MD5。
+MD5 只用于协议和存量兼容，不用于认证。
 
 ### 2.3 `tg_file_mapping_tab`
 
@@ -262,6 +272,29 @@ sync token 是携带 revision 的不透明 URI。服务按 collection root、Dep
 顺序分页；初始同步先流式返回当前直接子项并签发快照 revision，增量同步只返回 token 后
 每个路径的最新变化。高于当前 revision 或无法解析的 token 无效。
 
+### 2.12 逻辑备份任务表
+
+`tg_backup_job_tab` 保存 Export/Import 的 owner、状态、幂等 fingerprint、相对 work dir
+文件名、进度、结果、安全错误和保留时间。唯一键是
+`(owner, job_kind, idempotency_key)`；artifact、snapshot 和 report 路径只能是 work dir
+内的相对文件名。
+
+`tg_backup_job_file_tab` 以 `(job_id, file_ref)` 为主键，保存 Import 为归档 File 分配的
+新 `target_file_id`、layout、stage state 和下一个物理 Part 游标。staged File 没有业务
+Mapping，只有 `publishing` 事务可以使它可见。
+
+`tg_backup_export_pin_tab` 以 `(job_id, file_id)` 为主键，覆盖 Export 使用的 final 和
+source File。Pin 在 snapshot 读取和插入所在的同一个事务建立，在成功、失败或取消后删除；
+最后引用判断必须把活动 Pin 当作有效引用。
+
+Backup 表不使用数据库外键，以便任务恢复和补偿顺序由状态机显式控制。终态 Import 的
+Job File 可以保留到 Job retention 到期，用于审计新 File 和 Delete State。
+
+管理后台 Session 和 CSRF token 只存在于进程内存，不写入数据库。管理目录分页使用
+`tg_file_mapping_tab(parent_entry_id, file_kind, file_name COLLATE BINARY, entry_id)` 索引；
+Job 全局和按 owner 分页分别使用 `(created_at DESC, job_id DESC)` 与
+`(owner, created_at DESC, job_id DESC)` 索引。这些索引不改变业务行或存量对象语义。
+
 ## 3. Migration 账本
 
 `schema_migrations` 保存 `version`、`filename`、SQL 原文 SHA-256 和 `applied_at`。
@@ -336,6 +369,9 @@ Mapping 时逐一检查 source File；仍被有效 Mapping/Composite/active uplo
 - layout v2 缺失 Completed Part、layout v1 错误拥有 Completed Part、无 Segment 的孤立行；
 - final PartNumber 连续性、Part/Segment Size 和 final File Size 一致性；
 - Completed Part checksum 编码、控制记录和对象算法的一致性。
+- Backup Job 状态、终态 Pin、活动 Export 缺失 Pin、stage target 和意外可见 Mapping；
+- Import Part 缺失 live Delete State、artifact/work file 遗失或孤立，以及 Telegram
+  DeleteRef 的 bot/chat/message 身份不匹配。
 
 共享 FileID 指标用于发现 private 内容的其他公开入口；它不会自动修改 Mapping 或 ACL。
 
@@ -344,6 +380,7 @@ Mapping 时逐一检查 source File；仍被有效 Mapping/Composite/active uplo
 不能静默改写：
 
 - `file_id`、Part 顺序、FileKey、DeleteRef；
+- 已物化的物理 `file_part_size`；
 - 已持久化的文件/分片 MD5；
 - Mapping 层级和 `ref_data`；
 - 历史弱 ETag 和新对象强 ETag；

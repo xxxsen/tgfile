@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>tgfile 管理后台</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/_admin/assets/styles.css">
+</head>
+<body>
+  <main>
+    <section id="login-view" class="panel login-panel">
+      <p class="eyebrow">TGFILE</p>
+      <h1>管理后台</h1>
+      <form id="login-form">
+        <label>用户名<input id="username" name="username" autocomplete="username" required maxlength="256"></label>
+        <label>密码<input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096"></label>
+        <button type="submit">登录</button>
+      </form>
+    </section>
+
+    <section id="app-view" hidden>
+      <header class="app-header">
+        <div>
+          <p class="eyebrow">TGFILE</p>
+          <h1>数据管理</h1>
+        </div>
+        <div class="session-block">
+          <span id="session-user"></span>
+          <span id="session-role" class="badge"></span>
+          <button id="logout-button" class="secondary">退出</button>
+        </div>
+      </header>
+
+      <nav class="tabs" aria-label="管理功能">
+        <button id="files-tab" class="active" aria-selected="true">数据浏览</button>
+        <button id="backup-tab" aria-selected="false">导入导出</button>
+      </nav>
+
+      <section id="files-view" class="panel">
+        <div class="toolbar">
+          <div id="breadcrumbs" class="breadcrumbs" aria-label="当前路径"></div>
+          <div class="toolbar-actions">
+            <button id="refresh-files" class="secondary">刷新</button>
+            <label id="upload-label" class="file-button">
+              上传文件
+              <input id="upload-input" type="file" multiple>
+            </label>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>名称</th><th>类型</th><th>大小</th><th>修改时间</th><th>操作</th></tr></thead>
+            <tbody id="entries-body"></tbody>
+          </table>
+        </div>
+        <button id="load-more-files" class="secondary" hidden>加载更多</button>
+      </section>
+
+      <section id="backup-view" hidden>
+        <div class="backup-grid">
+          <section class="panel">
+            <h2>导出</h2>
+            <form id="export-form">
+              <label>Scope<input id="export-scope" value="/" required maxlength="1024"></label>
+              <button type="submit">创建导出任务</button>
+            </form>
+          </section>
+          <section id="import-panel" class="panel">
+            <h2>导入</h2>
+            <form id="import-form">
+              <label>备份文件<input id="import-file" type="file" accept=".tgfb,application/vnd.tgfile.backup.v2+tar+gzip" required></label>
+              <label>冲突策略
+                <select id="import-conflict"><option value="fail">发现冲突即失败</option><option value="replace">覆盖已有路径</option></select>
+              </label>
+              <label class="check"><input id="import-dry-run" type="checkbox" checked>仅校验，不写入数据</label>
+              <button type="submit">创建导入任务</button>
+            </form>
+          </section>
+        </div>
+        <section class="panel">
+          <div class="toolbar"><h2>任务</h2><button id="refresh-jobs" class="secondary">刷新</button></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>类型</th><th>用户</th><th>状态</th><th>进度</th><th>创建时间</th><th>操作</th></tr></thead>
+              <tbody id="jobs-body"></tbody>
+            </table>
+          </div>
+          <button id="load-more-jobs" class="secondary" hidden>加载更多</button>
+        </section>
+      </section>
+    </section>
+  </main>
+
+  <aside id="transfer" class="transfer" hidden>
+    <div><strong id="transfer-title"></strong><span id="transfer-percent"></span></div>
+    <progress id="transfer-progress" max="100" value="0"></progress>
+    <button id="cancel-transfer" class="danger">取消</button>
+  </aside>
+  <div id="status" class="status" role="status" aria-live="polite"></div>
+  <script type="module" src="/_admin/assets/app.js"></script>
+</body>
+</html>
