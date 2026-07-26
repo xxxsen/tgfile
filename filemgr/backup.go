@@ -487,7 +487,7 @@ func (d *defaultFileManager) loadBackupPhysicalFile(
 	snapshot *snapshotFile,
 	partCount int,
 ) error {
-	if err := ensureBackupPhysicalFileLive(ctx, tx, snapshot.id); err != nil {
+	if err := ensureBackupPhysicalFileExportable(ctx, tx, snapshot.id); err != nil {
 		return err
 	}
 	rows, err := tx.QueryContext(
@@ -522,27 +522,43 @@ FROM tg_file_part_tab WHERE file_id = ? ORDER BY file_part_id`,
 	return nil
 }
 
-func ensureBackupPhysicalFileLive(
+func ensureBackupPhysicalFileExportable(
 	ctx context.Context,
 	queryer database.IQueryer,
 	fileID uint64,
 ) error {
-	var invalid int64
+	var partCount, deleteStateCount, invalidDeleteStateCount int64
 	if err := queryRow(
 		ctx,
 		queryer,
-		`SELECT COUNT(*) FROM tg_file_part_tab part
+		`SELECT COUNT(part.file_part_id), COUNT(state.file_part_id),
+COALESCE(SUM(CASE
+  WHEN state.file_id IS NOT NULL AND (
+    state.delete_state != 'live' OR state.delete_ref = '' OR state.uploaded_at <= 0
+  ) THEN 1
+  ELSE 0
+END), 0)
+FROM tg_file_part_tab part
 LEFT JOIN tg_file_part_delete_state_tab state
   ON state.file_id = part.file_id AND state.file_part_id = part.file_part_id
-WHERE part.file_id = ? AND (
-  state.file_id IS NULL OR state.delete_state != 'live'
-  OR state.delete_ref = '' OR state.uploaded_at <= 0
-)`,
+WHERE part.file_id = ?`,
 		fileID,
-	).Scan(&invalid); err != nil {
+	).Scan(&partCount, &deleteStateCount, &invalidDeleteStateCount); err != nil {
 		return fmt.Errorf("check backup physical file delete references: %w", err)
 	}
-	if invalid != 0 {
+	// Files created before durable Telegram deletion tracking have no state rows.
+	// They remain readable and exportable, but still cannot be deleted remotely.
+	if deleteStateCount == 0 {
+		return nil
+	}
+	if deleteStateCount != partCount {
+		return fmt.Errorf(
+			"backup file %d has incomplete delete references: %w",
+			fileID,
+			ErrBackupState,
+		)
+	}
+	if invalidDeleteStateCount != 0 {
 		return fmt.Errorf("backup file %d has non-live parts: %w", fileID, ErrBackupState)
 	}
 	return nil

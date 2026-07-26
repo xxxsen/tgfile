@@ -129,7 +129,8 @@ Export 先在一个短 SQLite 事务中解析 scope：
 2. 递归读取所有 layout v2 source File；
 3. 读取 Part、Segment、Completed Part、S3 Metadata 和 WebDAV Property；
 4. 为缺少 S3 Metadata 的历史对象实体化当前兼容元数据；
-5. 拒绝非 ready File，以及缺失、非 live 或不可删除引用不完整的物理 Part；
+5. 拒绝非 ready File；删除状态完全缺失的历史物理 File 仍可读取并导出，但只要存在删除
+   状态，就必须覆盖该 File 的全部 Part，且每项均为引用完整的 `live` 状态；
 6. 为全部 final/source File 建立 Export Pin。
 
 随后 worker 把 snapshot 写入 `0700` work dir，在构建 `.partial` artifact 时逐 Part 从

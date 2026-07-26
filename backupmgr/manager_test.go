@@ -176,6 +176,194 @@ SELECT COUNT(*) FROM tg_file_part_delete_state_tab
 WHERE file_id = ? AND delete_state = 'pending'`, first.FileId))
 }
 
+func TestExportLegacyPhysicalFileWithoutDeleteStateRoundTrips(t *testing.T) {
+	sourceDB, sourceFiles := newBackupTestStorage(t, 4)
+	content := []byte("legacy-data")
+	fileID, err := sourceFiles.CreateFile(
+		t.Context(),
+		int64(len(content)),
+		bytes.NewReader(content),
+	)
+	require.NoError(t, err)
+	require.NoError(t, sourceFiles.CreateFileLink(
+		t.Context(),
+		"/bucket/legacy.bin",
+		fileID,
+		int64(len(content)),
+		false,
+	))
+	_, err = sourceDB.ExecContext(
+		t.Context(),
+		"DELETE FROM tg_file_part_delete_state_tab WHERE file_id = ?",
+		fileID,
+	)
+	require.NoError(t, err)
+	_, err = sourceDB.ExecContext(
+		t.Context(),
+		"UPDATE tg_file_part_tab SET file_part_size = -1 WHERE file_id = ?",
+		fileID,
+	)
+	require.NoError(t, err)
+
+	sourceManager := newBackupTestManager(
+		t,
+		sourceDB,
+		sourceFiles,
+		filepath.Join(t.TempDir(), "source-work"),
+	)
+	exportJob, err := sourceManager.CreateExport(t.Context(), backupmgr.CreateExportRequest{
+		Owner: "operator", IdempotencyKey: "legacy-export", Scope: "/bucket",
+	})
+	require.NoError(t, err)
+	exportJob, err = sourceManager.ProcessUntilTerminal(t.Context(), exportJob.JobID)
+	require.NoError(t, err)
+	require.Equal(t, "succeeded", exportJob.State)
+	artifact, _, err := sourceManager.Artifact(t.Context(), exportJob.JobID)
+	require.NoError(t, err)
+	manifest, _, err := backupfmt.VerifyFile(
+		t.Context(),
+		artifact,
+		backupfmt.DefaultLimits(),
+		sourceFiles.BackupMaxPartSize(),
+	)
+	require.NoError(t, err)
+	require.Equal(t, int64(len(content)), manifest.Limits.PhysicalBytes)
+	require.Zero(t, queryInt(
+		t,
+		sourceDB,
+		"SELECT COUNT(*) FROM tg_file_part_delete_state_tab WHERE file_id = ?",
+		fileID,
+	))
+	require.Equal(t, 3, queryInt(
+		t,
+		sourceDB,
+		"SELECT COUNT(*) FROM tg_file_part_tab WHERE file_id = ? AND file_part_size >= 0",
+		fileID,
+	))
+
+	targetDB, targetFiles := newBackupTestStorage(t, 4)
+	targetManager := newBackupTestManager(
+		t,
+		targetDB,
+		targetFiles,
+		filepath.Join(t.TempDir(), "target-work"),
+	)
+	raw, err := os.ReadFile(artifact)
+	require.NoError(t, err)
+	importJob, err := targetManager.CreateImport(t.Context(), backupmgr.CreateImportRequest{
+		Owner:          "operator",
+		IdempotencyKey: "legacy-import",
+		ConflictPolicy: "fail",
+		ContentLength:  int64(len(raw)),
+		ArtifactSHA256: fileSHA256(t, artifact),
+		Body:           bytes.NewReader(raw),
+	})
+	require.NoError(t, err)
+	importJob, err = targetManager.ProcessUntilTerminal(t.Context(), importJob.JobID)
+	require.NoError(t, err)
+	require.Equal(t, "succeeded", importJob.State)
+	restored, err := targetFiles.StatFileLink(t.Context(), "/bucket/legacy.bin")
+	require.NoError(t, err)
+	stream, err := targetFiles.OpenFile(t.Context(), restored.FileId)
+	require.NoError(t, err)
+	restoredContent, err := io.ReadAll(stream)
+	require.NoError(t, err)
+	require.NoError(t, stream.Close())
+	require.Equal(t, content, restoredContent)
+}
+
+func TestExportRejectsPartialOrInvalidManagedDeleteState(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, database.IDatabase, uint64)
+	}{
+		{
+			name: "partial delete state coverage",
+			mutate: func(t *testing.T, databaseClient database.IDatabase, fileID uint64) {
+				_, err := databaseClient.ExecContext(
+					t.Context(),
+					`DELETE FROM tg_file_part_delete_state_tab
+WHERE file_id = ? AND file_part_id = 2`,
+					fileID,
+				)
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "non-live delete state",
+			mutate: func(t *testing.T, databaseClient database.IDatabase, fileID uint64) {
+				_, err := databaseClient.ExecContext(
+					t.Context(),
+					`UPDATE tg_file_part_delete_state_tab SET delete_state = 'pending'
+WHERE file_id = ? AND file_part_id = 0`,
+					fileID,
+				)
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "incomplete live delete reference",
+			mutate: func(t *testing.T, databaseClient database.IDatabase, fileID uint64) {
+				_, err := databaseClient.ExecContext(
+					t.Context(),
+					`UPDATE tg_file_part_delete_state_tab SET delete_ref = ''
+WHERE file_id = ? AND file_part_id = 0`,
+					fileID,
+				)
+				require.NoError(t, err)
+			},
+		},
+		{
+			name: "invalid live upload timestamp",
+			mutate: func(t *testing.T, databaseClient database.IDatabase, fileID uint64) {
+				_, err := databaseClient.ExecContext(
+					t.Context(),
+					`UPDATE tg_file_part_delete_state_tab SET uploaded_at = 0
+WHERE file_id = ? AND file_part_id = 0`,
+					fileID,
+				)
+				require.NoError(t, err)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			databaseClient, files := newBackupTestStorage(t, 4)
+			content := []byte("managed-data")
+			fileID, err := files.CreateFile(
+				t.Context(),
+				int64(len(content)),
+				bytes.NewReader(content),
+			)
+			require.NoError(t, err)
+			require.NoError(t, files.CreateFileLink(
+				t.Context(),
+				"/bucket/managed.bin",
+				fileID,
+				int64(len(content)),
+				false,
+			))
+			test.mutate(t, databaseClient, fileID)
+			manager := newBackupTestManager(
+				t,
+				databaseClient,
+				files,
+				filepath.Join(t.TempDir(), "work"),
+			)
+			job, err := manager.CreateExport(t.Context(), backupmgr.CreateExportRequest{
+				Owner: "operator", IdempotencyKey: test.name, Scope: "/bucket",
+			})
+			require.NoError(t, err)
+			failed, err := manager.ProcessUntilTerminal(t.Context(), job.JobID)
+			require.ErrorIs(t, err, backupmgr.ErrJobFailed)
+			require.Equal(t, "failed", failed.State)
+			require.Equal(t, "target_incompatible", failed.Error.Code)
+			_, _, err = manager.Artifact(t.Context(), job.JobID)
+			require.ErrorIs(t, err, backupmgr.ErrArtifactUnavailable)
+		})
+	}
+}
+
 func TestImportDryRunAndIdempotencyDoNotWriteBusinessData(t *testing.T) {
 	sourceDB, sourceFiles := newBackupTestStorage(t, 8)
 	fileID, err := sourceFiles.CreateFile(t.Context(), 3, bytes.NewBufferString("abc"))
