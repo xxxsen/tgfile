@@ -169,6 +169,10 @@ func (r *soakRunner) verifyL2CacheHitAndRecovery(
 }
 
 func (r *soakRunner) verifyL1CachePreflight(ctx context.Context, smallKey string) error {
+	baselineCache, err := inspectL2CacheDirectory(r.cacheDir, soakL2CacheSize)
+	if err != nil {
+		return fmt.Errorf("inspect L2 before L1 preflight: %w", err)
+	}
 	smallContent := contentFor(r.seed+21, 2, cachePreflightL1Size)
 	r.trackKey(smallKey)
 	if _, err := r.expectS3Status(
@@ -199,6 +203,18 @@ func (r *soakRunner) verifyL1CachePreflight(ctx context.Context, smallKey string
 	}
 	if err := r.expectBackendDownloadDelta(l1HotBaseline, 0, "L1 hot read"); err != nil {
 		return err
+	}
+	currentCache, err := inspectL2CacheDirectory(r.cacheDir, soakL2CacheSize)
+	if err != nil {
+		return fmt.Errorf("inspect L2 after L1 preflight: %w", err)
+	}
+	if currentCache != baselineCache {
+		return fmt.Errorf(
+			"%w: L1 preflight changed L2 cache: before=%+v after=%+v",
+			errAuditInvariant,
+			baselineCache,
+			currentCache,
+		)
 	}
 	return r.expectCacheReadSafety(ctx, l1State, l1Baseline)
 }

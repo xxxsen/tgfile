@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -24,14 +25,15 @@ import (
 )
 
 const (
-	diskCacheFormatVersion = 2
-	diskCacheDirName       = "v2"
-	diskCacheManifestName  = ".manifest"
-	diskCacheLockName      = ".lock"
-	diskCacheFileSuffix    = ".cache"
-	diskCacheTempSuffix    = ".temp"
-	diskCopyBufferSize     = 64 * 1024
-	legacyCacheDelimiter   = "#"
+	diskCacheFormatVersion  = 2
+	diskCacheDirName        = "v2"
+	diskCacheManifestName   = ".manifest"
+	diskCacheLockName       = ".lock"
+	diskCacheFileSuffix     = ".cache"
+	diskCacheTempSuffix     = ".temp"
+	diskCopyBufferSize      = 64 * 1024
+	diskCacheAllocationUnit = int64(4 * 1024)
+	legacyCacheDelimiter    = "#"
 )
 
 var (
@@ -49,6 +51,7 @@ type diskEntry struct {
 	generation string
 	path       string
 	size       int64
+	cost       int64
 	digest     [sha256.Size]byte
 	modTime    int64
 	fileInfo   os.FileInfo
@@ -61,6 +64,7 @@ type diskCache struct {
 	root     string
 	maxCost  int64
 	keyLimit int64
+	minSize  int64
 	lock     cacheDirectoryLock
 
 	mu       sync.Mutex
@@ -116,7 +120,7 @@ func (f *removeOnCloseFile) Close() error {
 func newDiskCache(
 	ctx context.Context,
 	baseDir string,
-	maxCost, keyLimit int64,
+	maxCost, keyLimit, minSize int64,
 	binding [sha256.Size]byte,
 	stats *fileIOCacheStats,
 	warnings *cacheWarningLimiter,
@@ -134,6 +138,7 @@ func newDiskCache(
 		root:     root,
 		maxCost:  maxCost,
 		keyLimit: keyLimit,
+		minSize:  minSize,
 		lock:     lock,
 		entries:  make(map[fileCacheKey]*list.Element),
 		lru:      list.New(),
@@ -429,9 +434,11 @@ func (d *diskCache) validatePersistedEntry(path string, dirEntry os.DirEntry) (*
 	if err != nil {
 		return nil, err
 	}
-	if entry.size < 0 || entry.size > d.keyLimit || entry.size > d.maxCost {
+	if entry.size < 0 || entry.size <= d.minSize ||
+		entry.size > d.keyLimit || entry.size > d.maxCost {
 		return nil, ErrInvalidCache
 	}
+	entry.cost = diskCacheEntryCost(entry.size, d.maxCost)
 	info, err := dirEntry.Info()
 	if err != nil {
 		return nil, fmt.Errorf("inspect L2 cache entry: %w", err)
@@ -575,6 +582,7 @@ func (d *diskCache) writeCandidate(
 		generation: generation,
 		path:       location,
 		size:       size,
+		cost:       diskCacheEntryCost(size, d.maxCost),
 		digest:     digest,
 		modTime:    info.ModTime().UnixNano(),
 		fileInfo:   info,
@@ -672,17 +680,38 @@ func verifyCacheSourceTrailer(
 	return result, nil
 }
 
+func diskCacheEntryCost(size, maxCost int64) int64 {
+	if size < 0 || maxCost <= 0 {
+		return 0
+	}
+	if maxCost <= diskCacheAllocationUnit {
+		return maxCost
+	}
+	logical := max(size, int64(1))
+	remainder := logical % diskCacheAllocationUnit
+	if remainder == 0 {
+		return logical
+	}
+	increment := diskCacheAllocationUnit - remainder
+	if logical > math.MaxInt64-increment {
+		return 0
+	}
+	return logical + increment
+}
+
 func (d *diskCache) admit(entry *diskEntry) bool {
 	var cleanup []string
 	d.mu.Lock()
-	if d.closing || entry.size < 0 || entry.size > d.keyLimit || entry.size > d.maxCost {
+	if d.closing || entry.size < 0 || entry.size <= d.minSize ||
+		entry.size > d.keyLimit || entry.size > d.maxCost ||
+		entry.cost <= 0 || entry.cost > d.maxCost {
 		d.mu.Unlock()
 		return false
 	}
 	if existing, ok := d.entries[entry.key]; ok {
 		cleanup = append(cleanup, d.retireLocked(existing)...)
 	}
-	for entry.size > d.maxCost-d.usedCost {
+	for entry.cost > d.maxCost-d.usedCost {
 		oldest := d.lru.Back()
 		if oldest == nil {
 			break
@@ -692,7 +721,7 @@ func (d *diskCache) admit(entry *diskEntry) bool {
 	}
 	element := d.lru.PushFront(entry)
 	d.entries[entry.key] = element
-	d.usedCost += entry.size
+	d.usedCost += entry.cost
 	d.mu.Unlock()
 	d.cleanupPaths(cleanup)
 	return true
@@ -704,7 +733,7 @@ func (d *diskCache) retireLocked(element *list.Element) []string {
 	if exists && current == element {
 		delete(d.entries, entry.key)
 		d.lru.Remove(element)
-		d.usedCost -= entry.size
+		d.usedCost -= entry.cost
 	}
 	entry.retired = true
 	if entry.refs == 0 {

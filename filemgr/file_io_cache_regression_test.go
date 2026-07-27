@@ -170,7 +170,7 @@ func TestFileIOCacheRebuildsTruncatedL2Entry(t *testing.T) {
 
 func TestFileIOCacheIgnoresDisabledL2LimitForL1(t *testing.T) {
 	cache, err := NewFileIOCache(&FileIOCacheConfig{
-		L1CacheSize:    100,
+		L1CacheSize:    1024,
 		L1KeySizeLimit: 10,
 		DisableL2Cache: true,
 		L2KeySizeLimit: 5,
@@ -197,7 +197,7 @@ func TestFileIOCacheIgnoresDisabledL2LimitForL1(t *testing.T) {
 
 func TestFileIOCacheFillsDifferentKeysConcurrently(t *testing.T) {
 	cache, err := NewFileIOCache(&FileIOCacheConfig{
-		L1CacheSize:    32,
+		L1CacheSize:    1024,
 		L1KeySizeLimit: 16,
 		DisableL2Cache: true,
 	})
@@ -235,7 +235,7 @@ func TestFileIOCacheFillsDifferentKeysConcurrently(t *testing.T) {
 
 func TestFileIOCacheCanceledFollowerDoesNotCancelLeader(t *testing.T) {
 	cache, err := NewFileIOCache(&FileIOCacheConfig{
-		L1CacheSize:    32,
+		L1CacheSize:    1024,
 		L1KeySizeLimit: 16,
 		DisableL2Cache: true,
 	})
@@ -286,7 +286,7 @@ func TestFileIOCacheCanceledFollowerDoesNotCancelLeader(t *testing.T) {
 func TestFileIOCacheFollowerRetriesAfterFailedLeader(t *testing.T) {
 	const followerCount = 8
 	cache, err := NewFileIOCache(&FileIOCacheConfig{
-		L1CacheSize:    64,
+		L1CacheSize:    1024,
 		L1KeySizeLimit: 16,
 		DisableL2Cache: true,
 	})
@@ -339,7 +339,7 @@ func TestFileIOCacheFollowerRetriesAfterFailedLeader(t *testing.T) {
 
 func TestFileIOCacheFollowerRetriesAfterCanceledLeader(t *testing.T) {
 	cache, err := NewFileIOCache(&FileIOCacheConfig{
-		L1CacheSize:    64,
+		L1CacheSize:    1024,
 		L1KeySizeLimit: 16,
 		DisableL2Cache: true,
 	})
@@ -386,7 +386,7 @@ func TestFileIOCacheFollowerRetriesAfterCanceledLeader(t *testing.T) {
 
 func TestFileIOCacheLeaderDoubleChecksBeforeLoading(t *testing.T) {
 	cache, err := NewFileIOCache(&FileIOCacheConfig{
-		L1CacheSize:    32,
+		L1CacheSize:    1024,
 		L1KeySizeLimit: 16,
 		DisableL2Cache: true,
 	})

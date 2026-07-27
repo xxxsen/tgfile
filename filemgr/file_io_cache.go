@@ -1,7 +1,6 @@
 package filemgr
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -142,6 +141,7 @@ func NewFileIOCacheWithContext(ctx context.Context, config *FileIOCacheConfig) (
 			copied.L2CacheDir,
 			int64(copied.L2CacheSize),
 			int64(copied.L2KeySizeLimit),
+			l2MinimumFileSize(&copied),
 			copied.StorageBinding,
 			&cache.stats,
 			&cache.warnings,
@@ -157,6 +157,20 @@ func NewFileIOCacheWithContext(ctx context.Context, config *FileIOCacheConfig) (
 	return cache, nil
 }
 
+func normalizeFileIOCacheConfig(config *FileIOCacheConfig) {
+	if !config.DisableL1Cache && !config.DisableL2Cache &&
+		config.L1KeySizeLimit >= config.L2KeySizeLimit {
+		config.DisableL2Cache = true
+	}
+}
+
+func l2MinimumFileSize(config *FileIOCacheConfig) int64 {
+	if config.DisableL1Cache {
+		return -1
+	}
+	return int64(config.L1KeySizeLimit)
+}
+
 func validateFileIOCacheConfig(config *FileIOCacheConfig) error {
 	if !config.DisableL1Cache {
 		if config.L1CacheSize <= 0 || config.L1KeySizeLimit <= 0 || config.L1KeySizeLimit > config.L1CacheSize {
@@ -168,6 +182,10 @@ func validateFileIOCacheConfig(config *FileIOCacheConfig) error {
 	}
 	if config.L2CacheSize <= 0 || config.L2KeySizeLimit <= 0 || config.L2KeySizeLimit > config.L2CacheSize {
 		return fmt.Errorf("%w: L2 size and per-key limit are inconsistent", ErrInvalidCache)
+	}
+	normalizeFileIOCacheConfig(config)
+	if config.DisableL2Cache {
+		return nil
 	}
 	if config.L2CacheDir == "" {
 		return fmt.Errorf("%w: L2 directory is empty", ErrInvalidCache)
@@ -189,7 +207,7 @@ func (f *fileIOCacheImpl) buildL1Cache() error {
 		NumCounters:        numCounters,
 		MaxCost:            int64(f.c.L1CacheSize),
 		BufferItems:        64,
-		IgnoreInternalCost: true,
+		IgnoreInternalCost: false,
 		Cost: func(value []byte) int64 {
 			return int64(len(value))
 		},
@@ -231,7 +249,8 @@ func (f *fileIOCacheImpl) Load(
 	defer f.loads.Done()
 
 	l1Eligible := !f.c.DisableL1Cache && identity.Size <= int64(f.c.L1KeySizeLimit)
-	l2Eligible := !f.c.DisableL2Cache && identity.Size <= int64(f.c.L2KeySizeLimit)
+	l2Eligible := !l1Eligible && !f.c.DisableL2Cache &&
+		identity.Size <= int64(f.c.L2KeySizeLimit)
 	if !l1Eligible && !l2Eligible {
 		return loadUncacheable(ctx, loader)
 	}
@@ -320,23 +339,7 @@ func (f *fileIOCacheImpl) lookup(
 		return nil, false, err
 	}
 	f.stats.l2Hit.Add(1)
-	if !l1Eligible {
-		return reader, true, nil
-	}
-	raw, readErr := readExactBytes(ctx, reader, size)
-	closeErr := reader.Close()
-	if readErr == nil && closeErr == nil {
-		f.writeL1(key, raw)
-		return newBytesStream(raw), true, nil
-	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, false, fmt.Errorf("read L2 cache entry: %w", ctxErr)
-	}
-	if diskReader, ok := reader.(*diskCacheReader); ok {
-		f.l2.invalidate(diskReader.entry)
-	}
-	f.warn(ctx, "discard unreadable L2 cache entry", errors.Join(readErr, closeErr))
-	return nil, false, nil
+	return reader, true, nil
 }
 
 func (f *fileIOCacheImpl) runFillLeader(
@@ -352,18 +355,18 @@ func (f *fileIOCacheImpl) runFillLeader(
 	if err != nil || found {
 		return reader, err
 	}
-	return f.fill(ctx, key, size, l1Eligible, l2Eligible, loader)
+	return f.fill(ctx, key, size, l1Eligible, loader)
 }
 
 func (f *fileIOCacheImpl) fill(
 	ctx context.Context,
 	key fileCacheKey,
 	size int64,
-	l1Eligible, l2Eligible bool,
+	l1Eligible bool,
 	loader func(context.Context) (io.ReadSeekCloser, error),
 ) (io.ReadSeekCloser, error) {
 	if l1Eligible {
-		return f.fillBuffered(ctx, key, size, l2Eligible, loader)
+		return f.fillBuffered(ctx, key, size, loader)
 	}
 	return f.fillDisk(ctx, key, size, loader)
 }
@@ -372,7 +375,6 @@ func (f *fileIOCacheImpl) fillBuffered(
 	ctx context.Context,
 	key fileCacheKey,
 	size int64,
-	l2Eligible bool,
 	loader func(context.Context) (io.ReadSeekCloser, error),
 ) (io.ReadSeekCloser, error) {
 	source, err := loadCacheSource(ctx, loader)
@@ -385,36 +387,8 @@ func (f *fileIOCacheImpl) fillBuffered(
 		f.recordSourceError(readErr)
 		return nil, errors.Join(readErr, closeErr)
 	}
-	if l2Eligible {
-		if err := f.fillL2FromBytes(ctx, key, size, raw); err != nil {
-			return nil, err
-		}
-	}
 	f.writeL1(key, raw)
 	return newBytesStream(raw), nil
-}
-
-func (f *fileIOCacheImpl) fillL2FromBytes(
-	ctx context.Context,
-	key fileCacheKey,
-	size int64,
-	raw []byte,
-) error {
-	candidate, err := f.l2.writeCandidate(ctx, key, size, bytes.NewReader(raw))
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("fill L2 cache: %w", ctxErr)
-		}
-		f.stats.fallback.Add(1)
-		f.warn(ctx, "skip L2 cache fill", err)
-		return nil
-	}
-	if f.l2.admit(candidate) {
-		return nil
-	}
-	f.stats.reject.Add(1)
-	f.l2.cleanupPaths([]string{candidate.path})
-	return nil
 }
 
 func (f *fileIOCacheImpl) fillDisk(

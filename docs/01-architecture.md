@@ -128,19 +128,22 @@ Part 数、File 状态、layout、创建/修改时间和扩展信息。存储绑
 平台使用进程随机身份，因此不做跨重启命中。manifest 和日志都不保存 BlockIO 明文配置或
 凭据。
 
-L1 和 L2 独立判断资格，文件大小等于单文件上限时仍可进入对应层。两层都不符合时直接返回
-BlockIO stream，不做整文件缓冲。符合任一层时，同一身份在一个进程内只有一个 fill leader；
-其他请求等待 leader 完成后重新获取独立 reader。等待者可以按自己的 context 取消，不会
-取消 leader；不同身份的回填互不串行。只有精确读到声明长度、并确认没有额外字节的内容
-才能发布到任一层。
+L1 和 L2 按互斥大小区间判断资格。启用 L1 时，文件大小不超过 L1 单文件上限就只进入 L1；
+超过 L1 上限后，才会在启用 L2 且不超过 L2 单文件上限时进入 L2。两层同时启用且 L1 上限
+大于或等于 L2 上限时，L2 没有有效区间，配置规范化会停用 L2，也不会创建或锁定磁盘目录。
+两层都不符合时直接返回 BlockIO stream，不做整文件缓冲。符合任一层时，同一身份在一个
+进程内只有一个 fill leader；其他请求等待 leader 完成后重新获取独立 reader。等待者可以按
+自己的 context 取消，不会取消 leader；不同身份的回填互不串行。只有精确读到声明长度、
+并确认没有额外字节的内容才能发布到任一层。
 
-L1 使用进程内 weighted cache 保存不可变字节副本。L2 是
+L1 使用进程内 weighted cache 保存不可变字节副本，容量同时计入 entry 的内部管理成本。
+L2 是
 `<l2_cache_dir>/v2/<key-prefix>/<key>.<generation>.<size>.<sha256>.cache` 下的持久化副本：
 
 - `v2/.manifest` 绑定当前存储实例；缺失、损坏或绑定变化时旧 entry 不会被接管；
 - `v2/.lock` 对目录加非阻塞独占锁，一个目录只能由一个进程管理；
 - candidate 先在目标 shard 写唯一 temp，精确复制并同步后，以 UUID generation 原子发布；
-- 同步 weighted LRU 按已验证的实际字节数计费，同一 key 的旧 generation 只会被 retire；
+- 同步 weighted LRU 按 4 KiB 分配单元向上计费，同一 key 的旧 generation 只会被 retire；
 - reader 在 policy 锁内取得引用，entry 被淘汰或失效后要等最后一个 reader 关闭才物理删除；
 - 关闭缓存会等待正在执行的 Load 和 L2 reader、停止 L1、重试 orphan 清理并释放目录锁，
   但保留正常 admitted 文件供下次启动恢复。
@@ -150,6 +153,11 @@ L1 使用进程内 weighted cache 保存不可变字节副本。L2 是
 文件身份、mtime 或大小变化时重新校验摘要。缓存文件丢失、损坏、淘汰、磁盘写入失败或
 admission 拒绝都只产生 miss/fallback；只要 BlockIO 回源仍可成功，就不能把读取变成失败。
 数据源短读、超长读或 loader 错误仍返回保留原因链的读取错误，不能发布缓存。
+
+L2 文件名中的完整身份摘要、generation、逻辑大小和内容摘要分别用于身份隔离、原子发布、
+恢复校验和损坏检测，因此不截短这些字段，也不依赖额外 sidecar。文件名与 inode 的固定开销
+通过互斥分层避免落盘 L1 小文件，并通过最小 4 KiB 计费纳入淘汰预算；启用 L1 后，启动恢复
+会清理大小落入 L1 区间的旧 L2 entry。
 
 L2 目录不能与数据库、localfile 原始块、备份 work dir 或 WebDAV spool 重叠。缓存清理只
 处理规范化受管目录内的 v2 cache/temp 和严格识别的旧格式副本，不写业务表、不改变 Mapping、

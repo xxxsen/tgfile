@@ -228,6 +228,11 @@ func (c *Config) validateIOCache() error {
 			errInvalidConfig,
 		)
 	}
+	if c.IOCache.EnableL1Cache &&
+		c.IOCache.L1KeySizeLimit >= c.IOCache.L2KeySizeLimit {
+		c.IOCache.EnableL2Cache = false
+		return nil
+	}
 	if strings.TrimSpace(c.IOCache.L2CacheDir) == "" {
 		return fmt.Errorf("%w: io_cache.l2_cache_dir must not be empty", errInvalidConfig)
 	}

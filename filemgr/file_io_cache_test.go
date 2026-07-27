@@ -39,7 +39,7 @@ func registerCacheCleanup(t *testing.T, cache IFileIOCache) {
 
 func TestFileIOCacheTierSelectionAndHits(t *testing.T) {
 	cache, err := NewFileIOCache(&FileIOCacheConfig{
-		L1CacheSize:    16,
+		L1CacheSize:    1024,
 		L1KeySizeLimit: 4,
 		L2CacheSize:    64,
 		L2KeySizeLimit: 16,
@@ -57,7 +57,7 @@ func TestFileIOCacheTierSelectionAndHits(t *testing.T) {
 		wantL2     bool
 		loaderHits int
 	}{
-		{name: "both tiers", fileID: 1, data: []byte("1234"), wantL1: true, wantL2: true, loaderHits: 1},
+		{name: "L1 only", fileID: 1, data: []byte("1234"), wantL1: true, loaderHits: 1},
 		{name: "L2 only", fileID: 2, data: []byte("12345678"), wantL2: true, loaderHits: 1},
 		{name: "uncacheable", fileID: 3, data: bytes.Repeat([]byte("x"), 17), loaderHits: 2},
 	}
@@ -100,7 +100,7 @@ func TestFileIOCacheExactSourceLength(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			cache, err := NewFileIOCache(&FileIOCacheConfig{
 				DisableL1Cache: false,
-				L1CacheSize:    16,
+				L1CacheSize:    1024,
 				L1KeySizeLimit: 8,
 				DisableL2Cache: true,
 			})
@@ -142,10 +142,61 @@ func TestFileIOCacheConfigurationValidation(t *testing.T) {
 	require.ErrorIs(t, err, ErrInvalidCache)
 }
 
+func TestFileIOCacheDisablesRedundantL2(t *testing.T) {
+	tests := []struct {
+		name    string
+		l1Limit int
+		l2Limit int
+	}{
+		{name: "equal limits", l1Limit: 8, l2Limit: 8},
+		{name: "L1 limit greater", l1Limit: 16, l2Limit: 8},
+	}
+	fileID := uint64(300)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cacheDir := filepath.Join(t.TempDir(), "cache")
+			cache, err := NewFileIOCache(&FileIOCacheConfig{
+				L1CacheSize:    1024,
+				L1KeySizeLimit: test.l1Limit,
+				L2CacheSize:    64,
+				L2KeySizeLimit: test.l2Limit,
+				L2CacheDir:     cacheDir,
+			})
+			require.NoError(t, err)
+			registerCacheCleanup(t, cache)
+			implementation := cache.(*fileIOCacheImpl)
+			require.True(t, implementation.c.DisableL2Cache)
+			require.Nil(t, implementation.l2)
+			require.NoDirExists(t, cacheDir)
+
+			data := []byte("content")
+			identity := testCacheIdentity(fileID, int64(len(data)))
+			var loaderCalls int
+			for range 2 {
+				reader, loadErr := cache.Load(
+					t.Context(),
+					identity,
+					func(context.Context) (io.ReadSeekCloser, error) {
+						loaderCalls++
+						return newBytesStream(data), nil
+					},
+				)
+				require.NoError(t, loadErr)
+				actual, readErr := io.ReadAll(reader)
+				require.NoError(t, readErr)
+				require.NoError(t, reader.Close())
+				require.Equal(t, data, actual)
+			}
+			require.Equal(t, 1, loaderCalls)
+		})
+		fileID++
+	}
+}
+
 func TestFileIOCacheRejectsLoadsAfterClose(t *testing.T) {
 	cache, err := NewFileIOCache(&FileIOCacheConfig{
 		DisableL1Cache: false,
-		L1CacheSize:    16,
+		L1CacheSize:    1024,
 		L1KeySizeLimit: 8,
 		DisableL2Cache: true,
 	})
@@ -162,7 +213,7 @@ func TestFileIOCachePreservesErrorChains(t *testing.T) {
 	sentinel := errors.New("source failed")
 	cache, err := NewFileIOCache(&FileIOCacheConfig{
 		DisableL1Cache: false,
-		L1CacheSize:    16,
+		L1CacheSize:    1024,
 		L1KeySizeLimit: 8,
 		DisableL2Cache: true,
 	})
@@ -180,6 +231,9 @@ func TestFileIOCacheTierEligibilityBoundaries(t *testing.T) {
 		config     FileIOCacheConfig
 		data       []byte
 		loaderHits int32
+		wantL1     bool
+		wantL2     bool
+		wantL2On   bool
 	}{
 		{
 			name: "both disabled",
@@ -193,12 +247,13 @@ func TestFileIOCacheTierEligibilityBoundaries(t *testing.T) {
 		{
 			name: "L1 exact boundary",
 			config: FileIOCacheConfig{
-				L1CacheSize:    8,
+				L1CacheSize:    1024,
 				L1KeySizeLimit: 4,
 				DisableL2Cache: true,
 			},
 			data:       []byte("1234"),
 			loaderHits: 1,
+			wantL1:     true,
 		},
 		{
 			name: "L2 exact boundary",
@@ -209,28 +264,32 @@ func TestFileIOCacheTierEligibilityBoundaries(t *testing.T) {
 			},
 			data:       []byte("1234"),
 			loaderHits: 1,
+			wantL2:     true,
+			wantL2On:   true,
 		},
 		{
 			name: "zero byte in both tiers",
 			config: FileIOCacheConfig{
-				L1CacheSize:    8,
+				L1CacheSize:    1024,
 				L1KeySizeLimit: 4,
 				L2CacheSize:    8,
 				L2KeySizeLimit: 4,
 			},
 			data:       nil,
 			loaderHits: 1,
+			wantL1:     true,
 		},
 		{
 			name: "over both limits",
 			config: FileIOCacheConfig{
-				L1CacheSize:    8,
+				L1CacheSize:    1024,
 				L1KeySizeLimit: 2,
 				L2CacheSize:    8,
 				L2KeySizeLimit: 3,
 			},
 			data:       []byte("1234"),
 			loaderHits: 2,
+			wantL2On:   true,
 		},
 	}
 	fileID := uint64(100)
@@ -242,6 +301,7 @@ func TestFileIOCacheTierEligibilityBoundaries(t *testing.T) {
 			cache, err := NewFileIOCache(&test.config)
 			require.NoError(t, err)
 			registerCacheCleanup(t, cache)
+			implementation := cache.(*fileIOCacheImpl)
 			identity := testCacheIdentity(fileID, int64(len(test.data)))
 			var loaderCalls int32
 			for range 2 {
@@ -256,6 +316,15 @@ func TestFileIOCacheTierEligibilityBoundaries(t *testing.T) {
 				require.True(t, bytes.Equal(test.data, actual))
 			}
 			require.Equal(t, test.loaderHits, loaderCalls)
+			key := buildFileCacheKey(withCacheBinding(identity, implementation.c.StorageBinding))
+			_, l1Found := implementation.readL1(key, identity.Size)
+			require.Equal(t, test.wantL1, l1Found)
+			require.Equal(t, test.wantL2On, implementation.l2 != nil)
+			l2Found := false
+			if implementation.l2 != nil {
+				_, l2Found = implementation.l2.entryPath(key)
+			}
+			require.Equal(t, test.wantL2, l2Found)
 		})
 		fileID++
 	}
@@ -263,7 +332,7 @@ func TestFileIOCacheTierEligibilityBoundaries(t *testing.T) {
 
 func TestFileIOCacheCancellationWinsOverCompletedSourceRead(t *testing.T) {
 	cache, err := NewFileIOCache(&FileIOCacheConfig{
-		L1CacheSize:    8,
+		L1CacheSize:    1024,
 		L1KeySizeLimit: 4,
 		DisableL2Cache: true,
 	})
