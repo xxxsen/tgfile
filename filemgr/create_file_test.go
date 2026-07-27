@@ -91,6 +91,7 @@ func newCreateFileTestManager(t *testing.T, blockSize int64) (IFileManager, *cap
 		DisableL2Cache: true,
 	})
 	require.NoError(t, err)
+	registerCacheCleanup(t, cache)
 	block := &captureBlockIO{
 		maxSize: blockSize,
 		parts:   make(map[string][]byte),

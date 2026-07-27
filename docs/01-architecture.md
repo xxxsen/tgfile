@@ -119,7 +119,43 @@ Telegram 后端的稳定约束：
 
 FileKey 和 DeleteRef 都是后端数据，日志和外部响应不得输出其完整值。
 
-## 6. Composite 与删除状态机
+## 6. 文件内容缓存
+
+所有需要内容的读取入口都通过 `FileManager.OpenFile` 使用同一个两级整文件缓存。缓存 key
+不是 FileID，而是带格式版本的 SHA-256 身份：它包含当前存储绑定、FileID、声明大小、
+Part 数、File 状态、layout、创建/修改时间和扩展信息。存储绑定由规范化数据库路径、
+数据库的稳定 OS 文件身份、BlockIO 类型与配置以及 rotate 参数导出；不支持稳定文件身份的
+平台使用进程随机身份，因此不做跨重启命中。manifest 和日志都不保存 BlockIO 明文配置或
+凭据。
+
+L1 和 L2 独立判断资格，文件大小等于单文件上限时仍可进入对应层。两层都不符合时直接返回
+BlockIO stream，不做整文件缓冲。符合任一层时，同一身份在一个进程内只有一个 fill leader；
+其他请求等待 leader 完成后重新获取独立 reader。等待者可以按自己的 context 取消，不会
+取消 leader；不同身份的回填互不串行。只有精确读到声明长度、并确认没有额外字节的内容
+才能发布到任一层。
+
+L1 使用进程内 weighted cache 保存不可变字节副本。L2 是
+`<l2_cache_dir>/v2/<key-prefix>/<key>.<generation>.<size>.<sha256>.cache` 下的持久化副本：
+
+- `v2/.manifest` 绑定当前存储实例；缺失、损坏或绑定变化时旧 entry 不会被接管；
+- `v2/.lock` 对目录加非阻塞独占锁，一个目录只能由一个进程管理；
+- candidate 先在目标 shard 写唯一 temp，精确复制并同步后，以 UUID generation 原子发布；
+- 同步 weighted LRU 按已验证的实际字节数计费，同一 key 的旧 generation 只会被 retire；
+- reader 在 policy 锁内取得引用，entry 被淘汰或失效后要等最后一个 reader 关闭才物理删除；
+- 关闭缓存会等待正在执行的 Load 和 L2 reader、停止 L1、重试 orphan 清理并释放目录锁，
+  但保留正常 admitted 文件供下次启动恢复。
+
+启动恢复不跟随 symlink，只接管 shard、文件名、大小、普通文件类型和内容摘要都匹配的 entry；
+同 key 的多个 generation 按固定字典序选择一个，其余安全清理。热命中执行 open 和 fstat；
+文件身份、mtime 或大小变化时重新校验摘要。缓存文件丢失、损坏、淘汰、磁盘写入失败或
+admission 拒绝都只产生 miss/fallback；只要 BlockIO 回源仍可成功，就不能把读取变成失败。
+数据源短读、超长读或 loader 错误仍返回保留原因链的读取错误，不能发布缓存。
+
+L2 目录不能与数据库、localfile 原始块、备份 work dir 或 WebDAV spool 重叠。缓存清理只
+处理规范化受管目录内的 v2 cache/temp 和严格识别的旧格式副本，不写业务表、不改变 Mapping、
+Part 或 durable outbox，也不调用 BlockIO 删除。
+
+## 7. Composite 与删除状态机
 
 普通上传生成 layout v1 File，其 Telegram Part 直接记录在 `tg_file_part_tab`。Multipart
 的每个 S3 part 也是一个 layout v1 File；Complete 只创建 layout v2 Composite File，
@@ -150,7 +186,7 @@ Telegram 消息删除不是 Mapping 事务中的同步网络调用。以下操�
 缺少 DeleteRef 的历史数据不会触发 Telegram 删除。删除成功后仍保留 File、Part 和删除
 状态，保证审计与引用安全。
 
-## 7. 在线生命周期
+## 8. 在线生命周期
 
 `serve` 的固定顺序是：
 
@@ -161,12 +197,13 @@ Telegram 消息删除不是 Mapping 事务中的同步网络调用。以下操�
 5. 创建 HTTP server，同时启动 Telegram 删除 worker、Multipart 过期清理 worker；启用
    backup 或 Web 管理后台时再启动一个 Export、一个 Import 和周期清理 worker；
 6. 任一组件非预期退出时取消其他组件并使服务退出；
-7. 收到终止信号后停止 HTTP 服务、取消 worker 并关闭数据库。
+7. 收到终止信号后停止 HTTP 服务并取消 worker，等待缓存 fill/reader 后关闭缓存，最后关闭
+   数据库。
 
 `check-config` 在日志、数据库、网络和缓存初始化之前完成验证。`audit` 使用 SQLite 只读
 模式，不执行 migration。
 
-## 8. 架构不变量
+## 9. 架构不变量
 
 - 业务 schema 只通过不可变的 `migrations/NNNN_name.sql` 演进；
 - Mapping 与 File 分离，CopyObject 只增加引用，不复制 Telegram 内容；
@@ -183,4 +220,6 @@ Telegram 消息删除不是 Mapping 事务中的同步网络调用。以下操�
 - 逻辑 Export Pin 参与最后引用判断；Import staged File 在原子发布前没有 Mapping；
 - 逻辑恢复保留路径、Part/Segment/Completed Part 和协议元数据，但生成新的 FileID、
   EntryID、FileKey 和 DeleteRef；
-- 缓存损坏、淘汰或清空不得影响 SQLite 或 Telegram 原始数据。
+- 缓存身份必须同时绑定存储实例和不可变 File 版本，单独 FileID 不能形成命中；
+- 缓存损坏、淘汰、清空或回填失败不得影响 SQLite、Telegram/localfile 原始数据、Mapping、
+  Part 或删除状态机。

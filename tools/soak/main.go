@@ -30,6 +30,11 @@ const (
 	defaultBackendDelay   = 5 * time.Millisecond
 	defaultDelayChunkSize = 32 * 1024
 	localBlockSize        = 20 * 1024 * 1024
+	soakL1CacheSize       = 256 * 1024
+	soakL1KeySizeLimit    = 4 * 1024
+	soakL2CacheSize       = 4 * 1024 * 1024
+	soakL2KeySizeLimit    = 512 * 1024
+	cacheCloseTimeout     = 30 * time.Second
 )
 
 var (
@@ -221,22 +226,68 @@ func runLocalProtocolTest[T any](
 	if err != nil {
 		return zero, fmt.Errorf("open protocol test database: %w", err)
 	}
-	defer func() {
-		_ = databaseClient.Close()
-	}()
 	block, err := localfile.New(filepath.Join(workspace, "blocks"), localBlockSize)
 	if err != nil {
-		return zero, fmt.Errorf("create localfile backend: %w", err)
+		return zero, errors.Join(
+			fmt.Errorf("create localfile backend: %w", err),
+			databaseClient.Close(),
+		)
 	}
-	block = newSlowBlockIO(block, config.backendDelay, defaultDelayChunkSize)
+	slowBlock := newSlowBlockIO(block, config.backendDelay, defaultDelayChunkSize)
+	block = slowBlock
+	cacheDir := filepath.Join(workspace, "cache")
 	cache, err := filemgr.NewFileIOCache(&filemgr.FileIOCacheConfig{
-		DisableL1Cache: true,
-		DisableL2Cache: true,
+		L1CacheSize:    soakL1CacheSize,
+		L1KeySizeLimit: soakL1KeySizeLimit,
+		L2CacheSize:    soakL2CacheSize,
+		L2KeySizeLimit: soakL2KeySizeLimit,
+		L2CacheDir:     cacheDir,
 	})
 	if err != nil {
-		return zero, fmt.Errorf("create file cache: %w", err)
+		return zero, errors.Join(
+			fmt.Errorf("create file cache: %w", err),
+			databaseClient.Close(),
+		)
 	}
 	manager := filemgr.NewFileManager(databaseClient, block, cache)
+	observedManager := newObservedFileManager(manager)
+	testServer, err := newLocalProtocolHTTPServer(workspace, observedManager)
+	if err != nil {
+		return zero, errors.Join(err, closeLocalProtocolCache(cache), databaseClient.Close())
+	}
+	stopWorkers := startLocalProtocolWorkers(manager)
+	runner := newSoakRunner(
+		testServer.Client().Transport,
+		testServer.URL,
+		databaseClient,
+		manager,
+		observedManager,
+		slowBlock,
+		filepath.Join(workspace, "blocks"),
+		filepath.Join(workspace, "spool"),
+		cacheDir,
+		config.seed,
+		config.clientDelay,
+	)
+	result, runErr := run(runner)
+	stopWorkers()
+	testServer.Close()
+	return result, errors.Join(runErr, closeLocalProtocolCache(cache), databaseClient.Close())
+}
+
+func closeLocalProtocolCache(cache filemgr.IFileIOCache) error {
+	closeContext, cancelClose := context.WithTimeout(context.Background(), cacheCloseTimeout)
+	defer cancelClose()
+	if err := cache.Close(closeContext); err != nil {
+		return fmt.Errorf("close local protocol cache: %w", err)
+	}
+	return nil
+}
+
+func newLocalProtocolHTTPServer(
+	workspace string,
+	manager filemgr.IFileManager,
+) (*httptest.Server, error) {
 	handler, err := server.New(
 		"127.0.0.1:0",
 		server.WithUser(map[string]string{soakAccessKey: soakSecretKey}),
@@ -261,10 +312,12 @@ func runLocalProtocolTest[T any](
 		server.WithFileManager(manager),
 	)
 	if err != nil {
-		return zero, fmt.Errorf("create protocol test HTTP server: %w", err)
+		return nil, fmt.Errorf("create protocol test HTTP server: %w", err)
 	}
-	testServer := httptest.NewServer(handler)
-	defer testServer.Close()
+	return httptest.NewServer(handler), nil
+}
+
+func startLocalProtocolWorkers(manager filemgr.IFileManager) func() {
 	workerContext, cancelWorkers := context.WithCancel(context.Background())
 	var workerGroup sync.WaitGroup
 	workerGroup.Add(2)
@@ -276,20 +329,10 @@ func runLocalProtocolTest[T any](
 		defer workerGroup.Done()
 		_ = manager.RunMultipartCleanupWorker(workerContext)
 	}()
-	defer func() {
+	return func() {
 		cancelWorkers()
 		workerGroup.Wait()
-	}()
-	runner := newSoakRunner(
-		testServer.Client().Transport,
-		testServer.URL,
-		databaseClient,
-		filepath.Join(workspace, "blocks"),
-		filepath.Join(workspace, "spool"),
-		config.seed,
-		config.clientDelay,
-	)
-	return run(runner)
+	}
 }
 
 func writeEvent(event outputEvent) error {

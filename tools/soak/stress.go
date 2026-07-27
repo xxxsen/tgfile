@@ -43,7 +43,15 @@ type stressSummary struct {
 	DeleteStateRows     int64               `json:"delete_state_rows"`
 	DatabaseBytes       int64               `json:"database_bytes"`
 	IntegrityChecked    bool                `json:"integrity_checked"`
+	BackendUploads      uint64              `json:"backend_uploads"`
+	BackendDownloads    uint64              `json:"backend_downloads"`
+	BackendDeleteCalls  uint64              `json:"backend_delete_calls"`
+	BackendDeleteRefs   uint64              `json:"backend_delete_refs"`
+	L2CacheFiles        int64               `json:"l2_cache_files"`
+	L2CacheBytes        int64               `json:"l2_cache_bytes"`
+	L2CacheTempFiles    int64               `json:"l2_cache_temp_files"`
 	FinalActiveKeys     int                 `json:"final_active_keys"`
+	FinalActiveLinks    int                 `json:"final_active_links"`
 	FinalActiveUploads  int                 `json:"final_active_uploads"`
 	FinalAuditCompleted bool                `json:"final_audit_completed"`
 }
@@ -155,6 +163,9 @@ func (r *stressRunner) run() (*stressSummary, error) {
 func (r *stressRunner) runPreflight() error {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
+	if err := r.protocol.runCachePreflight(ctx); err != nil {
+		return fmt.Errorf("stress cache preflight: %w", err)
+	}
 	if err := r.prepareFixtures(ctx); err != nil {
 		return err
 	}
@@ -335,8 +346,17 @@ func (r *stressRunner) populateFinalSummary(
 	summary.DeleteStateRows = audit.deleteStateRows
 	summary.DatabaseBytes = audit.databaseBytes
 	summary.IntegrityChecked = audit.integrityChecked
+	backend := r.protocol.block.counts()
+	summary.BackendUploads = backend.uploads
+	summary.BackendDownloads = backend.downloads
+	summary.BackendDeleteCalls = backend.deleteCalls
+	summary.BackendDeleteRefs = backend.deleteRefs
+	summary.L2CacheFiles = audit.cacheFiles
+	summary.L2CacheBytes = audit.cacheBytes
+	summary.L2CacheTempFiles = audit.cacheTempFiles
 	r.protocol.activeMu.Lock()
 	summary.FinalActiveKeys = len(r.protocol.activeKeys)
+	summary.FinalActiveLinks = len(r.protocol.activeLinks)
 	summary.FinalActiveUploads = len(r.protocol.activeUpload)
 	r.protocol.activeMu.Unlock()
 	summary.FinalAuditCompleted = auditCompleted

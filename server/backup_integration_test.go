@@ -31,6 +31,7 @@ func TestBackupV2HTTPExportAuthorizationAndArtifact(t *testing.T) {
 		DisableL1Cache: true, DisableL2Cache: true,
 	})
 	require.NoError(t, err)
+	registerIntegrationCacheCleanup(t, cache)
 	files := filemgr.NewFileManager(databaseClient, block, cache)
 	fileID, err := files.CreateFile(t.Context(), 6, bytes.NewBufferString("backup"))
 	require.NoError(t, err)

@@ -183,10 +183,16 @@ func openBackupRuntime(
 		return nil, func() {}, fmt.Errorf("open backup database: %w", err)
 	}
 	closeRuntime := func() { _ = db.Close() }
-	managerFiles, err := buildFileManager(ctx, serviceConfig)
+	managerFiles, ioCache, err := buildFileManager(ctx, serviceConfig)
 	if err != nil {
 		closeRuntime()
 		return nil, func() {}, err
+	}
+	closeRuntime = func() {
+		closeContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), cacheShutdownTimeout)
+		defer cancel()
+		_ = ioCache.Close(closeContext)
+		_ = db.Close()
 	}
 	manager, err := backupmgr.New(
 		db.GetClient(),

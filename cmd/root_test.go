@@ -121,6 +121,33 @@ func TestCheckConfigHasNoDatabaseOrNetworkSideEffects(t *testing.T) {
 	require.NotContains(t, stdout+stderr, token)
 }
 
+func TestCheckConfigRejectsInvalidIOCacheWithoutSideEffects(t *testing.T) {
+	directory := t.TempDir()
+	databaseFile := filepath.Join(directory, "must-not-be-created.db")
+	cacheDir := filepath.Join(directory, "must-not-be-created-cache")
+	configFile := filepath.Join(directory, "config.json")
+	require.NoError(t, os.WriteFile(configFile, []byte(fmt.Sprintf(`{
+		"db_file":%q,
+		"bot_kind":"telegram",
+		"bot_config":{"chatid":1,"token":"secret","upload_min_interval_ms":1000},
+		"io_cache":{
+			"enable_l1_cache":true,
+			"l1_cache_size":0,
+			"l1_key_size_limit":1,
+			"enable_l2_cache":true,
+			"l2_cache_size":16,
+			"l2_key_size_limit":8,
+			"l2_cache_dir":%q
+		}
+	}`, databaseFile, cacheDir)), 0o600))
+
+	code, _, stderr := executeForTest(t, "check-config", "--config="+configFile)
+	require.Equal(t, 1, code)
+	require.Contains(t, stderr, "io_cache L1")
+	require.NoFileExists(t, databaseFile)
+	require.NoDirExists(t, cacheDir)
+}
+
 func TestRetiredMigrationCommandIsUnavailable(t *testing.T) {
 	code, _, stderr := executeForTest(t, "migrate-default-prefix", "--help")
 	require.Equal(t, 1, code)

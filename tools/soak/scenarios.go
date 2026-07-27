@@ -34,6 +34,9 @@ type completedPartEntry struct {
 
 func (r *soakRunner) runPreflight(ctx context.Context) error {
 	r.sampleResources()
+	if err := r.runCachePreflight(ctx); err != nil {
+		return err
+	}
 	if err := r.runBoundaryLifecycle(ctx); err != nil {
 		return err
 	}
