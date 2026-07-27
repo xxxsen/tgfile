@@ -13,6 +13,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/xxxsen/tgfile/authz"
 )
 
 func TestNewWithDefaultConfigDoesNotPanic(t *testing.T) {
@@ -189,6 +191,18 @@ func (r *countingReadCloser) Close() error {
 }
 
 func webDAVPreparationServer(tempDir string, roles map[string]string) *Server {
+	permissions := make(map[string][]string, len(roles))
+	for username, role := range roles {
+		permission := authz.WebDAVRead
+		if role == "read-write" {
+			permission = authz.WebDAVWrite
+		}
+		permissions[username] = []string{string(permission)}
+	}
+	authorizer, err := authz.New(permissions)
+	if err != nil {
+		panic(err)
+	}
 	return &Server{c: &config{
 		userMap: map[string]string{
 			"editor": "secret",
@@ -197,8 +211,8 @@ func webDAVPreparationServer(tempDir string, roles map[string]string) *Server {
 		webdav: WebDAVOptions{
 			Enabled:       true,
 			UploadTempDir: tempDir,
-			Users:         roles,
 		},
+		authorizer: authorizer,
 	}}
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/entity"
 	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/s3checksum"
@@ -210,6 +211,33 @@ func TestPublicReadAllowsTrulyAnonymousRequest(t *testing.T) {
 
 	require.Nil(t, result)
 	require.Nil(t, apiError)
+}
+
+func TestBasicAuthorizationReturnsIdentityAndChecksPermission(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	authorizer, err := authz.New(map[string][]string{
+		"reader": {string(authz.S3Read)},
+	})
+	require.NoError(t, err)
+	handler := NewS3Handler(nil, Config{
+		Buckets:    []Bucket{{Name: "public", ACL: BucketACLPublicRead}},
+		Users:      map[string]string{"reader": "secret"},
+		Authorizer: authorizer,
+	})
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/public/object", nil)
+	request.SetBasicAuth("reader", "secret")
+	context.Request = request
+	identity, apiError := handler.Authorize(context, false, authz.S3Read)
+	require.Nil(t, apiError)
+	require.Equal(t, "reader", identity.Username)
+
+	identity, apiError = handler.Authorize(context, true, authz.S3Write)
+	require.Nil(t, identity)
+	require.NotNil(t, apiError)
+	require.Equal(t, http.StatusForbidden, apiError.HTTPStatus)
 }
 
 func TestReadDateConditionsUseSecondPrecision(t *testing.T) {

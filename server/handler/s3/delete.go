@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/server/handler/s3/s3base"
 
@@ -128,7 +129,7 @@ func (h *S3Handler) DeleteObjects(c *gin.Context) {
 		))
 		return
 	}
-	if _, apiError := h.Authorize(c, true); apiError != nil {
+	if _, apiError := h.Authorize(c, true, authz.S3Write); apiError != nil {
 		s3base.WriteError(c, apiError)
 		return
 	}

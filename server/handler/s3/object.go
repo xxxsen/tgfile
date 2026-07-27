@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/entity"
 	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/s3checksum"
@@ -296,7 +297,7 @@ func (h *S3Handler) UploadObject(c *gin.Context) {
 	hasUploadID := hasQueryKey(query, "uploadId")
 	if hasPartNumber || hasUploadID {
 		if !hasPartNumber || !hasUploadID {
-			if _, apiError := h.Authorize(c, true); apiError != nil {
+			if _, apiError := h.Authorize(c, true, authz.S3Write); apiError != nil {
 				s3base.WriteError(c, apiError)
 				return
 			}
@@ -368,7 +369,7 @@ func (h *S3Handler) rejectUnsupportedObjectQuery(c *gin.Context) bool {
 	if !hasUnsupportedObjectQuery(c.Request.URL.Query()) {
 		return false
 	}
-	if _, apiError := h.Authorize(c, true); apiError != nil {
+	if _, apiError := h.Authorize(c, true, authz.S3Write); apiError != nil {
 		s3base.WriteError(c, apiError)
 		return true
 	}
@@ -385,7 +386,7 @@ func (h *S3Handler) rejectUnsupportedObjectReadQuery(c *gin.Context) bool {
 	if !hasUnsupportedObjectReadQuery(c.Request.URL.Query()) {
 		return false
 	}
-	if _, apiError := h.Authorize(c, true); apiError != nil {
+	if _, apiError := h.Authorize(c, true, authz.S3Read); apiError != nil {
 		s3base.WriteError(c, apiError)
 		return true
 	}
@@ -575,7 +576,7 @@ func (h *S3Handler) authorizeObject(
 		)
 	}
 	required := forceAuthentication || bucket.ACL != BucketACLPublicRead
-	if _, apiError := h.Authorize(c, required); apiError != nil {
+	if _, apiError := h.Authorize(c, required, authz.S3Read); apiError != nil {
 		return Bucket{}, "", apiError
 	}
 	return bucket, key, nil
@@ -592,7 +593,7 @@ func (h *S3Handler) authorizeWrite(c *gin.Context) (Bucket, string, *s3base.APIE
 			nil,
 		)
 	}
-	if _, apiError := h.Authorize(c, true); apiError != nil {
+	if _, apiError := h.Authorize(c, true, authz.S3Write); apiError != nil {
 		return Bucket{}, "", apiError
 	}
 	return bucket, key, nil

@@ -20,6 +20,7 @@ import (
 	"github.com/xxxsen/common/logutil"
 	"go.uber.org/zap"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/server/handler/admin/ui"
 )
 
@@ -40,7 +41,7 @@ func New(options Options) (*Handler, error) {
 		files:            options.FileManager,
 		backups:          options.BackupManager,
 		users:            cloneStringMap(options.Users),
-		roles:            cloneStringMap(options.Roles),
+		authorizer:       options.Authorizer,
 		externalOrigins:  origins,
 		secureCookie:     secureCookie,
 		maxUploadSize:    options.MaxUploadSize,
@@ -64,7 +65,7 @@ func validateAdminHandlerOptions(options Options) (map[string]struct{}, bool, er
 	if err != nil {
 		return nil, false, err
 	}
-	if err := validateAdminHandlerUsers(options.Users, options.Roles); err != nil {
+	if err := validateAdminHandlerUsers(options.Users, options.Authorizer); err != nil {
 		return nil, false, err
 	}
 	return origins, secureCookie, nil
@@ -72,7 +73,7 @@ func validateAdminHandlerOptions(options Options) (map[string]struct{}, bool, er
 
 func invalidAdminHandlerOptions(options Options) bool {
 	return options.FileManager == nil || options.BackupManager == nil ||
-		len(options.Users) == 0 || len(options.Roles) == 0 ||
+		len(options.Users) == 0 || options.Authorizer == nil ||
 		len(options.ExternalOrigins) == 0 ||
 		len(options.ExternalOrigins) > maxAdminOrigins ||
 		options.SessionIdle <= 0 || options.SessionMaximum <= options.SessionIdle ||
@@ -104,15 +105,21 @@ func validateAdminHandlerOrigins(values []string) (map[string]struct{}, bool, er
 	return origins, scheme == "https", nil
 }
 
-func validateAdminHandlerUsers(users, roles map[string]string) error {
-	for username, role := range roles {
-		password, exists := users[username]
-		if !exists || password == "" || len(password) > 4096 ||
+func validateAdminHandlerUsers(users map[string]string, authorizer *authz.Authorizer) error {
+	if authorizer == nil {
+		return errInvalidAdminUsers
+	}
+	hasAuthorizedUser := false
+	for username, password := range users {
+		if password == "" || len(password) > 4096 ||
 			username == "" || len(username) > 256 ||
-			strings.IndexFunc(username, isControlCharacter) >= 0 ||
-			(role != roleRead && role != roleReadWrite) {
+			strings.IndexFunc(username, isControlCharacter) >= 0 {
 			return errInvalidAdminUsers
 		}
+		hasAuthorizedUser = hasAuthorizedUser || authorizer.Has(username, authz.AdminRead)
+	}
+	if !hasAuthorizedUser {
+		return errInvalidAdminUsers
 	}
 	return nil
 }
@@ -313,7 +320,12 @@ func decodeLoginRequest(body io.Reader) (loginRequest, error) {
 
 func (h *Handler) authenticateLogin(request loginRequest) (string, bool) {
 	expected, userExists := h.users[request.Username]
-	role, roleExists := h.roles[request.Username]
+	level := h.authorizer.Level(request.Username, authz.AdminRead, authz.AdminWrite)
+	role := roleRead
+	if level == authz.LevelReadWrite {
+		role = roleReadWrite
+	}
+	roleExists := level != authz.LevelNone
 	expectedDigest := h.dummyPassword
 	if userExists && roleExists {
 		expectedDigest = sha256.Sum256([]byte(expected))

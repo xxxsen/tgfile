@@ -27,6 +27,20 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
     "admin-viewer": "viewer-password",
     "admin-operator": "operator-password"
   },
+  "user_permission": {
+    "access-key": [
+      "s3:write",
+      "webdav:write",
+      "backup:write",
+      "file:write"
+    ],
+    "admin-viewer": [
+      "admin:read"
+    ],
+    "admin-operator": [
+      "admin:write"
+    ]
+  },
   "external_origin": [
     "https://files.example.com",
     "https://image.example.com"
@@ -51,9 +65,6 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
     "root": "/",
     "max_upload_size": 5368709120,
     "upload_temp_dir": "/data/webdav-upload",
-    "users": {
-      "access-key": "read-write"
-    },
     "quota_bytes": 0,
     "max_mutation_entries": 100000,
     "sync_page_size": 1000
@@ -61,9 +72,6 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
   "backup": {
     "enable": false,
     "work_dir": "/data/backup-work",
-    "users": {
-      "access-key": "read-write"
-    },
     "max_archive_bytes": 107374182400,
     "max_expanded_bytes": 1099511627776,
     "max_mapping_count": 100000,
@@ -75,10 +83,6 @@ tgfile 是一个以 Telegram 为主要内容后端的文件服务。文件按块
   },
   "admin": {
     "enable": true,
-    "users": {
-      "admin-viewer": "read",
-      "admin-operator": "read-write"
-    },
     "session_idle_minutes": 30,
     "session_max_hours": 12,
     "max_upload_size": 5368709120
@@ -106,11 +110,18 @@ bucket ACL：
 不能小于 `1000`。配置不会兼容旧的单一 `s3.bucket` 字段，bucket 必须显式写入
 `s3.buckets` 并指定 ACL。
 
+`user_info` 只保存 Basic/S3 access key 与密码；同级 `user_permission` 是唯一授权来源，
+两个对象的用户名集合必须完全相同且每个权限数组非空。支持的权限为 `s3:read/write`、
+`webdav:read/write`、`backup:read/write`、`admin:read/write`、`file:write`、
+`all:read` 和 `all:write`。每个 `*:write` 自动包含同协议的 `*:read`；`all:read`
+包含全部读能力，`all:write` 包含全部能力。`file:write` 同时控制 `/file/upload` 与
+`/file/purge`。配置解析严格拒绝未知字段、已删除的各功能 `users` 字段和尾随 JSON。
+
 `s3.multipart_expire_hours` 控制未完成 Multipart Upload 的有效期。缺省或配置为 `0`
 时使用 24 小时，显式值只能为 1～24；到期的暂存 part 会进入异步删除状态机。
 
-WebDAV 使用 `user_info` 中的 Basic Auth 凭据，`webdav.users` 可把已知账号限制为
-`read` 或 `read-write`；省略该 map 时所有已认证账号均为读写。部署在 HTTPS 反向代理后
+WebDAV 使用 `user_info` 中的 Basic Auth 凭据，并由 `webdav:read` / `webdav:write`
+决定只读或读写能力。部署在 HTTPS 反向代理后
 应在顶层 `external_origin` 数组中列出客户端实际访问的 origin，用于严格校验 COPY/MOVE
 的绝对 `Destination`；省略时使用直连请求的 TLS 状态和 Host，服务不会信任任意
 `Forwarded` header。未知长度 PUT 会先流式写入
@@ -118,14 +129,14 @@ WebDAV 使用 `user_info` 中的 Basic Auth 凭据，`webdav.users` 可把已知
 预留不小于 `max_upload_size` 的空间。`quota_bytes=0` 表示不限制逻辑配额，配额按
 WebDAV root 内唯一 File 计费，COPY 同一内容不会重复计费。
 
-逻辑备份默认关闭。开启时 `backup.users` 必须引用 `user_info` 中的账号：`read` 可以创建
-导出、查询自己的任务和下载自己的归档；`read-write` 还可以导入、查看全部任务、取消任务
+逻辑备份默认关闭。开启时至少一个账号必须具备 `backup:read`：读权限可以创建
+导出、查询自己的任务和下载自己的归档；`backup:write` 还可以导入、查看全部任务、取消任务
 和读取备份指标。`work_dir` 必须是绝对路径并预留归档空间；服务创建该目录为 `0700`，
 其中 artifact、snapshot 和报告为 `0600`。
 
 Web 管理后台默认关闭。启用后访问 `https://files.example.com/_admin/`，账号密码来自
-`user_info`，权限由独立的 `admin.users` 指定：`read` 可以浏览、下载、导出及管理自己的
-导出任务，`read-write` 还可以上传、条件覆盖、导入及管理全部任务。建议使用不与 S3
+`user_info`，`admin:read` 可以浏览、下载、导出及管理自己的导出任务，`admin:write`
+还可以上传、条件覆盖、导入及管理全部任务。建议使用不与 S3
 Access Key 共用的专用高强度账号。
 
 启用管理后台时，顶层 `external_origin` 数组必须列出浏览器实际访问的 origin；登录和
@@ -302,18 +313,17 @@ worker 会在 Telegram 时限内尝试删除对应 message。WebDAV 成功响应
 
 | 路由 | 方法 | 认证 | 说明 |
 |---|---|---|---|
-| `/file/upload` | POST | Basic | 直链上传并返回稳定 key |
+| `/file/upload` | POST | Basic + `file:write` | 直链上传并返回稳定 key |
 | `/file/download/:key` | GET | 匿名 | 直链下载，支持 Range |
 | `/file/meta/:key` | GET | 匿名 | 直链元数据 |
-| `/file/purge` | POST | Basic | 清理没有删除状态的旧无引用元数据 |
-| `/backup/v2/exports` | POST | Basic + backup role | 创建异步逻辑导出 |
-| `/backup/v2/imports` | POST | Basic + read-write | 接收 `.tgfb` 并创建异步导入 |
-| `/backup/v2/jobs/:job_id` | GET | Basic + backup role | 查询任务 |
-| `/backup/v2/jobs/:job_id/cancel` | POST | Basic + read-write | 取消未发布任务 |
-| `/backup/v2/exports/:job_id/artifact` | GET/HEAD | Basic + backup role | 下载完成归档 |
-| `/backup/v2/metrics` | GET | Basic + read-write | Prometheus 文本指标 |
-| `/static/*` | GET | Basic | 浏览目录树 |
-| `/webdav/*` | WebDAV Class 1/2 + sync-collection | Basic | 映射 `webdav.root` |
+| `/file/purge` | POST | Basic + `file:write` | 清理没有删除状态的旧无引用元数据 |
+| `/backup/v2/exports` | POST | Basic + `backup:read` | 创建异步逻辑导出 |
+| `/backup/v2/imports` | POST | Basic + `backup:write` | 接收 `.tgfb` 并创建异步导入 |
+| `/backup/v2/jobs/:job_id` | GET | Basic + `backup:read` | 查询任务 |
+| `/backup/v2/jobs/:job_id/cancel` | POST | Basic + `backup:write` | 取消未发布任务 |
+| `/backup/v2/exports/:job_id/artifact` | GET/HEAD | Basic + `backup:read` | 下载完成归档 |
+| `/backup/v2/metrics` | GET | Basic + `backup:write` | Prometheus 文本指标 |
+| `/webdav/*` | WebDAV Class 1/2 + sync-collection | Basic + `webdav:read/write` | 映射 `webdav.root` |
 
 ## 逻辑备份
 

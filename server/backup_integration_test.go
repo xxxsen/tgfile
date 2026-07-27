@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/backupfmt"
 	"github.com/xxxsen/tgfile/backupmgr"
 	"github.com/xxxsen/tgfile/blockio/mem"
@@ -44,15 +45,21 @@ func TestBackupV2HTTPExportAuthorizationAndArtifact(t *testing.T) {
 		ArtifactRetention: time.Hour, JobRetention: 24 * time.Hour,
 	})
 	require.NoError(t, err)
-	users := map[string]string{"operator": "secret", "reader": "secret"}
+	users := map[string]string{
+		"operator":  "secret",
+		"reader":    "secret",
+		"adminonly": "secret",
+	}
 	handler, err := server.New(
 		"127.0.0.1:0",
 		server.WithUser(users),
+		server.WithAuthorizer(testAuthorizer(t, map[string][]string{
+			"operator":  {string(authz.BackupWrite)},
+			"reader":    {string(authz.BackupRead)},
+			"adminonly": {string(authz.AdminWrite)},
+		})),
 		server.WithFileManager(files),
-		server.WithBackup(server.BackupOptions{
-			Enabled: true,
-			Users:   map[string]string{"operator": "read-write", "reader": "read"},
-		}, manager),
+		server.WithBackup(server.BackupOptions{Enabled: true}, manager),
 	)
 	require.NoError(t, err)
 	testServer := httptest.NewServer(handler)
@@ -60,6 +67,30 @@ func TestBackupV2HTTPExportAuthorizationAndArtifact(t *testing.T) {
 	runContext, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	go func() { _ = manager.Run(runContext) }()
+
+	for username, target := range map[string]string{
+		"reader":    "/backup/v2/metrics",
+		"adminonly": "/backup/v2/exports",
+	} {
+		method := http.MethodGet
+		var body io.Reader
+		if username == "adminonly" {
+			method = http.MethodPost
+			body = bytes.NewBufferString(`{"scope":"/"}`)
+		}
+		denied, requestErr := http.NewRequestWithContext(
+			t.Context(),
+			method,
+			testServer.URL+target,
+			body,
+		)
+		require.NoError(t, requestErr)
+		denied.SetBasicAuth(username, "secret")
+		deniedResponse, requestErr := testServer.Client().Do(denied)
+		require.NoError(t, requestErr)
+		require.Equal(t, http.StatusForbidden, deniedResponse.StatusCode)
+		require.NoError(t, deniedResponse.Body.Close())
+	}
 
 	request, err := http.NewRequestWithContext(
 		t.Context(),

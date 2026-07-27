@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/blockio/mem"
 	"github.com/xxxsen/tgfile/db"
 	"github.com/xxxsen/tgfile/filemgr"
@@ -41,6 +42,19 @@ func newWebDAVIntegrationEnvironment(
 	require.NoError(t, err)
 	registerIntegrationCacheCleanup(t, cache)
 	manager := filemgr.NewFileManager(databaseClient, block, cache)
+	permissions := make(map[string][]string, len(users))
+	for username := range users {
+		if username == "no-webdav" {
+			permissions[username] = []string{string(authz.S3Write)}
+			continue
+		}
+		webDAVPermission := authz.WebDAVWrite
+		if username == "reader" {
+			webDAVPermission = authz.WebDAVRead
+		}
+		permissions[username] = []string{string(webDAVPermission), string(authz.S3Write)}
+	}
+	authorizer := testAuthorizer(t, permissions)
 	options.Enabled = true
 	if options.Root == "" {
 		options.Root = "/"
@@ -48,6 +62,7 @@ func newWebDAVIntegrationEnvironment(
 	handler, err := server.New(
 		"127.0.0.1:0",
 		server.WithUser(users),
+		server.WithAuthorizer(authorizer),
 		server.WithS3(server.S3Options{
 			Enabled: true,
 			Buckets: []server.S3BucketOptions{{
@@ -444,6 +459,9 @@ func TestWebDAVPersistentLocksAndLockNullCleanup(t *testing.T) {
 	restarted, err := server.New(
 		"127.0.0.1:0",
 		server.WithUser(map[string]string{"editor": "secret"}),
+		server.WithAuthorizer(testAuthorizer(t, map[string][]string{
+			"editor": {string(authz.WebDAVWrite)},
+		})),
 		server.WithWebDAV(server.WebDAVOptions{Enabled: true, Root: "/"}),
 		server.WithFileManager(environment.manager),
 	)
@@ -543,11 +561,14 @@ func TestWebDAVChunkedPermissionsQuotaDestinationAndSync(t *testing.T) {
 	const uploadSize = 6 * 1024 * 1024
 	environment := newWebDAVIntegrationEnvironment(
 		t,
-		map[string]string{"editor": "secret", "reader": "read-secret"},
+		map[string]string{
+			"editor":    "secret",
+			"reader":    "read-secret",
+			"no-webdav": "other-secret",
+		},
 		server.WebDAVOptions{
 			MaxUploadSize:      8 * 1024 * 1024,
 			UploadTempDir:      tempDir,
-			Users:              map[string]string{"editor": "read-write", "reader": "read"},
 			QuotaBytes:         uploadSize,
 			MaxMutationEntries: 100,
 			SyncPageSize:       100,
@@ -557,6 +578,16 @@ func TestWebDAVChunkedPermissionsQuotaDestinationAndSync(t *testing.T) {
 	require.NoFileExists(t, staleSpool)
 	client := environment.server.Client()
 	root := environment.server.URL + "/webdav/sync"
+	requireWebDAVStatus(t, doWebDAVRequest(
+		t,
+		client,
+		"no-webdav",
+		"other-secret",
+		"PROPFIND",
+		root,
+		nil,
+		map[string]string{"Depth": "0"},
+	), http.StatusForbidden)
 	requireWebDAVStatus(t, doWebDAVRequest(
 		t, client, "editor", "secret", "MKCOL", root, nil, nil,
 	), http.StatusCreated)

@@ -18,6 +18,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/backupfmt"
 	"github.com/xxxsen/tgfile/backupmgr"
 	"github.com/xxxsen/tgfile/blockio/mem"
@@ -144,6 +145,21 @@ func TestAdminDisabledAndAdminSecurityHeaders(t *testing.T) {
 	require.Equal(t, http.StatusForbidden, response.Code)
 	require.NotContains(t, response.Body.String(), "operator")
 	require.NotContains(t, response.Body.String(), "write-secret")
+
+	response = serveAdminRequest(
+		t,
+		environment.handler,
+		http.MethodPost,
+		"/_admin/api/v1/session",
+		bytes.NewBufferString(`{"username":"backuponly","password":"backup-secret"}`),
+		map[string]string{
+			"Content-Type": "application/json",
+			"Origin":       adminTestOrigin,
+		},
+	)
+	require.Equal(t, http.StatusUnauthorized, response.Code)
+	require.Contains(t, response.Body.String(), "invalid_credentials")
+	require.NotContains(t, response.Body.String(), "backuponly")
 
 	response = serveAdminRequest(
 		t,
@@ -485,10 +501,19 @@ func newAdminTestEnvironment(t *testing.T) adminTestEnvironment {
 		JobRetention:      24 * time.Hour,
 	})
 	require.NoError(t, err)
-	users := map[string]string{"viewer": "view-secret", "operator": "write-secret"}
+	users := map[string]string{
+		"viewer":     "view-secret",
+		"operator":   "write-secret",
+		"backuponly": "backup-secret",
+	}
 	handler, err := server.New(
 		"127.0.0.1:0",
 		server.WithUser(users),
+		server.WithAuthorizer(testAuthorizer(t, map[string][]string{
+			"viewer":     {string(authz.AdminRead)},
+			"operator":   {string(authz.AdminWrite)},
+			"backuponly": {string(authz.BackupWrite)},
+		})),
 		server.WithFileManager(files),
 		server.WithBackup(server.BackupOptions{Enabled: false}, manager),
 		server.WithAdmin(server.AdminOptions{
@@ -497,7 +522,6 @@ func newAdminTestEnvironment(t *testing.T) adminTestEnvironment {
 				adminTestOrigin,
 				adminTestAlternativeOrigin,
 			},
-			Users:       map[string]string{"viewer": "read", "operator": "read-write"},
 			SessionIdle: 30 * time.Minute, SessionMaximum: 12 * time.Hour,
 			MaxUploadSize: 1024, MaxPathBytes: 1024, MaxMutationEntries: 1000,
 		}),

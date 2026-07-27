@@ -19,6 +19,7 @@ import (
 	"github.com/xxxsen/common/webapi/proxyutil"
 	"go.uber.org/zap"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/directory"
 	"github.com/xxxsen/tgfile/entity"
 	"github.com/xxxsen/tgfile/filemgr"
@@ -70,7 +71,7 @@ var (
 )
 
 type Options struct {
-	Users              map[string]string
+	Authorizer         *authz.Authorizer
 	ExternalOrigins    []string
 	MaxUploadSize      int64
 	QuotaBytes         int64
@@ -82,7 +83,7 @@ type WebdavHandler struct {
 	fmgr               filemgr.IFileManager
 	davRoot            string
 	webRoot            string
-	users              map[string]string
+	authorizer         *authz.Authorizer
 	externalOrigins    []*url.URL
 	maxUploadSize      int64
 	quotaBytes         int64
@@ -105,7 +106,7 @@ func NewWebdavHandler(
 		syncPageSize: 1000,
 	}
 	if len(options) != 0 {
-		handler.users = options[0].Users
+		handler.authorizer = options[0].Authorizer
 		for _, value := range options[0].ExternalOrigins {
 			origin, err := url.Parse(value)
 			if err != nil {
@@ -168,16 +169,12 @@ func (h *WebdavHandler) authorize(c *gin.Context) bool {
 		c.AbortWithStatus(http.StatusUnauthorized)
 		return false
 	}
-	role := "read-write"
-	if len(h.users) != 0 {
-		var exists bool
-		role, exists = h.users[user.Username]
-		if !exists {
-			h.writeError(c, http.StatusForbidden, errReadOnly, "")
-			return false
-		}
+	level := h.authorizer.Level(user.Username, authz.WebDAVRead, authz.WebDAVWrite)
+	if level == authz.LevelNone {
+		h.writeError(c, http.StatusForbidden, errReadOnly, "")
+		return false
 	}
-	if role == "read" && isWebDAVWriteMethod(c.Request.Method) {
+	if level == authz.LevelRead && isWebDAVWriteMethod(c.Request.Method) {
 		c.Header("Allow", strings.Join(ReadOnlyMethods, ", "))
 		h.writeError(c, http.StatusForbidden, errReadOnly, "need-privileges")
 		return false
@@ -204,7 +201,8 @@ func (h *WebdavHandler) principal(c *gin.Context) string {
 
 func (h *WebdavHandler) allowedMethods(c *gin.Context) []string {
 	user, ok := proxyutil.GetUserInfo(c.Request.Context())
-	if ok && len(h.users) != 0 && h.users[user.Username] == "read" {
+	if ok &&
+		h.authorizer.Level(user.Username, authz.WebDAVRead, authz.WebDAVWrite) == authz.LevelRead {
 		return ReadOnlyMethods
 	}
 	return AllowMethods

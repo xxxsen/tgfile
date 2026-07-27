@@ -49,10 +49,9 @@ func (s *Server) redactedRequestPath(requestPath string) (string, bool) {
 			return prefix + redactedPathComponent, true
 		}
 	}
-	for _, prefix := range []string{"/webdav/", "/static/"} {
-		if strings.HasPrefix(requestPath, prefix) && len(requestPath) > len(prefix) {
-			return prefix + redactedPathComponent, true
-		}
+	const webDAVPrefix = "/webdav/"
+	if strings.HasPrefix(requestPath, webDAVPrefix) && len(requestPath) > len(webDAVPrefix) {
+		return webDAVPrefix + redactedPathComponent, true
 	}
 	if s.s3 == nil {
 		return requestPath, false
@@ -63,7 +62,7 @@ func (s *Server) redactedRequestPath(requestPath string) (string, bool) {
 		return requestPath, false
 	}
 	switch bucketName {
-	case "", "_admin", "backup", "file", "static", "webdav":
+	case "", "_admin", "backup", "file", "webdav":
 		return requestPath, false
 	}
 	return "/" + bucketName + "/" + redactedPathComponent, true
@@ -104,8 +103,6 @@ func restoreOriginalPathParameters(c *gin.Context, requestPath string) {
 		setPathParameter(c, "key", strings.TrimPrefix(requestPath, "/file/meta/"))
 	case strings.HasPrefix(requestPath, "/webdav/"):
 		setPathParameter(c, "all", strings.TrimPrefix(requestPath, "/webdav"))
-	case strings.HasPrefix(requestPath, "/static/"):
-		setPathParameter(c, "filepath", strings.TrimPrefix(requestPath, "/static"))
 	default:
 		trimmed := strings.TrimPrefix(requestPath, "/")
 		bucketName, _, hasObject := strings.Cut(trimmed, "/")

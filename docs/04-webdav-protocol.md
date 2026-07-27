@@ -7,8 +7,8 @@
 
 ## 1. 能力边界
 
-WebDAV 入口为 `/webdav/*`，使用 Basic Auth，通过 `webdav.root` 映射到 S3、直链和静态
-目录共用的 Mapping 树。服务声明：
+WebDAV 入口为 `/webdav/*`，使用 Basic Auth，通过 `webdav.root` 映射到与 S3、直链和
+管理后台共用的 Mapping 树。服务声明：
 
 ```text
 DAV: 1, 2, sync-collection
@@ -25,13 +25,15 @@ Telegram 只提供不可变 message 内容存储和删除能力，不提供目�
 
 ## 2. 认证、权限和缓存
 
-账号必须先存在于全局 `user_info`。WebDAV 可进一步把账号配置为：
+账号必须同时存在于全局 `user_info` 和 `user_permission`。权限派生为：
 
-- `read`：只允许 OPTIONS、GET、HEAD、PROPFIND 和 REPORT；
-- `read-write`：允许全部已实现方法。
+- `webdav:read`：只允许 OPTIONS、GET、HEAD、PROPFIND 和 REPORT；
+- `webdav:write`：允许全部已实现方法，并自动包含读能力。
 
-未配置 WebDAV 用户映射时，所有通过全局认证的账号均为读写。服务不实现逐目录或逐资源
-ACL，S3 bucket 的 `private/public-read` 也不会转换为 WebDAV 权限。
+没有 WebDAV 权限的已认证账号返回 403；不存在“所有已认证账号默认读写”的回退。只读账号
+对写方法返回 403，并在 `Allow` 中只公布只读方法。未知长度 PUT 在创建 spool 文件前完成
+`webdav:write` 判断。服务不实现逐目录或逐资源 ACL，S3 bucket 的 `private/public-read`
+也不会转换为 WebDAV 权限。
 
 所有 WebDAV 响应使用：
 

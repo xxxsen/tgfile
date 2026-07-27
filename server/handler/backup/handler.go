@@ -15,19 +15,20 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/xxxsen/common/webapi/proxyutil"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/backupfmt"
 	"github.com/xxxsen/tgfile/backupmgr"
 )
 
 type Handler struct {
-	manager *backupmgr.Manager
-	users   map[string]string
+	manager    *backupmgr.Manager
+	authorizer *authz.Authorizer
 }
 
 var errTrailingJSON = errors.New("request contains trailing JSON")
 
-func New(manager *backupmgr.Manager, users map[string]string) *Handler {
-	return &Handler{manager: manager, users: users}
+func New(manager *backupmgr.Manager, authorizer *authz.Authorizer) *Handler {
+	return &Handler{manager: manager, authorizer: authorizer}
 }
 
 type exportRequest struct {
@@ -244,10 +245,14 @@ func (h *Handler) authorize(c *gin.Context, write bool) (string, string, bool) {
 		c.Status(http.StatusUnauthorized)
 		return "", "", false
 	}
-	role, exists := h.users[user.Username]
-	if !exists || write && role != "read-write" {
+	level := h.authorizer.Level(user.Username, authz.BackupRead, authz.BackupWrite)
+	if level == authz.LevelNone || write && level != authz.LevelReadWrite {
 		c.Status(http.StatusForbidden)
 		return "", "", false
+	}
+	role := "read"
+	if level == authz.LevelReadWrite {
+		role = "read-write"
 	}
 	return user.Username, role, true
 }

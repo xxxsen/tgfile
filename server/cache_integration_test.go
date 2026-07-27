@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/xxxsen/common/database"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/blockio"
 	"github.com/xxxsen/tgfile/db"
 	"github.com/xxxsen/tgfile/filemgr"
@@ -193,6 +194,9 @@ func newCacheIntegrationEnvironment(t *testing.T) *cacheIntegrationEnvironment {
 			Buckets: []server.S3BucketOptions{{Name: "hackmd", ACL: server.BucketACLPublicRead}},
 		}),
 		server.WithUser(map[string]string{"access": "secret"}),
+		server.WithAuthorizer(testAuthorizer(t, map[string][]string{
+			"access": {string(authz.AllWrite)},
+		})),
 		server.WithEnableWebdav(true, "/"),
 		server.WithFileManager(signaling),
 	)

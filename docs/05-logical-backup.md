@@ -196,10 +196,10 @@ work dir 固定为绝对路径、目录权限 `0700`、文件权限 `0600`；相
 ## 8. HTTP 与权限
 
 backup 功能默认关闭。开启后，所有路由先通过 `user_info` Basic Auth，再检查
-`backup.users`：
+顶层 `user_permission`：
 
-- `read`：创建 Export、查询自己的 Job、下载自己的 artifact；
-- `read-write`：具有 read 权限，并可 Import、查看全部 Job、取消 Job和读取全局指标。
+- `backup:read`：创建 Export、查询自己的 Job、下载自己的 artifact；
+- `backup:write`：具有读权限，并可 Import、查看全部 Job、取消 Job 和读取全局指标。
 
 | 方法 | 路由 | 语义 |
 |---|---|---|
@@ -208,14 +208,14 @@ backup 功能默认关闭。开启后，所有路由先通过 `user_info` Basic 
 | `GET` | `/backup/v2/jobs/{job_id}` | 查询 Job 状态、进度、结果和安全错误 |
 | `POST` | `/backup/v2/jobs/{job_id}/cancel` | 请求取消未发布 Job |
 | `GET/HEAD` | `/backup/v2/exports/{job_id}/artifact` | 下载完成的 Export artifact |
-| `GET` | `/backup/v2/metrics` | read-write 用户读取 Prometheus 文本指标 |
+| `GET` | `/backup/v2/metrics` | `backup:write` 用户读取 Prometheus 文本指标 |
 
 artifact 支持 HEAD、Range 和 HTTP 条件请求，返回 Content-Length、媒体类型、下载文件名、
 带引号的 artifact SHA-256 ETag、摘要 header 和 `Cache-Control: private, no-store`。
 partial 文件永远不可下载。backup API 不接受普通 S3 Access Key 签名，也不接受 URL 拉取。
 
 管理后台是同一 Job 引擎的独立入口。`admin.enable` 可以在不暴露 `/backup/v2` 的情况下
-启动 backup manager；管理角色与 `backup.users` 互不继承。管理 Export 固定以登录用户名
+启动 backup manager；`admin:*` 与 `backup:*` 权限互不继承。管理 Export 固定以登录用户名
 作为 owner，管理 Job 列表使用 `(created_at, job_id)` keyset 分页。`read` 只能查看、下载
 和取消自己的 Export；`read-write` 可以查看和取消所有可取消 Job，并执行 Import。
 

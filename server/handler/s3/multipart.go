@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/s3checksum"
 	"github.com/xxxsen/tgfile/server/handler/s3/s3base"
@@ -293,7 +294,7 @@ func (h *S3Handler) prepareUploadPart(c *gin.Context) (*uploadPartPreparation, *
 }
 
 func (h *S3Handler) ListParts(c *gin.Context) {
-	bucket, key, apiError := h.authorizeWrite(c)
+	bucket, key, apiError := h.authorizeObject(c, true)
 	if apiError != nil {
 		s3base.WriteError(c, apiError)
 		return
@@ -509,7 +510,7 @@ func (h *S3Handler) ListMultipartUploads(c *gin.Context) {
 		s3base.WriteError(c, noSuchBucketError(bucketName))
 		return
 	}
-	if _, apiError := h.Authorize(c, true); apiError != nil {
+	if _, apiError := h.Authorize(c, true, authz.S3Read); apiError != nil {
 		s3base.WriteError(c, apiError)
 		return
 	}

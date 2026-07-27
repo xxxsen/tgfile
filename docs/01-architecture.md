@@ -23,7 +23,7 @@ tgfile 是一个以 Telegram 为主要内容后端的流式文件服务。文件
 - 文件直链上传、下载和元数据读取；
 - SQLite migration、只读审计和持久化 Telegram 删除 worker。
 
-WebDAV、Web 管理后台、逻辑备份和静态目录复用同一 FileManager。WebDAV 提供 Class 1/2 资源方法、
+WebDAV、Web 管理后台和逻辑备份复用同一 FileManager。WebDAV 提供 Class 1/2 资源方法、
 持久化 dead properties、锁和 collection sync；它可以透明读取 Multipart Composite
 File，所有覆盖和删除也复用同一套引用与底层删除语义。
 
@@ -31,7 +31,8 @@ File，所有覆盖和删除也复用同一套引用与底层删除语义。
 
 ```mermaid
 flowchart LR
-    Client["S3 / HTTP / WebDAV 客户端"] --> Server["server<br/>路由、ACL、鉴权、协议适配"]
+    Client["S3 / HTTP / WebDAV 客户端"] --> Server["server<br/>路由、ACL、认证、协议适配"]
+    Server --> Authz["authz<br/>统一权限闭包"]
     Browser["管理浏览器"] --> Admin["admin handler<br/>Session / CSRF / UI"]
     Admin --> Server
     Admin --> FM
@@ -65,6 +66,7 @@ Directory 事务完成。
 |---|---|
 | `cmd` | Cobra 子命令、配置校验、依赖组装和进程生命周期 |
 | `server` | HTTP 路由、bucket ACL、认证、S3/HTTP/WebDAV/管理协议转换 |
+| `authz` | 权限注册、配置编译、write/read 与 all 权限闭包、无状态授权查询 |
 | `server/handler/admin` | 内嵌管理 UI、Session、CSRF、角色校验和管理 API |
 | `filemgr` | 文件创建与读取、S3/Multipart/WebDAV 事务、Composite、引用判断和后台 worker |
 | `directory` | SQLite 路径树、分页遍历及事务内 Stat/Create/Replace/Remove/Copy/Move/Touch |
@@ -81,11 +83,20 @@ Directory 事务完成。
 依赖方向必须保持单向：`cmd` 负责组装，业务包不反向依赖 `cmd`；数据模型层不依赖
 handler；协议层通过 `IFileManager` 使用存储能力。
 
-## 4. 认证与 bucket ACL
+## 4. 认证、统一授权与 bucket ACL
 
 每个 server 实例拥有独立、有序的 authenticator，不使用进程级隐式注册。普通受保护
 HTTP 路由使用 Basic Auth；S3 接受 Basic Auth 或本地 `s3verify` 校验的 SigV4 header /
-presigned query。
+presigned query。`user_info` 是唯一凭据来源；同级 `user_permission` 是唯一授权来源，
+两个对象的用户名集合必须完全一致。各 handler 只接收组装阶段创建的同一只读 Authorizer，
+不维护自己的用户角色映射。
+
+权限固定为 `s3:read/write`、`webdav:read/write`、`backup:read/write`、
+`admin:read/write`、`file:write`、`all:read` 和 `all:write`。协议 write 权限蕴含同协议
+read；`all:read` 蕴含所有读能力，`all:write` 蕴含全部能力。`file:write` 同时控制
+`/file/upload` 和 `/file/purge`。不存在无命名空间的 `all` 或 `file:read`。
+配置中的未知权限、重复权限、空权限数组、账号集合不一致和旧的功能级 `users` 字段都会在
+初始化数据库、BlockIO 或 HTTP 服务前失败。
 
 bucket 必须显式配置以下 ACL 之一：
 
@@ -93,12 +104,14 @@ bucket 必须显式配置以下 ACL 之一：
 - `public-read`：仅对象 GET/HEAD 允许真正匿名访问，其余操作仍要求认证。
 
 客户端一旦提交认证信息，认证失败就返回错误，不能因 bucket 可公开读取而降级为匿名。
-未知 bucket 对匿名请求返回 AccessDenied，对已认证请求返回 NoSuchBucket，避免私有部署
-被匿名枚举。
+public-read 对象读取若携带有效凭据，该用户仍必须具备 `s3:read`；所有 S3 写操作要求
+`s3:write`。Header 签名、presigned query 和 Basic Auth 经过相同权限判断。
+未知 bucket 对匿名或无对应 S3 权限的请求返回 AccessDenied，对具备所需 S3 权限的认证
+请求返回 NoSuchBucket，避免私有部署被匿名枚举。
 
 `/_admin/` 不使用 Basic Auth 或 S3 签名。它使用 `user_info` 校验登录密码，再由
-`admin.users` 授予管理角色，并签发进程内 HttpOnly Session Cookie。管理角色不扩展
-S3、WebDAV 或直接 Backup API 的权限，反向亦然。
+`admin:read` / `admin:write` 动态派生管理角色，并签发进程内 HttpOnly Session Cookie。
+管理权限不扩展 S3、WebDAV 或直接 Backup API 的权限，反向亦然。
 
 ## 5. BlockIO 与 Telegram 边界
 
@@ -168,7 +181,7 @@ Part 或 durable outbox，也不调用 BlockIO 删除。
 普通上传生成 layout v1 File，其 Telegram Part 直接记录在 `tg_file_part_tab`。Multipart
 的每个 S3 part 也是一个 layout v1 File；Complete 只创建 layout v2 Composite File，
 按顺序引用这些 source File，不重新下载或上传 Telegram message。所有读取入口最终都通过
-`FileManager.OpenFile`，因此 S3、直链、WebDAV、静态目录和备份可以透明读取两种 layout。
+`FileManager.OpenFile`，因此 S3、直链、WebDAV、管理后台和备份可以透明读取两种 layout。
 
 S3 additional checksum 的计算边界是 S3 Part 和最终对象，不是 Telegram message。
 UploadPart 在流式写入 Telegram 的同时计算并校验 checksum；Complete 只读取 SQLite 中

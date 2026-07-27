@@ -158,6 +158,9 @@ generate_config() {
   "user_info": {
     "$USERNAME": "$PASSWORD"
   },
+  "user_permission": {
+    "$USERNAME": ["all:write"]
+  },
   "external_origin": $EXTERNAL_ORIGINS_JSON,
   "s3": {
     "enable": true,
@@ -180,9 +183,6 @@ generate_config() {
   },
   "admin": {
     "enable": true,
-    "users": {
-      "$USERNAME": "read-write"
-    },
     "session_idle_minutes": 30,
     "session_max_hours": 12,
     "max_upload_size": 5368709120

@@ -1,9 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
@@ -12,9 +14,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/xxxsen/common/logger"
 	"go.uber.org/zap"
 
-	"github.com/xxxsen/common/logger"
+	"github.com/xxxsen/tgfile/authz"
 )
 
 type BotConfig struct { // 默认的配置
@@ -24,6 +27,7 @@ type BotConfig struct { // 默认的配置
 }
 
 func (c *Config) SafeLogFields() []zap.Field {
+	authorizer, _ := authz.New(c.UserPermission)
 	return []zap.Field{
 		zap.String("bind", c.Bind),
 		zap.String("db_file", c.DBFile),
@@ -36,21 +40,63 @@ func (c *Config) SafeLogFields() []zap.Field {
 		zap.String("webdav_root", c.Webdav.Root),
 		zap.Int64("webdav_max_upload_size", c.Webdav.MaxUploadSize),
 		zap.Int64("webdav_quota_bytes", c.Webdav.QuotaBytes),
-		zap.Int("webdav_user_count", len(c.Webdav.Users)),
 		zap.Bool("backup_enable", c.Backup.Enable),
 		zap.String("backup_work_dir", c.Backup.WorkDir),
-		zap.Int("backup_user_count", len(c.Backup.Users)),
 		zap.Int64("backup_max_archive_bytes", c.Backup.MaxArchiveBytes),
 		zap.Int64("backup_max_expanded_bytes", c.Backup.MaxExpandedBytes),
 		zap.Bool("admin_enable", c.Admin.Enable),
-		zap.Int("admin_user_count", len(c.Admin.Users)),
 		zap.Int64("admin_max_upload_size", c.Admin.MaxUploadSize),
 		zap.Bool("l1_cache_enable", c.IOCache.EnableL1Cache),
 		zap.Int("l1_cache_size", c.IOCache.L1CacheSize),
 		zap.Bool("l2_cache_enable", c.IOCache.EnableL2Cache),
 		zap.Int("l2_cache_size", c.IOCache.L2CacheSize),
 		zap.Int("user_count", len(c.UserInfo)),
+		zap.Int("permission_user_count", len(c.UserPermission)),
+		zap.Int("s3_read_user_count", permissionUserCount(authorizer, c.UserInfo, authz.S3Read)),
+		zap.Int("s3_write_user_count", permissionUserCount(authorizer, c.UserInfo, authz.S3Write)),
+		zap.Int(
+			"webdav_read_user_count",
+			permissionUserCount(authorizer, c.UserInfo, authz.WebDAVRead),
+		),
+		zap.Int(
+			"webdav_write_user_count",
+			permissionUserCount(authorizer, c.UserInfo, authz.WebDAVWrite),
+		),
+		zap.Int(
+			"backup_read_user_count",
+			permissionUserCount(authorizer, c.UserInfo, authz.BackupRead),
+		),
+		zap.Int(
+			"backup_write_user_count",
+			permissionUserCount(authorizer, c.UserInfo, authz.BackupWrite),
+		),
+		zap.Int(
+			"admin_read_user_count",
+			permissionUserCount(authorizer, c.UserInfo, authz.AdminRead),
+		),
+		zap.Int(
+			"admin_write_user_count",
+			permissionUserCount(authorizer, c.UserInfo, authz.AdminWrite),
+		),
+		zap.Int(
+			"file_write_user_count",
+			permissionUserCount(authorizer, c.UserInfo, authz.FileWrite),
+		),
 	}
+}
+
+func permissionUserCount(
+	authorizer *authz.Authorizer,
+	users map[string]string,
+	permission authz.Permission,
+) int {
+	count := 0
+	for username := range users {
+		if authorizer.Has(username, permission) {
+			count++
+		}
+	}
+	return count
 }
 
 type S3BucketConfig struct {
@@ -74,14 +120,13 @@ func (c S3Config) BucketNames() []string {
 }
 
 type WebdavConfig struct {
-	Enable             bool              `json:"enable"`
-	Root               string            `json:"root"`
-	MaxUploadSize      int64             `json:"max_upload_size"`
-	UploadTempDir      string            `json:"upload_temp_dir"`
-	Users              map[string]string `json:"users"`
-	QuotaBytes         int64             `json:"quota_bytes"`
-	MaxMutationEntries int               `json:"max_mutation_entries"`
-	SyncPageSize       int               `json:"sync_page_size"`
+	Enable             bool   `json:"enable"`
+	Root               string `json:"root"`
+	MaxUploadSize      int64  `json:"max_upload_size"`
+	UploadTempDir      string `json:"upload_temp_dir"`
+	QuotaBytes         int64  `json:"quota_bytes"`
+	MaxMutationEntries int    `json:"max_mutation_entries"`
+	SyncPageSize       int    `json:"sync_page_size"`
 }
 
 type IOCacheConfig struct {
@@ -95,41 +140,40 @@ type IOCacheConfig struct {
 }
 
 type BackupConfig struct {
-	Enable                 bool              `json:"enable"`
-	WorkDir                string            `json:"work_dir"`
-	Users                  map[string]string `json:"users"`
-	MaxArchiveBytes        int64             `json:"max_archive_bytes"`
-	MaxExpandedBytes       int64             `json:"max_expanded_bytes"`
-	MaxMappingCount        int               `json:"max_mapping_count"`
-	MaxFileCount           int               `json:"max_file_count"`
-	MaxPartCount           int               `json:"max_part_count"`
-	MaxPathBytes           int               `json:"max_path_bytes"`
-	ArtifactRetentionHours int               `json:"artifact_retention_hours"`
-	JobRetentionDays       int               `json:"job_retention_days"`
+	Enable                 bool   `json:"enable"`
+	WorkDir                string `json:"work_dir"`
+	MaxArchiveBytes        int64  `json:"max_archive_bytes"`
+	MaxExpandedBytes       int64  `json:"max_expanded_bytes"`
+	MaxMappingCount        int    `json:"max_mapping_count"`
+	MaxFileCount           int    `json:"max_file_count"`
+	MaxPartCount           int    `json:"max_part_count"`
+	MaxPathBytes           int    `json:"max_path_bytes"`
+	ArtifactRetentionHours int    `json:"artifact_retention_hours"`
+	JobRetentionDays       int    `json:"job_retention_days"`
 }
 
 type AdminConfig struct {
-	Enable             bool              `json:"enable"`
-	Users              map[string]string `json:"users"`
-	SessionIdleMinutes int               `json:"session_idle_minutes"`
-	SessionMaxHours    int               `json:"session_max_hours"`
-	MaxUploadSize      int64             `json:"max_upload_size"`
+	Enable             bool  `json:"enable"`
+	SessionIdleMinutes int   `json:"session_idle_minutes"`
+	SessionMaxHours    int   `json:"session_max_hours"`
+	MaxUploadSize      int64 `json:"max_upload_size"`
 }
 
 type Config struct {
-	Bind            string            `json:"bind"`
-	LogInfo         logger.LogConfig  `json:"log_info"`
-	DBFile          string            `json:"db_file"`
-	BotKind         string            `json:"bot_kind"`
-	BotInfo         any               `json:"bot_config"`
-	UserInfo        map[string]string `json:"user_info"`
-	ExternalOrigins []string          `json:"external_origin"`
-	S3              S3Config          `json:"s3"`
-	RotateStream    int               `json:"rotate_stream"`
-	Webdav          WebdavConfig      `json:"webdav"`
-	IOCache         IOCacheConfig     `json:"io_cache"`
-	Backup          BackupConfig      `json:"backup"`
-	Admin           AdminConfig       `json:"admin"`
+	Bind            string              `json:"bind"`
+	LogInfo         logger.LogConfig    `json:"log_info"`
+	DBFile          string              `json:"db_file"`
+	BotKind         string              `json:"bot_kind"`
+	BotInfo         any                 `json:"bot_config"`
+	UserInfo        map[string]string   `json:"user_info"`
+	UserPermission  map[string][]string `json:"user_permission"`
+	ExternalOrigins []string            `json:"external_origin"`
+	S3              S3Config            `json:"s3"`
+	RotateStream    int                 `json:"rotate_stream"`
+	Webdav          WebdavConfig        `json:"webdav"`
+	IOCache         IOCacheConfig       `json:"io_cache"`
+	Backup          BackupConfig        `json:"backup"`
+	Admin           AdminConfig         `json:"admin"`
 }
 
 func Parse(f string) (*Config, error) {
@@ -140,19 +184,28 @@ func Parse(f string) (*Config, error) {
 	c := &Config{
 		BotKind: "telegram",
 	}
-	if err := json.Unmarshal(raw, c); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(c); err != nil {
 		return nil, fmt.Errorf("decode json failed, err:%w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, fmt.Errorf("decode json failed, err:%w", errMultipleJSONDocuments)
+		}
+		return nil, fmt.Errorf("decode trailing json failed, err:%w", err)
 	}
 	return c, nil
 }
 
 var (
-	errInvalidConfig  = errors.New("invalid configuration")
-	bucketNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
-	reservedBuckets   = map[string]struct{}{
+	errInvalidConfig         = errors.New("invalid configuration")
+	errMultipleJSONDocuments = errors.New("multiple JSON documents")
+	bucketNamePattern        = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$`)
+	reservedBuckets          = map[string]struct{}{
 		"backup": {},
 		"file":   {},
-		"static": {},
 		"webdav": {},
 	}
 )
@@ -185,28 +238,83 @@ func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("%w: config is nil", errInvalidConfig)
 	}
+	authorizer, err := c.validateUsers()
+	if err != nil {
+		return err
+	}
 	if err := c.validateExternalOrigins(); err != nil {
 		return err
 	}
 	if err := c.validateS3(); err != nil {
 		return err
 	}
-	if err := c.validateWebDAV(); err != nil {
+	if err := c.validateWebDAV(authorizer); err != nil {
 		return err
 	}
 	if err := c.validateIOCache(); err != nil {
 		return err
 	}
-	if err := c.validateBackup(); err != nil {
+	if err := c.validateBackup(authorizer); err != nil {
 		return err
 	}
-	if err := c.validateAdmin(); err != nil {
+	if err := c.validateAdmin(authorizer); err != nil {
 		return err
 	}
 	if err := c.validateBlockIO(); err != nil {
 		return err
 	}
 	return c.validateIOCachePathConflicts()
+}
+
+func (c *Config) validateUsers() (*authz.Authorizer, error) {
+	if len(c.UserInfo) != len(c.UserPermission) {
+		return nil, fmt.Errorf(
+			"%w: user_info and user_permission must contain exactly the same users",
+			errInvalidConfig,
+		)
+	}
+	for username, password := range c.UserInfo {
+		if username == "" || len(username) > 256 ||
+			strings.IndexFunc(username, isControlCharacter) >= 0 {
+			return nil, fmt.Errorf("%w: username %q is invalid", errInvalidConfig, username)
+		}
+		if password == "" || len(password) > 4096 {
+			return nil, fmt.Errorf(
+				"%w: user_info[%q] password must contain 1-4096 bytes",
+				errInvalidConfig,
+				username,
+			)
+		}
+		permissions, exists := c.UserPermission[username]
+		if !exists {
+			return nil, fmt.Errorf(
+				"%w: user_permission is missing user %q",
+				errInvalidConfig,
+				username,
+			)
+		}
+		if len(permissions) == 0 {
+			return nil, fmt.Errorf(
+				"%w: user_permission[%q] must not be empty",
+				errInvalidConfig,
+				username,
+			)
+		}
+	}
+	for username := range c.UserPermission {
+		if _, exists := c.UserInfo[username]; !exists {
+			return nil, fmt.Errorf(
+				"%w: user_permission references unknown user %q",
+				errInvalidConfig,
+				username,
+			)
+		}
+	}
+	authorizer, err := authz.New(c.UserPermission)
+	if err != nil {
+		return nil, fmt.Errorf("%w: user_permission: %w", errInvalidConfig, err)
+	}
+	return authorizer, nil
 }
 
 func (c *Config) validateIOCache() error {
@@ -344,45 +452,20 @@ func pathsOverlap(left, right string) bool {
 		(rightToLeft != ".." && !strings.HasPrefix(rightToLeft, ".."+string(filepath.Separator)))
 }
 
-func (c *Config) validateAdmin() error {
+func (c *Config) validateAdmin(authorizer *authz.Authorizer) error {
 	if !c.Admin.Enable {
 		return nil
 	}
-	if err := c.validateAdminUsers(); err != nil {
-		return err
+	if !authorizer.Any(authz.AdminRead) {
+		return fmt.Errorf(
+			"%w: admin requires at least one user with admin:read permission",
+			errInvalidConfig,
+		)
 	}
 	if err := c.validateAdminSession(); err != nil {
 		return err
 	}
 	return c.validateAdminUploadSize()
-}
-
-func (c *Config) validateAdminUsers() error {
-	if len(c.Admin.Users) == 0 {
-		return fmt.Errorf("%w: admin.users must not be empty when admin is enabled", errInvalidConfig)
-	}
-	for username, role := range c.Admin.Users {
-		password, exists := c.UserInfo[username]
-		if !exists || password == "" || len(password) > 4096 {
-			return fmt.Errorf(
-				"%w: admin.users references unknown or empty-password user %q",
-				errInvalidConfig,
-				username,
-			)
-		}
-		if username == "" || len(username) > 256 ||
-			strings.IndexFunc(username, isControlCharacter) >= 0 {
-			return fmt.Errorf("%w: admin username %q is invalid", errInvalidConfig, username)
-		}
-		if role != "read" && role != "read-write" {
-			return fmt.Errorf(
-				"%w: admin.users[%q] must be read or read-write",
-				errInvalidConfig,
-				username,
-			)
-		}
-	}
-	return nil
 }
 
 func (c *Config) validateAdminSession() error {
@@ -565,7 +648,7 @@ func isControlCharacter(value rune) bool {
 	return value < 0x20 || value == 0x7f
 }
 
-func (c *Config) validateBackup() error {
+func (c *Config) validateBackup(authorizer *authz.Authorizer) error {
 	if err := c.applyBackupDefaults(); err != nil {
 		return err
 	}
@@ -576,8 +659,11 @@ func (c *Config) validateBackup() error {
 	if err := c.validateBackupLimits(); err != nil {
 		return err
 	}
-	if err := c.validateBackupUsers(); err != nil {
-		return err
+	if c.Backup.Enable && !authorizer.Any(authz.BackupRead) {
+		return fmt.Errorf(
+			"%w: backup requires at least one user with backup:read permission",
+			errInvalidConfig,
+		)
 	}
 	c.Backup.WorkDir = workDir
 	return nil
@@ -628,29 +714,6 @@ func (c *Config) validateBackupLimits() error {
 	return nil
 }
 
-func (c *Config) validateBackupUsers() error {
-	if c.Backup.Enable && len(c.Backup.Users) == 0 {
-		return fmt.Errorf("%w: backup.users must not be empty when backup is enabled", errInvalidConfig)
-	}
-	for username, role := range c.Backup.Users {
-		if _, exists := c.UserInfo[username]; !exists {
-			return fmt.Errorf(
-				"%w: backup.users references unknown user %q",
-				errInvalidConfig,
-				username,
-			)
-		}
-		if role != "read" && role != "read-write" {
-			return fmt.Errorf(
-				"%w: backup.users[%q] must be read or read-write",
-				errInvalidConfig,
-				username,
-			)
-		}
-	}
-	return nil
-}
-
 func (c *Config) applyBackupDefaults() error {
 	if strings.TrimSpace(c.Backup.WorkDir) == "" {
 		workDir, err := filepath.Abs(filepath.Join(filepath.Dir(c.DBFile), "backup-work"))
@@ -686,7 +749,7 @@ func (c *Config) applyBackupDefaults() error {
 	return nil
 }
 
-func (c *Config) validateWebDAV() error {
+func (c *Config) validateWebDAV(authorizer *authz.Authorizer) error {
 	if !c.Webdav.Enable {
 		return nil
 	}
@@ -696,7 +759,13 @@ func (c *Config) validateWebDAV() error {
 	if err := c.validateWebDAVLimits(); err != nil {
 		return err
 	}
-	return c.validateWebDAVUsers()
+	if !authorizer.Any(authz.WebDAVRead) {
+		return fmt.Errorf(
+			"%w: webdav requires at least one user with webdav:read permission",
+			errInvalidConfig,
+		)
+	}
+	return nil
 }
 
 func (c *Config) validateWebDAVPathAndUpload() error {
@@ -746,26 +815,6 @@ func (c *Config) validateWebDAVLimits() error {
 			"%w: webdav.sync_page_size must be between 1 and 10000",
 			errInvalidConfig,
 		)
-	}
-	return nil
-}
-
-func (c *Config) validateWebDAVUsers() error {
-	for username, role := range c.Webdav.Users {
-		if _, exists := c.UserInfo[username]; !exists {
-			return fmt.Errorf(
-				"%w: webdav.users references unknown user %q",
-				errInvalidConfig,
-				username,
-			)
-		}
-		if role != "read" && role != "read-write" {
-			return fmt.Errorf(
-				"%w: webdav.users[%q] must be read or read-write",
-				errInvalidConfig,
-				username,
-			)
-		}
 	}
 	return nil
 }

@@ -36,10 +36,6 @@ func TestSensitiveRequestPathsAreRedactedWithoutChangingRequestTarget(t *testing
 			expected: "/webdav/_redacted_",
 		},
 		{
-			target:   "http://example.test/static/defaults/01/private.bin",
-			expected: "/static/_redacted_",
-		},
-		{
 			target:   "http://example.test/unknown/private.bin",
 			expected: "/unknown/_redacted_",
 		},

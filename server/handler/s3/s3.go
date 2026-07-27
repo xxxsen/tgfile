@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/server/handler/s3/s3base"
 
@@ -23,6 +24,7 @@ type BucketACL string
 var (
 	errAuthenticationRequired = errors.New("authentication is required")
 	errBasicAuthentication    = errors.New("basic authentication failed")
+	errPermissionDenied       = errors.New("permission denied")
 )
 
 const (
@@ -35,11 +37,16 @@ type Bucket struct {
 	ACL  BucketACL
 }
 
+type Identity struct {
+	Username string
+}
+
 type Config struct {
 	Buckets              []Bucket
 	MaxObjectSize        int64
 	MultipartExpireHours int
 	Users                map[string]string
+	Authorizer           *authz.Authorizer
 }
 
 type S3Handler struct {
@@ -51,6 +58,7 @@ type S3Handler struct {
 	maxObjectSize   int64
 	multipartExpiry time.Duration
 	users           map[string]string
+	authorizer      *authz.Authorizer
 	verifier        *s3verify.Verifier
 }
 
@@ -100,6 +108,7 @@ func NewS3Handler(fmgr filemgr.IFileManager, configs ...Config) *S3Handler {
 		maxObjectSize:   config.MaxObjectSize,
 		multipartExpiry: time.Duration(config.MultipartExpireHours) * time.Hour,
 		users:           users,
+		authorizer:      config.Authorizer,
 		verifier:        verifier,
 	}
 }
@@ -115,7 +124,11 @@ func (h *S3Handler) RequestID(c *gin.Context) {
 	c.Next()
 }
 
-func (h *S3Handler) Authorize(c *gin.Context, required bool) (*s3verify.Result, *s3base.APIError) {
+func (h *S3Handler) Authorize(
+	c *gin.Context,
+	required bool,
+	permissions ...authz.Permission,
+) (*Identity, *s3base.APIError) {
 	authorizationValues := c.Request.Header.Values("Authorization")
 	hasAuthorization := len(authorizationValues) != 0
 	hasSigQuery := requestHasSignatureQuery(c.Request)
@@ -137,7 +150,10 @@ func (h *S3Handler) Authorize(c *gin.Context, required bool) (*s3verify.Result, 
 		if !ok || !exists || !hmac.Equal([]byte(expected), []byte(secret)) {
 			return nil, s3base.AccessDenied(errBasicAuthentication)
 		}
-		return nil, nil
+		if !h.hasPermissions(accessKey, permissions) {
+			return nil, s3base.AccessDenied(errPermissionDenied)
+		}
+		return &Identity{Username: accessKey}, nil
 	}
 	result, err := h.verifier.Verify(c.Request.Context(), c.Request)
 	if err != nil {
@@ -148,7 +164,19 @@ func (h *S3Handler) Authorize(c *gin.Context, required bool) (*s3verify.Result, 
 		c.Set("s3-decoded-content-length", result.DecodedContentLength)
 	}
 	c.Set("s3-verified-trailers", result.Trailers)
-	return result, nil
+	if !h.hasPermissions(result.AccessKeyID, permissions) {
+		return nil, s3base.AccessDenied(errPermissionDenied)
+	}
+	return &Identity{Username: result.AccessKeyID}, nil
+}
+
+func (h *S3Handler) hasPermissions(username string, permissions []authz.Permission) bool {
+	for _, permission := range permissions {
+		if !h.authorizer.Has(username, permission) {
+			return false
+		}
+	}
+	return true
 }
 
 func requestHasSignatureQuery(request *http.Request) bool {

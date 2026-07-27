@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/filemgr"
 	"github.com/xxxsen/tgfile/server/handler/s3/s3base"
 
@@ -54,7 +55,7 @@ type listedBucket struct {
 }
 
 func (h *S3Handler) ListBuckets(c *gin.Context) {
-	if _, apiError := h.Authorize(c, true); apiError != nil {
+	if _, apiError := h.Authorize(c, true, authz.S3Read); apiError != nil {
 		s3base.WriteError(c, apiError)
 		return
 	}
@@ -110,7 +111,7 @@ func (h *S3Handler) GetBucket(c *gin.Context) {
 		s3base.WriteError(c, noSuchBucketError(bucketName))
 		return
 	}
-	if _, apiError := h.Authorize(c, true); apiError != nil {
+	if _, apiError := h.Authorize(c, true, authz.S3Read); apiError != nil {
 		s3base.WriteError(c, apiError)
 		return
 	}
@@ -169,7 +170,7 @@ func (h *S3Handler) HeadBucket(c *gin.Context) {
 		s3base.WriteError(c, noSuchBucketError(bucketName))
 		return
 	}
-	if _, apiError := h.Authorize(c, true); apiError != nil {
+	if _, apiError := h.Authorize(c, true, authz.S3Read); apiError != nil {
 		s3base.WriteError(c, apiError)
 		return
 	}
@@ -579,7 +580,11 @@ func noSuchBucketError(bucket string) *s3base.APIError {
 }
 
 func (h *S3Handler) NotImplemented(c *gin.Context) {
-	if _, apiError := h.Authorize(c, true); apiError != nil {
+	permission := authz.S3Write
+	if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead {
+		permission = authz.S3Read
+	}
+	if _, apiError := h.Authorize(c, true, permission); apiError != nil {
 		s3base.WriteError(c, apiError)
 		return
 	}

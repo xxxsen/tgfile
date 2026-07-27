@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/backupfmt"
 	"github.com/xxxsen/tgfile/backupmgr"
 	"github.com/xxxsen/tgfile/blockio"
@@ -153,7 +154,6 @@ func logServerFeatures(serviceConfig *config.Config, appLogger *zap.Logger) {
 	appLogger.Info(
 		"-- admin feature",
 		zap.Bool("enable", serviceConfig.Admin.Enable),
-		zap.Int("user_count", len(serviceConfig.Admin.Users)),
 	)
 	appLogger.Info("current cache config")
 	appLogger.Info(
@@ -188,19 +188,21 @@ func buildHTTPServer(
 	fileManager filemgr.IFileManager,
 	backupManager *backupmgr.Manager,
 ) (*server.Server, error) {
+	authorizer, err := authz.New(serviceConfig.UserPermission)
+	if err != nil {
+		return nil, fmt.Errorf("initialize authorization policy: %w", err)
+	}
 	httpServer, err := server.New(
 		serviceConfig.Bind,
 		server.WithS3(toServerS3Options(serviceConfig.S3)),
 		server.WithUser(serviceConfig.UserInfo),
+		server.WithAuthorizer(authorizer),
 		server.WithWebDAV(toServerWebDAVOptions(
 			serviceConfig.Webdav,
 			serviceConfig.ExternalOrigins,
 		)),
 		server.WithFileManager(fileManager),
-		server.WithBackup(server.BackupOptions{
-			Enabled: serviceConfig.Backup.Enable,
-			Users:   serviceConfig.Backup.Users,
-		}, backupManager),
+		server.WithBackup(server.BackupOptions{Enabled: serviceConfig.Backup.Enable}, backupManager),
 		server.WithAdmin(toServerAdminOptions(serviceConfig.Admin, serviceConfig)),
 	)
 	if err != nil {
@@ -302,7 +304,6 @@ func toServerAdminOptions(
 	return server.AdminOptions{
 		Enabled:            input.Enable,
 		ExternalOrigins:    append([]string(nil), serviceConfig.ExternalOrigins...),
-		Users:              input.Users,
 		SessionIdle:        time.Duration(input.SessionIdleMinutes) * time.Minute,
 		SessionMaximum:     time.Duration(input.SessionMaxHours) * time.Hour,
 		MaxUploadSize:      input.MaxUploadSize,
@@ -321,7 +322,6 @@ func toServerWebDAVOptions(
 		ExternalOrigins:    append([]string(nil), externalOrigins...),
 		MaxUploadSize:      input.MaxUploadSize,
 		UploadTempDir:      input.UploadTempDir,
-		Users:              input.Users,
 		QuotaBytes:         input.QuotaBytes,
 		MaxMutationEntries: input.MaxMutationEntries,
 		SyncPageSize:       input.SyncPageSize,

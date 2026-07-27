@@ -29,7 +29,7 @@ WebDAV、文件直链或直接 Backup API；所有入口操作同一棵 Mapping 
 flowchart LR
     Browser["Browser<br/>HTML / CSS / ES Module"] -->|"Cookie + CSRF"| Admin["admin handler"]
     Admin --> Session["进程内 Session Store"]
-    Admin --> Auth["user_info + admin.users"]
+    Admin --> Auth["user_info + user_permission"]
     Admin --> FM["IFileManager"]
     Admin --> Jobs["backupmgr"]
     FM --> Directory["directory keyset page"]
@@ -54,16 +54,16 @@ Admin handler 不直接读写 DAO 或业务表。目录读取经 FileManager 进
     "viewer": "viewer-password",
     "operator": "operator-password"
   },
+  "user_permission": {
+    "viewer": ["admin:read"],
+    "operator": ["admin:write"]
+  },
   "external_origin": [
     "https://files.example.com",
     "https://image.example.com"
   ],
   "admin": {
     "enable": true,
-    "users": {
-      "viewer": "read",
-      "operator": "read-write"
-    },
     "session_idle_minutes": 30,
     "session_max_hours": 12,
     "max_upload_size": 5368709120
@@ -75,8 +75,7 @@ Admin handler 不直接读写 DAO 或业务表。目录读取经 FileManager 进
 - 顶层 `external_origin` 是管理后台和 WebDAV 共用的数组；启用管理后台时必填，包含
   1～32 个没有 userinfo、path、query 和 fragment 的 HTTP(S) origin。规范化后不得重复，
   所有项必须使用同一种 scheme。生产只接受 HTTPS；HTTP 只允许 localhost 或 loopback IP。
-- `users` 至少包含一个已存在于 `user_info` 且密码非空的账号，角色只能为 `read` 或
-  `read-write`。
+- 启用管理后台时，至少一个 `user_info` 账号经统一权限闭包后具备 `admin:read`。
 - `session_idle_minutes` 缺省 30，范围 5～120。
 - `session_max_hours` 缺省 12，范围 1～24 小时，并且必须长于 idle timeout。
 - `max_upload_size` 缺省优先取正数 `s3.max_object_size`，否则为 5 GiB；有效范围为
@@ -102,8 +101,9 @@ backupmgr；只有 `backup.enable` 开启时才暴露 `/backup/v2`。
 | 上传或覆盖文件 | 否 | 是 |
 | dry-run 或正式 Import | 否 | 是 |
 
-管理角色仅作用于 `/_admin`。S3 bucket ACL、`webdav.users` 和 `backup.users` 继续独立控制
-对应协议入口。public-read bucket 也不能绕过管理 Session。
+管理角色由统一权限动态派生：`admin:read` 对应 `read`，`admin:write` 对应
+`read-write` 并自动包含读能力。`admin:*` 仅作用于 `/_admin`，不蕴含 S3、WebDAV、
+Backup 或 file 权限；反向也不继承。public-read bucket 也不能绕过管理 Session。
 
 ## 5. 登录、Session 与浏览器安全
 
@@ -120,7 +120,8 @@ backupmgr；只有 `backup.enable` 开启时才暴露 `/backup/v2`。
 解析拒绝未知字段、重复字段、尾随值、非法 UTF-8、空账号和空密码。用户名最大 256 字节，
 密码最大 4096 字节；值按原始字节比较，不 trim 或执行 Unicode normalization。
 
-账号必须同时存在于 `user_info` 和 `admin.users`。服务分别计算提交密码和预期密码的
+账号必须同时存在于 `user_info` 和 `user_permission`，并具备 `admin:read`。服务分别
+计算提交密码和预期密码的
 SHA-256，再对固定长度摘要做常量时间比较；未知或无管理权限的账号使用随机 dummy 摘要。
 所有认证失败返回相同的 `401 invalid_credentials`，至少延迟 250 ms。
 

@@ -25,6 +25,9 @@ func TestSafeLogFieldsExcludeSecrets(t *testing.T) {
 		UserInfo: map[string]string{
 			"user": password,
 		},
+		UserPermission: map[string][]string{
+			"user": {"s3:write"},
+		},
 		S3: S3Config{
 			Enable:  true,
 			Buckets: []S3BucketConfig{{Name: "bucket", ACL: "private"}},
@@ -45,6 +48,8 @@ func TestSafeLogFieldsExcludeSecrets(t *testing.T) {
 	require.NotContains(t, logged, password)
 	require.NotContains(t, logged, "bot_config")
 	require.NotContains(t, logged, "user_info")
+	require.NotContains(t, logged, "s3:write")
+	require.NotContains(t, logged, `"user"`)
 	require.Contains(t, logged, `"user_count":1`)
 	for _, field := range value.SafeLogFields() {
 		require.False(t, strings.Contains(strings.ToLower(field.Key), "password"))
@@ -67,6 +72,7 @@ func TestValidateS3AndTelegramConfiguration(t *testing.T) {
 			Buckets: []S3BucketConfig{
 				{Name: "public-data", ACL: "public-read"},
 				{Name: "private-data", ACL: "private"},
+				{Name: "static", ACL: "private"},
 			},
 		},
 	}
@@ -143,9 +149,125 @@ func TestLegacyBucketFieldIsNotAccepted(t *testing.T) {
 		"s3":{"enable":true,"bucket":["legacy"]}
 	}`), 0o600))
 	parsed, err := Parse(configFile)
-	require.NoError(t, err)
-	require.Empty(t, parsed.S3.Buckets)
-	require.ErrorIs(t, parsed.Validate(), errInvalidConfig)
+	require.Nil(t, parsed)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unknown field")
+}
+
+func TestParseRejectsRemovedUsersAndTrailingJSON(t *testing.T) {
+	t.Parallel()
+
+	for name, raw := range map[string]string{
+		"removed webdav users":  `{"webdav":{"users":{"user":"read"}}}`,
+		"removed backup users":  `{"backup":{"users":{"user":"read"}}}`,
+		"removed admin users":   `{"admin":{"users":{"user":"read"}}}`,
+		"misspelled permission": `{"user_perimission":{}}`,
+		"plural permission":     `{"user_permissions":{}}`,
+		"unknown top level":     `{"future_option":true}`,
+		"trailing document":     `{} {}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			configFile := filepath.Join(t.TempDir(), "config.json")
+			require.NoError(t, os.WriteFile(configFile, []byte(raw), 0o600))
+			parsed, err := Parse(configFile)
+			require.Nil(t, parsed)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestValidateUnifiedUserPermissions(t *testing.T) {
+	t.Parallel()
+
+	newConfig := func(testingT *testing.T) *Config {
+		testingT.Helper()
+		root := testingT.TempDir()
+		return &Config{
+			BotKind: "localfile",
+			BotInfo: map[string]any{"dir": filepath.Join(root, "blocks")},
+			DBFile:  filepath.Join(root, "data.db"),
+			UserInfo: map[string]string{
+				"reader": "reader-secret",
+				"writer": "writer-secret",
+			},
+			UserPermission: map[string][]string{
+				"reader": {"all:read", "backup:write"},
+				"writer": {"all:write"},
+			},
+			Webdav: WebdavConfig{Enable: true},
+			Backup: BackupConfig{Enable: true},
+			Admin: AdminConfig{
+				Enable:             true,
+				SessionIdleMinutes: 30,
+				SessionMaxHours:    12,
+			},
+			ExternalOrigins: []string{"http://localhost"},
+		}
+	}
+
+	require.NoError(t, newConfig(t).Validate())
+	for _, permission := range []string{"all:read", "all:write"} {
+		value := newConfig(t)
+		value.UserInfo = map[string]string{"user": "secret"}
+		value.UserPermission = map[string][]string{"user": {permission}}
+		require.NoError(t, value.Validate(), permission)
+	}
+	preconfigured := newConfig(t)
+	preconfigured.Webdav.Enable = false
+	preconfigured.Backup.Enable = false
+	preconfigured.Admin.Enable = false
+	preconfigured.UserPermission["reader"] = []string{"admin:read"}
+	preconfigured.UserPermission["writer"] = []string{"webdav:write", "backup:write"}
+	require.NoError(t, preconfigured.Validate())
+
+	anonymous := newConfig(t)
+	anonymous.Webdav.Enable = false
+	anonymous.Backup.Enable = false
+	anonymous.Admin.Enable = false
+	anonymous.UserInfo = nil
+	anonymous.UserPermission = nil
+	require.NoError(t, anonymous.Validate())
+
+	for name, mutate := range map[string]func(*Config){
+		"missing permission user": func(value *Config) {
+			delete(value.UserPermission, "reader")
+		},
+		"unknown permission user": func(value *Config) {
+			value.UserPermission["ghost"] = []string{"s3:read"}
+		},
+		"empty permission list": func(value *Config) {
+			value.UserPermission["reader"] = nil
+		},
+		"duplicate permission": func(value *Config) {
+			value.UserPermission["reader"] = []string{"s3:read", "s3:read"}
+		},
+		"unsupported permission": func(value *Config) {
+			value.UserPermission["reader"] = []string{"static:read"}
+		},
+		"plain all is invalid": func(value *Config) {
+			value.UserPermission["reader"] = []string{"all"}
+		},
+		"webdav without reader": func(value *Config) {
+			value.UserPermission["reader"] = []string{"backup:write"}
+			value.UserPermission["writer"] = []string{"backup:read"}
+		},
+		"backup without reader": func(value *Config) {
+			value.UserPermission["reader"] = []string{"webdav:write"}
+			value.UserPermission["writer"] = []string{"admin:write"}
+		},
+		"admin without reader": func(value *Config) {
+			value.UserPermission["reader"] = []string{"webdav:write"}
+			value.UserPermission["writer"] = []string{"backup:write"}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			value := newConfig(t)
+			mutate(value)
+			require.ErrorIs(t, value.Validate(), errInvalidConfig)
+		})
+	}
 }
 
 func TestValidateBackupConfiguration(t *testing.T) {
@@ -155,10 +277,11 @@ func TestValidateBackupConfiguration(t *testing.T) {
 		BotInfo:  map[string]any{"storage_dir": filepath.Join(dataDir, "blocks")},
 		DBFile:   filepath.Join(dataDir, "data.db"),
 		UserInfo: map[string]string{"operator": "secret", "reader": "secret"},
-		Backup: BackupConfig{
-			Enable: true,
-			Users:  map[string]string{"operator": "read-write", "reader": "read"},
+		UserPermission: map[string][]string{
+			"operator": {"backup:write"},
+			"reader":   {"backup:read"},
 		},
+		Backup: BackupConfig{Enable: true},
 	}
 	require.NoError(t, value.Validate())
 	require.Equal(t, filepath.Join(dataDir, "backup-work"), value.Backup.WorkDir)
@@ -166,13 +289,13 @@ func TestValidateBackupConfiguration(t *testing.T) {
 	require.Equal(t, defaultBackupMaxExpandedBytes, value.Backup.MaxExpandedBytes)
 
 	unknown := *value
-	unknown.Backup = value.Backup
-	unknown.Backup.Users = map[string]string{"missing": "read"}
+	unknown.UserPermission = cloneTestPermissionMap(value.UserPermission)
+	unknown.UserPermission["missing"] = []string{"backup:read"}
 	require.ErrorIs(t, unknown.Validate(), errInvalidConfig)
 
 	empty := *value
-	empty.Backup = value.Backup
-	empty.Backup.Users = nil
+	empty.UserPermission = cloneTestPermissionMap(value.UserPermission)
+	empty.UserPermission["reader"] = nil
 	require.ErrorIs(t, empty.Validate(), errInvalidConfig)
 
 	conflict := *value
@@ -190,18 +313,16 @@ func TestValidateAdminConfiguration(t *testing.T) {
 		UserInfo: map[string]string{
 			"viewer": "view-secret", "operator": "write-secret",
 		},
+		UserPermission: map[string][]string{
+			"viewer":   {"admin:read"},
+			"operator": {"admin:write"},
+		},
 		ExternalOrigins: []string{
 			"https://IMAGE.example.test:443/",
 			"https://files.example.test",
 		},
-		S3: S3Config{MaxObjectSize: 1024},
-		Admin: AdminConfig{
-			Enable: true,
-			Users: map[string]string{
-				"viewer":   "read",
-				"operator": "read-write",
-			},
-		},
+		S3:    S3Config{MaxObjectSize: 1024},
+		Admin: AdminConfig{Enable: true},
 	}
 	require.NoError(t, value.Validate())
 	require.Equal(
@@ -280,20 +401,20 @@ func TestValidateAdminConfiguration(t *testing.T) {
 		{
 			name: "unknown user",
 			mutate: func(config *Config) {
-				config.Admin.Users = map[string]string{"missing": "read"}
+				config.UserPermission["missing"] = []string{"admin:read"}
 			},
 		},
 		{
-			name: "invalid role",
+			name: "invalid permission",
 			mutate: func(config *Config) {
-				config.Admin.Users = map[string]string{"viewer": "admin"}
+				config.UserPermission["viewer"] = []string{"admin"}
 			},
 		},
 		{
 			name: "empty password",
 			mutate: func(config *Config) {
 				config.UserInfo = map[string]string{"viewer": ""}
-				config.Admin.Users = map[string]string{"viewer": "read"}
+				config.UserPermission = map[string][]string{"viewer": {"admin:read"}}
 			},
 		},
 		{
@@ -320,9 +441,9 @@ func TestValidateAdminConfiguration(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			copyConfig := *value
 			copyConfig.UserInfo = cloneTestMap(value.UserInfo)
+			copyConfig.UserPermission = cloneTestPermissionMap(value.UserPermission)
 			copyConfig.ExternalOrigins = append([]string(nil), value.ExternalOrigins...)
 			copyConfig.Admin = value.Admin
-			copyConfig.Admin.Users = cloneTestMap(value.Admin.Users)
 			test.mutate(&copyConfig)
 			require.ErrorIs(t, copyConfig.Validate(), errInvalidConfig)
 		})
@@ -330,7 +451,7 @@ func TestValidateAdminConfiguration(t *testing.T) {
 
 	loopback := *value
 	loopback.Admin = value.Admin
-	loopback.Admin.Users = cloneTestMap(value.Admin.Users)
+	loopback.UserPermission = cloneTestPermissionMap(value.UserPermission)
 	loopback.ExternalOrigins = []string{"http://[::1]:80/", "http://localhost:80"}
 	require.NoError(t, loopback.Validate())
 	require.Equal(
@@ -366,6 +487,14 @@ func cloneTestMap(input map[string]string) map[string]string {
 	return result
 }
 
+func cloneTestPermissionMap(input map[string][]string) map[string][]string {
+	result := make(map[string][]string, len(input))
+	for key, value := range input {
+		result[key] = append([]string(nil), value...)
+	}
+	return result
+}
+
 func TestValidateRootExternalOriginsForWebDAV(t *testing.T) {
 	value := &Config{
 		BotKind: "localfile",
@@ -376,13 +505,11 @@ func TestValidateRootExternalOriginsForWebDAV(t *testing.T) {
 		UserInfo: map[string]string{
 			"editor": "secret",
 		},
-		ExternalOrigins: []string{"https://image.example.test/"},
-		Webdav: WebdavConfig{
-			Enable: true,
-			Users: map[string]string{
-				"editor": "read-write",
-			},
+		UserPermission: map[string][]string{
+			"editor": {"webdav:write"},
 		},
+		ExternalOrigins: []string{"https://image.example.test/"},
+		Webdav:          WebdavConfig{Enable: true},
 	}
 	require.NoError(t, value.Validate())
 	require.Equal(t, []string{"https://image.example.test"}, value.ExternalOrigins)

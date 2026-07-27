@@ -15,6 +15,7 @@ import (
 
 	"github.com/xxxsen/common/logger"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/blockio/localfile"
 	"github.com/xxxsen/tgfile/db"
 	"github.com/xxxsen/tgfile/filemgr"
@@ -292,6 +293,7 @@ func newLocalProtocolHTTPServer(
 	handler, err := server.New(
 		"127.0.0.1:0",
 		server.WithUser(map[string]string{soakAccessKey: soakSecretKey}),
+		server.WithAuthorizer(mustSoakAuthorizer()),
 		server.WithS3(server.S3Options{
 			Enabled: true,
 			Buckets: []server.S3BucketOptions{{
@@ -305,7 +307,6 @@ func newLocalProtocolHTTPServer(
 			Enabled:            true,
 			Root:               "/",
 			UploadTempDir:      filepath.Join(workspace, "spool"),
-			Users:              map[string]string{soakAccessKey: "read-write"},
 			MaxUploadSize:      5 * 1024 * 1024 * 1024,
 			MaxMutationEntries: 10000,
 			SyncPageSize:       1000,
@@ -316,6 +317,16 @@ func newLocalProtocolHTTPServer(
 		return nil, fmt.Errorf("create protocol test HTTP server: %w", err)
 	}
 	return httptest.NewServer(handler), nil
+}
+
+func mustSoakAuthorizer() *authz.Authorizer {
+	authorizer, err := authz.New(map[string][]string{
+		soakAccessKey: {string(authz.AllWrite)},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return authorizer
 }
 
 func startLocalProtocolWorkers(manager filemgr.IFileManager) func() {

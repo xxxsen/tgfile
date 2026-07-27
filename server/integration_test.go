@@ -26,6 +26,7 @@ import (
 	"github.com/xxxsen/common/database"
 	"github.com/xxxsen/common/logger"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/blockio/mem"
 	"github.com/xxxsen/tgfile/db"
 	"github.com/xxxsen/tgfile/filemgr"
@@ -68,7 +69,16 @@ func newIntegrationEnvironment(t *testing.T) *integrationEnvironment {
 				ACL:  server.BucketACLPrivate,
 			}},
 		}),
-		server.WithUser(map[string]string{"access": "secret"}),
+		server.WithUser(map[string]string{
+			"access":   "secret",
+			"reader":   "reader-secret",
+			"fileonly": "file-secret",
+		}),
+		server.WithAuthorizer(testAuthorizer(t, map[string][]string{
+			"access":   {string(authz.AllWrite)},
+			"reader":   {string(authz.AllRead)},
+			"fileonly": {string(authz.FileWrite)},
+		})),
 		server.WithEnableWebdav(true, "/"),
 		server.WithFileManager(manager),
 	)
@@ -199,6 +209,201 @@ func TestS3PutGetHeadRangeAndOverwrite(t *testing.T) {
 	require.Equal(t, []byte("replacement"), readResponse(t, response))
 }
 
+func TestS3ReadAndWritePermissionsRespectPublicReadACL(t *testing.T) {
+	testServer := newIntegrationServer(t)
+	objectURL := testServer.URL + "/hackmd/permission.txt"
+	response, err := testServer.Client().Do(authenticatedRequest(
+		t,
+		http.MethodPut,
+		objectURL,
+		bytes.NewBufferString("content"),
+	))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	_ = readResponse(t, response)
+
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, objectURL, nil)
+	require.NoError(t, err)
+	request.SetBasicAuth("reader", "reader-secret")
+	response, err = testServer.Client().Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "content", string(readResponse(t, response)))
+
+	request, err = http.NewRequestWithContext(
+		t.Context(),
+		http.MethodPut,
+		objectURL,
+		bytes.NewBufferString("denied"),
+	)
+	require.NoError(t, err)
+	request.SetBasicAuth("reader", "reader-secret")
+	response, err = testServer.Client().Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, response.StatusCode)
+	_ = readResponse(t, response)
+
+	readOnlyCreate, err := http.NewRequestWithContext(
+		t.Context(),
+		http.MethodPost,
+		objectURL+"?uploads",
+		nil,
+	)
+	require.NoError(t, err)
+	readOnlyCreate.SetBasicAuth("reader", "reader-secret")
+	response, err = testServer.Client().Do(readOnlyCreate)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, response.StatusCode)
+	_ = readResponse(t, response)
+
+	request, err = http.NewRequestWithContext(t.Context(), http.MethodGet, objectURL, nil)
+	require.NoError(t, err)
+	request.SetBasicAuth("fileonly", "file-secret")
+	response, err = testServer.Client().Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, response.StatusCode)
+	_ = readResponse(t, response)
+
+	response, err = getResponse(t, testServer.Client(), objectURL)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "content", string(readResponse(t, response)))
+}
+
+func TestStaticPathHasNoDirectoryFallbackAndCanBeAnS3Bucket(t *testing.T) {
+	environment := newIntegrationEnvironment(t)
+	request := authenticatedRequest(
+		t,
+		http.MethodGet,
+		environment.server.URL+"/static/missing.txt",
+		nil,
+	)
+	response, err := environment.server.Client().Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, response.StatusCode)
+	require.Contains(t, string(readResponse(t, response)), "NoSuchBucket")
+
+	handler, err := server.New(
+		"127.0.0.1:0",
+		server.WithUser(map[string]string{"access": "secret"}),
+		server.WithAuthorizer(testAuthorizer(t, map[string][]string{
+			"access": {string(authz.S3Write)},
+		})),
+		server.WithS3(server.S3Options{
+			Enabled: true,
+			Buckets: []server.S3BucketOptions{{
+				Name: "static",
+				ACL:  server.BucketACLPublicRead,
+			}},
+		}),
+		server.WithFileManager(environment.manager),
+	)
+	require.NoError(t, err)
+	staticServer := httptest.NewServer(handler)
+	t.Cleanup(staticServer.Close)
+	objectURL := staticServer.URL + "/static/object.txt"
+	response, err = staticServer.Client().Do(authenticatedRequest(
+		t,
+		http.MethodPut,
+		objectURL,
+		bytes.NewBufferString("s3-static"),
+	))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	_ = readResponse(t, response)
+	response, err = getResponse(t, staticServer.Client(), objectURL)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, "s3-static", string(readResponse(t, response)))
+}
+
+func TestS3ReadOnlyPermissionRouteMatrix(t *testing.T) {
+	environment := newIntegrationEnvironment(t)
+	client := environment.server.Client()
+	objectURL := environment.server.URL + "/hackmd/permission-matrix.txt"
+	response, err := client.Do(authenticatedRequest(
+		t,
+		http.MethodPut,
+		objectURL,
+		bytes.NewBufferString("matrix"),
+	))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	_ = readResponse(t, response)
+	uploadID := createIntegrationMultipart(t, client, objectURL)
+
+	readTargets := []struct {
+		method string
+		target string
+	}{
+		{http.MethodGet, environment.server.URL + "/"},
+		{http.MethodHead, environment.server.URL + "/hackmd"},
+		{http.MethodGet, environment.server.URL + "/hackmd?location"},
+		{http.MethodGet, environment.server.URL + "/hackmd/"},
+		{http.MethodGet, environment.server.URL + "/hackmd?list-type=2"},
+		{http.MethodGet, objectURL},
+		{http.MethodHead, objectURL},
+		{http.MethodGet, objectURL + "?attributes"},
+		{http.MethodGet, objectURL + "?uploadId=" + uploadID},
+		{http.MethodGet, environment.server.URL + "/hackmd?uploads"},
+	}
+	for _, item := range readTargets {
+		request, requestErr := http.NewRequestWithContext(
+			t.Context(),
+			item.method,
+			item.target,
+			nil,
+		)
+		require.NoError(t, requestErr)
+		request.SetBasicAuth("reader", "reader-secret")
+		response, requestErr = client.Do(request)
+		require.NoError(t, requestErr)
+		require.NotEqual(t, http.StatusForbidden, response.StatusCode, item)
+		_ = readResponse(t, response)
+	}
+
+	writeTargets := []struct {
+		method string
+		target string
+		header map[string]string
+	}{
+		{method: http.MethodPut, target: environment.server.URL + "/hackmd"},
+		{method: http.MethodDelete, target: environment.server.URL + "/hackmd"},
+		{method: http.MethodPost, target: environment.server.URL + "/hackmd?delete"},
+		{method: http.MethodPut, target: objectURL},
+		{
+			method: http.MethodPut,
+			target: objectURL + "-copy",
+			header: map[string]string{"x-amz-copy-source": "/hackmd/permission-matrix.txt"},
+		},
+		{method: http.MethodDelete, target: objectURL},
+		{method: http.MethodPost, target: objectURL + "?uploads"},
+		{
+			method: http.MethodPut,
+			target: objectURL + "?partNumber=1&uploadId=" + uploadID,
+		},
+		{method: http.MethodPost, target: objectURL + "?uploadId=" + uploadID},
+		{method: http.MethodDelete, target: objectURL + "?uploadId=" + uploadID},
+	}
+	for _, item := range writeTargets {
+		request, requestErr := http.NewRequestWithContext(
+			t.Context(),
+			item.method,
+			item.target,
+			nil,
+		)
+		require.NoError(t, requestErr)
+		request.SetBasicAuth("reader", "reader-secret")
+		for name, value := range item.header {
+			request.Header.Set(name, value)
+		}
+		response, requestErr = client.Do(request)
+		require.NoError(t, requestErr)
+		require.Equal(t, http.StatusForbidden, response.StatusCode, item)
+		_ = readResponse(t, response)
+	}
+}
+
 func TestS3ConditionsChecksumsAndRangeErrors(t *testing.T) {
 	testServer := newIntegrationServer(t)
 	client := testServer.Client()
@@ -325,6 +530,34 @@ func TestDirectUploadDownload(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusBadRequest, response.StatusCode)
 	_ = readResponse(t, response)
+}
+
+func TestFileMutationEndpointsRequireFileWrite(t *testing.T) {
+	testServer := newIntegrationServer(t)
+	for _, target := range []string{"/file/upload", "/file/purge"} {
+		request, err := http.NewRequestWithContext(
+			t.Context(),
+			http.MethodPost,
+			testServer.URL+target,
+			nil,
+		)
+		require.NoError(t, err)
+		request.SetBasicAuth("reader", "reader-secret")
+		response, err := testServer.Client().Do(request)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusForbidden, response.StatusCode, target)
+		require.NoError(t, response.Body.Close())
+	}
+	request := authenticatedRequest(
+		t,
+		http.MethodPost,
+		testServer.URL+"/file/purge",
+		nil,
+	)
+	response, err := testServer.Client().Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.NoError(t, response.Body.Close())
 }
 
 func TestS3ListCopyLogicalDeleteAndWorker(t *testing.T) {
@@ -853,12 +1086,14 @@ func TestS3MultipartUploadIsReadableThroughS3AndWebDAV(t *testing.T) {
 	firstETag := uploadIntegrationPart(t, client, objectURL, initiated.UploadID, 1, firstContent)
 	secondETag := uploadIntegrationPart(t, client, objectURL, initiated.UploadID, 2, secondContent)
 
-	listRequest := authenticatedRequest(
-		t,
+	listRequest, err := http.NewRequestWithContext(
+		t.Context(),
 		http.MethodGet,
 		objectURL+"?uploadId="+initiated.UploadID+"&max-parts=1",
 		nil,
 	)
+	require.NoError(t, err)
+	listRequest.SetBasicAuth("reader", "reader-secret")
 	response, err = client.Do(listRequest)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, response.StatusCode)
@@ -1495,6 +1730,100 @@ func TestS3AWSV2SignerAndPresignedURLInteroperate(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, response.StatusCode)
 	require.Equal(t, content, readResponse(t, response))
+
+	readerCredentials := aws.Credentials{
+		AccessKeyID:     "reader",
+		SecretAccessKey: "reader-secret",
+	}
+	deniedContent := []byte("denied")
+	deniedHashBytes := sha256.Sum256(deniedContent)
+	deniedHash := hex.EncodeToString(deniedHashBytes[:])
+	request, err = http.NewRequestWithContext(
+		t.Context(),
+		http.MethodPut,
+		environment.server.URL+"/private-data/reader-header-denied.txt",
+		bytes.NewReader(deniedContent),
+	)
+	require.NoError(t, err)
+	request.Header.Set("X-Amz-Content-Sha256", deniedHash)
+	require.NoError(t, signer.SignHTTP(
+		t.Context(),
+		readerCredentials,
+		request,
+		deniedHash,
+		"s3",
+		"us-east-1",
+		time.Now(),
+	))
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, response.StatusCode)
+	_ = readResponse(t, response)
+	response, err = client.Do(authenticatedRequest(
+		t,
+		http.MethodGet,
+		environment.server.URL+"/private-data/reader-header-denied.txt",
+		nil,
+	))
+	require.NoError(t, err)
+	require.Equal(t, http.StatusNotFound, response.StatusCode)
+	_ = readResponse(t, response)
+
+	request, err = http.NewRequestWithContext(t.Context(), http.MethodGet, objectURL, nil)
+	require.NoError(t, err)
+	query = request.URL.Query()
+	query.Set("X-Amz-Expires", "300")
+	request.URL.RawQuery = query.Encode()
+	readerURL, readerHeaders, err := signer.PresignHTTP(
+		t.Context(),
+		readerCredentials,
+		request,
+		unsignedPayload,
+		"s3",
+		"us-east-1",
+		time.Now(),
+	)
+	require.NoError(t, err)
+	request, err = http.NewRequestWithContext(t.Context(), http.MethodGet, readerURL, nil)
+	require.NoError(t, err)
+	request.Header = readerHeaders
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, content, readResponse(t, response))
+
+	request, err = http.NewRequestWithContext(
+		t.Context(),
+		http.MethodPut,
+		environment.server.URL+"/private-data/reader-denied.txt",
+		bytes.NewBufferString("denied"),
+	)
+	require.NoError(t, err)
+	query = request.URL.Query()
+	query.Set("X-Amz-Expires", "300")
+	request.URL.RawQuery = query.Encode()
+	readerURL, readerHeaders, err = signer.PresignHTTP(
+		t.Context(),
+		readerCredentials,
+		request,
+		unsignedPayload,
+		"s3",
+		"us-east-1",
+		time.Now(),
+	)
+	require.NoError(t, err)
+	request, err = http.NewRequestWithContext(
+		t.Context(),
+		http.MethodPut,
+		readerURL,
+		bytes.NewBufferString("denied"),
+	)
+	require.NoError(t, err)
+	request.Header = readerHeaders
+	response, err = client.Do(request)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, response.StatusCode)
+	_ = readResponse(t, response)
 
 	tampered := strings.Replace(signedURL, "signed.txt", "other.txt", 1)
 	request, err = http.NewRequestWithContext(t.Context(), http.MethodGet, tampered, nil)

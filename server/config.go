@@ -3,6 +3,7 @@ package server
 import (
 	"time"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/backupmgr"
 	"github.com/xxxsen/tgfile/filemgr"
 )
@@ -10,6 +11,7 @@ import (
 type config struct {
 	s3            S3Options
 	userMap       map[string]string
+	authorizer    *authz.Authorizer
 	webdav        WebDAVOptions
 	backup        BackupOptions
 	backupManager *backupmgr.Manager
@@ -44,7 +46,6 @@ type WebDAVOptions struct {
 	ExternalOrigins    []string
 	MaxUploadSize      int64
 	UploadTempDir      string
-	Users              map[string]string
 	QuotaBytes         int64
 	MaxMutationEntries int
 	SyncPageSize       int
@@ -52,13 +53,11 @@ type WebDAVOptions struct {
 
 type BackupOptions struct {
 	Enabled bool
-	Users   map[string]string
 }
 
 type AdminOptions struct {
 	Enabled            bool
 	ExternalOrigins    []string
-	Users              map[string]string
 	SessionIdle        time.Duration
 	SessionMaximum     time.Duration
 	MaxUploadSize      int64
@@ -75,6 +74,12 @@ func WithS3(options S3Options) Option {
 func WithUser(m map[string]string) Option {
 	return func(c *config) {
 		c.userMap = m
+	}
+}
+
+func WithAuthorizer(authorizer *authz.Authorizer) Option {
+	return func(c *config) {
+		c.authorizer = authorizer
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/backupmgr"
 	"github.com/xxxsen/tgfile/filemgr"
 )
@@ -31,7 +32,7 @@ type Options struct {
 	FileManager      filemgr.IFileManager
 	BackupManager    *backupmgr.Manager
 	Users            map[string]string
-	Roles            map[string]string
+	Authorizer       *authz.Authorizer
 	ExternalOrigins  []string
 	SessionIdle      time.Duration
 	SessionMaximum   time.Duration
@@ -44,7 +45,7 @@ type Handler struct {
 	files            filemgr.IFileManager
 	backups          *backupmgr.Manager
 	users            map[string]string
-	roles            map[string]string
+	authorizer       *authz.Authorizer
 	externalOrigins  map[string]struct{}
 	secureCookie     bool
 	maxUploadSize    int64

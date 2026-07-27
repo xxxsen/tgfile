@@ -8,23 +8,23 @@
 
 | 能力 | 路由 | 认证 |
 |---|---|---|
-| ListBuckets | `GET /` | 必需 |
-| HeadBucket | `HEAD /{bucket}` | 必需 |
-| GetBucketLocation | `GET /{bucket}?location` 或 legacy bucket GET | 必需 |
-| ListObjects V1 | `GET /{bucket}/` 或不带 `list-type` 的列表 query | 必需 |
-| ListObjectsV2 | `GET /{bucket}?list-type=2` | 必需 |
-| GetObject / HeadObject | `GET/HEAD /{bucket}/{key}` | 由 bucket ACL 决定 |
-| GetObjectAttributes | `GET /{bucket}/{key}?attributes` | 由 bucket ACL 决定 |
-| PutObject | `PUT /{bucket}/{key}` | 必需 |
-| CopyObject | `PUT /{bucket}/{key}` + `x-amz-copy-source` | 必需 |
-| DeleteObject | `DELETE /{bucket}/{key}` | 必需 |
-| DeleteObjects | `POST /{bucket}?delete` | 必需 |
-| CreateMultipartUpload | `POST /{bucket}/{key}?uploads` | 必需 |
-| UploadPart | `PUT /{bucket}/{key}?partNumber=N&uploadId=ID` | 必需 |
-| ListParts | `GET /{bucket}/{key}?uploadId=ID` | 必需 |
-| CompleteMultipartUpload | `POST /{bucket}/{key}?uploadId=ID` | 必需 |
-| AbortMultipartUpload | `DELETE /{bucket}/{key}?uploadId=ID` | 必需 |
-| ListMultipartUploads | `GET /{bucket}?uploads` | 必需 |
+| ListBuckets | `GET /` | `s3:read` |
+| HeadBucket | `HEAD /{bucket}` | `s3:read` |
+| GetBucketLocation | `GET /{bucket}?location` 或 legacy bucket GET | `s3:read` |
+| ListObjects V1 | `GET /{bucket}/` 或不带 `list-type` 的列表 query | `s3:read` |
+| ListObjectsV2 | `GET /{bucket}?list-type=2` | `s3:read` |
+| GetObject / HeadObject | `GET/HEAD /{bucket}/{key}` | public-read 可匿名，否则 `s3:read` |
+| GetObjectAttributes | `GET /{bucket}/{key}?attributes` | public-read 可匿名，否则 `s3:read` |
+| PutObject | `PUT /{bucket}/{key}` | `s3:write` |
+| CopyObject | `PUT /{bucket}/{key}` + `x-amz-copy-source` | `s3:write` |
+| DeleteObject | `DELETE /{bucket}/{key}` | `s3:write` |
+| DeleteObjects | `POST /{bucket}?delete` | `s3:write` |
+| CreateMultipartUpload | `POST /{bucket}/{key}?uploads` | `s3:write` |
+| UploadPart | `PUT /{bucket}/{key}?partNumber=N&uploadId=ID` | `s3:write` |
+| ListParts | `GET /{bucket}/{key}?uploadId=ID` | `s3:read` |
+| CompleteMultipartUpload | `POST /{bucket}/{key}?uploadId=ID` | `s3:write` |
+| AbortMultipartUpload | `DELETE /{bucket}/{key}?uploadId=ID` | `s3:write` |
+| ListMultipartUploads | `GET /{bucket}?uploads` | `s3:read` |
 
 `GET`、`HEAD` 和 `POST` bucket 操作同时接受 `/{bucket}` 与 `/{bucket}/`，尾斜杠不得被
 解释为空对象 key。精确的无 query `GET /{bucket}` 保留旧 LocationConstraint 响应；
@@ -46,7 +46,9 @@ AccessControlListNotSupported。
 ## 2. SigV4 与请求完整性
 
 S3 请求可以使用 Basic Auth、SigV4 Authorization header 或 SigV4 presigned query。
-SigV4 固定使用 region `us-east-1`、service `s3`，凭据来自 `user_info`。
+SigV4 固定使用 region `us-east-1`、service `s3`，凭据来自 `user_info`。三种认证形式
+使用相同的 `s3:read` / `s3:write` 授权；public-read 对象只有完全未携带认证信息时才
+跳过权限判断，携带有效但无 S3 权限的凭据仍返回 AccessDenied。
 
 本地 `s3verify` 完成：
 
@@ -119,7 +121,8 @@ bucket 的别名都返回 InvalidObjectName，不能以历史兼容绕过 bucket
 ## 4. Multipart Upload
 
 Multipart 的六个核心 API 默认随 S3 启用，没有额外服务端开关。public-read bucket 只
-允许匿名 GetObject、HeadObject 和 GetObjectAttributes，所有 Multipart API 必须认证。
+允许匿名 GetObject、HeadObject 和 GetObjectAttributes，所有 Multipart API 必须认证；
+ListParts 和 ListMultipartUploads 要求 `s3:read`，其余 Multipart 变更要求 `s3:write`。
 
 每个 UploadPart 使用普通文件创建流程保存成 layout v1 暂存 File，S3 part 可以为
 0～5 GiB，PartNumber 为 1～10000，允许乱序上传和相同编号覆盖。单个 S3 part 在 Telegram
@@ -188,7 +191,7 @@ Abort 把 active part 标记为 discarded，并通过 durable outbox 异步删�
 
 layout v2 的读取由统一 `OpenFile` 按 Segment 定位 source File，支持完整读取、任意 Seek
 和跨 S3 part/Telegram part 的 Range。因此 Multipart 最终对象可以被 S3 GET/HEAD/Copy/
-Delete、文件直链、WebDAV、静态目录、备份和 check-key 使用。
+Delete、文件直链、WebDAV、管理后台、备份和 check-key 使用。
 
 ListParts 支持 `part-number-marker/max-parts`，ListMultipartUploads 支持 prefix、`/`
 delimiter、key/upload marker、`max-uploads`，并接受 s3cmd 的 `max-keys` 兼容别名和
@@ -300,7 +303,7 @@ override 值或 presigned query。
 
 ### 5.4 内容缓存与读取失败语义
 
-S3 完整对象/Range、文件直链、WebDAV、静态目录和备份最终都通过同一个
+S3 完整对象/Range、文件直链、WebDAV、管理后台和备份最终都通过同一个
 `FileManager.OpenFile`，因而共享 File 版本身份和 L1/L2 内容缓存；layout v1 与 layout v2
 使用相同语义。HEAD、GetObjectAttributes、List 和 PROPFIND 只读取元数据，不为提高命中率
 打开内容或触发回填。
@@ -379,14 +382,13 @@ DeleteObjects：
 
 | 能力 | 路由 | 认证 |
 |---|---|---|
-| 直链上传 | `POST /file/upload` | Basic |
+| 直链上传 | `POST /file/upload` | Basic + `file:write` |
 | 直链下载 | `GET /file/download/{key}` | 匿名 |
 | 直链元数据 | `GET /file/meta/{key}` | 匿名 |
-| 元数据 purge | `POST /file/purge` | Basic |
-| 静态目录 | `/static/*` | Basic |
-| 逻辑备份 | `/backup/v2/*` | Basic + backup role |
-| WebDAV Class 1/2 + sync | `/webdav/*` | Basic |
-| Web 管理后台 | `/_admin/*` | 管理 Session + CSRF |
+| 元数据 purge | `POST /file/purge` | Basic + `file:write` |
+| 逻辑备份 | `/backup/v2/*` | Basic + `backup:read/write` |
+| WebDAV Class 1/2 + sync | `/webdav/*` | Basic + `webdav:read/write` |
+| Web 管理后台 | `/_admin/*` | `admin:read/write` 派生的管理 Session + CSRF |
 
 直链下载只使用规范 `/defaults` 映射。Purge 只清理无引用且没有 Delete State 的旧 File；
 不会丢弃 durable 删除引用或删除 Telegram message。
@@ -405,7 +407,8 @@ layout v2 Segment、Completed Part、S3 Metadata 和 WebDAV dead property；恢�
 [`05-logical-backup.md`](05-logical-backup.md)。
 
 Web 管理后台内嵌于服务二进制，提供路径浏览、下载、条件上传、Export、Import 和 Job 管理。
-它使用独立的进程内 Session、严格 Origin/CSRF 校验和 `read`/`read-write` 角色，不复用
+它使用独立的进程内 Session、严格 Origin/CSRF 校验和由 `admin:read/write` 派生的
+`read`/`read-write` 角色，不复用
 协议入口的 Basic Auth 会话。管理上传发布为普通 Mapping，因此 S3、WebDAV 和管理入口
 立即看到同一内容；管理下载透明读取 layout v1 和 layout v2。完整语义见
 [`06-web-management.md`](06-web-management.md)。

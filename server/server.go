@@ -19,7 +19,7 @@ import (
 	"github.com/xxxsen/common/webapi/middleware"
 	"github.com/xxxsen/common/webapi/proxyutil"
 
-	"github.com/xxxsen/tgfile/filemgr"
+	"github.com/xxxsen/tgfile/authz"
 	"github.com/xxxsen/tgfile/server/handler/admin"
 	"github.com/xxxsen/tgfile/server/handler/backup"
 	"github.com/xxxsen/tgfile/server/handler/file"
@@ -68,6 +68,7 @@ func New(bind string, opts ...Option) (*Server, error) {
 			MaxObjectSize:        c.s3.MaxObjectSize,
 			MultipartExpireHours: c.s3.MultipartExpireHours,
 			Users:                c.userMap,
+			Authorizer:           c.authorizer,
 		})
 	}
 	if c.admin.Enabled {
@@ -78,7 +79,7 @@ func New(bind string, opts ...Option) (*Server, error) {
 			FileManager:      c.fmgr,
 			BackupManager:    c.backupManager,
 			Users:            c.userMap,
-			Roles:            c.admin.Users,
+			Authorizer:       c.authorizer,
 			ExternalOrigins:  c.admin.ExternalOrigins,
 			SessionIdle:      c.admin.SessionIdle,
 			SessionMaximum:   c.admin.SessionMaximum,
@@ -111,76 +112,102 @@ func (s *Server) initAPI(router *gin.RouterGroup) {
 	if s.adminHandler != nil {
 		s.adminHandler.Register(router)
 	}
+	s.registerFileAPI(router, mustAuthMiddleware)
+	s.registerBackupAPI(router, mustAuthMiddleware)
+	s.registerS3API(router)
+	s.registerWebDAVAPI(router, mustAuthMiddleware)
+}
 
-	// handler here
+func (s *Server) registerFileAPI(
+	router *gin.RouterGroup,
+	mustAuthMiddleware gin.HandlerFunc,
+) {
 	fileHandler := file.NewFileHandler(s.c.fmgr)
-
 	fileRouter := router.Group("/file")
-	{
-		upload := proxyutil.WrapBizFunc(
-			func(c *gin.Context, ctx context.Context, request any) {
-				fileHandler.FileUpload(ctx, c, request)
-			},
-			&model.UploadFileRequest{},
-		)
-		fileRouter.POST("/upload", mustAuthMiddleware, upload)
-		fileRouter.GET("/download/:key", fileHandler.FileDownload)
-		fileRouter.GET("/meta/:key", fileHandler.GetMetaInfo)
-		fileRouter.POST("/purge", mustAuthMiddleware, fileHandler.FilePurge)
-	}
-	staticRouter := router.Group("/static", mustAuthMiddleware)
-	{
-		staticRouter.StaticFS("", http.FS(filemgr.ToFileSystem(context.Background(), s.c.fmgr)))
-	}
+	upload := proxyutil.WrapBizFunc(
+		func(c *gin.Context, ctx context.Context, request any) {
+			fileHandler.FileUpload(ctx, c, request)
+		},
+		&model.UploadFileRequest{},
+	)
+	fileRouter.POST(
+		"/upload",
+		mustAuthMiddleware,
+		s.permissionMiddleware(authz.FileWrite),
+		upload,
+	)
+	fileRouter.GET("/download/:key", fileHandler.FileDownload)
+	fileRouter.GET("/meta/:key", fileHandler.GetMetaInfo)
+	fileRouter.POST(
+		"/purge",
+		mustAuthMiddleware,
+		s.permissionMiddleware(authz.FileWrite),
+		fileHandler.FilePurge,
+	)
+}
 
-	if s.c.backup.Enabled && s.c.backupManager != nil {
-		backupHandler := backup.New(s.c.backupManager, s.c.backup.Users)
-		backupRouter := router.Group("/backup/v2", mustAuthMiddleware)
-		backupRouter.POST("/exports", backupHandler.CreateExport)
-		backupRouter.POST("/imports", backupHandler.CreateImport)
-		backupRouter.GET("/jobs/:job_id", backupHandler.GetJob)
-		backupRouter.POST("/jobs/:job_id/cancel", backupHandler.Cancel)
-		backupRouter.GET("/exports/:job_id/artifact", backupHandler.Artifact)
-		backupRouter.HEAD("/exports/:job_id/artifact", backupHandler.Artifact)
-		backupRouter.GET("/metrics", backupHandler.Metrics)
+func (s *Server) registerBackupAPI(
+	router *gin.RouterGroup,
+	mustAuthMiddleware gin.HandlerFunc,
+) {
+	if !s.c.backup.Enabled || s.c.backupManager == nil {
+		return
 	}
-	if s.c.s3.Enabled {
-		router.GET("", s.s3.RequestID, s.s3.ListBuckets)
-		for _, bucket := range s.c.s3.Buckets {
-			bucketRouter := router.Group(fmt.Sprintf("/%s", bucket.Name))
-			bucketRouter.Use(s.s3.RequestID)
-			bucketRouter.GET("", s.s3.GetBucket)
-			bucketRouter.HEAD("", s.s3.HeadBucket)
-			bucketRouter.PUT("", s.s3.NotImplemented)
-			bucketRouter.DELETE("", s.s3.NotImplemented)
-			bucketRouter.POST("", s.s3.PostBucketOrObject)
-			bucketRouter.GET("/*object", s.s3.GetBucketOrObject)
-			bucketRouter.HEAD("/*object", s.s3.HeadBucketOrObject)
-			bucketRouter.POST("/*object", s.s3.PostBucketOrObject)
-			bucketRouter.PUT("/*object", s.s3.UploadObject)
-			bucketRouter.DELETE("/*object", s.s3.DeleteObject)
-		}
+	backupHandler := backup.New(s.c.backupManager, s.c.authorizer)
+	backupRouter := router.Group("/backup/v2", mustAuthMiddleware)
+	backupRouter.POST("/exports", backupHandler.CreateExport)
+	backupRouter.POST("/imports", backupHandler.CreateImport)
+	backupRouter.GET("/jobs/:job_id", backupHandler.GetJob)
+	backupRouter.POST("/jobs/:job_id/cancel", backupHandler.Cancel)
+	backupRouter.GET("/exports/:job_id/artifact", backupHandler.Artifact)
+	backupRouter.HEAD("/exports/:job_id/artifact", backupHandler.Artifact)
+	backupRouter.GET("/metrics", backupHandler.Metrics)
+}
+
+func (s *Server) registerS3API(router *gin.RouterGroup) {
+	if !s.c.s3.Enabled {
+		return
 	}
-	if s.c.webdav.Enabled {
-		webdavRouter := router.Group("/webdav", mustAuthMiddleware)
-		{
-			s.webdavHandler = webdav.NewWebdavHandler(
-				s.c.fmgr,
-				s.c.webdav.Root,
-				webdavRouter.BasePath(),
-				webdav.Options{
-					Users:              s.c.webdav.Users,
-					ExternalOrigins:    s.c.webdav.ExternalOrigins,
-					MaxUploadSize:      s.c.webdav.MaxUploadSize,
-					QuotaBytes:         s.c.webdav.QuotaBytes,
-					MaxMutationEntries: s.c.webdav.MaxMutationEntries,
-					SyncPageSize:       s.c.webdav.SyncPageSize,
-				},
-			)
-			for _, method := range webdav.AllowMethods {
-				webdavRouter.Handle(method, "/*all", s.webdavHandler.Handler)
-			}
-		}
+	router.GET("", s.s3.RequestID, s.s3.ListBuckets)
+	for _, bucket := range s.c.s3.Buckets {
+		bucketRouter := router.Group(fmt.Sprintf("/%s", bucket.Name))
+		bucketRouter.Use(s.s3.RequestID)
+		bucketRouter.GET("", s.s3.GetBucket)
+		bucketRouter.HEAD("", s.s3.HeadBucket)
+		bucketRouter.PUT("", s.s3.NotImplemented)
+		bucketRouter.DELETE("", s.s3.NotImplemented)
+		bucketRouter.POST("", s.s3.PostBucketOrObject)
+		bucketRouter.GET("/*object", s.s3.GetBucketOrObject)
+		bucketRouter.HEAD("/*object", s.s3.HeadBucketOrObject)
+		bucketRouter.POST("/*object", s.s3.PostBucketOrObject)
+		bucketRouter.PUT("/*object", s.s3.UploadObject)
+		bucketRouter.DELETE("/*object", s.s3.DeleteObject)
+	}
+}
+
+func (s *Server) registerWebDAVAPI(
+	router *gin.RouterGroup,
+	mustAuthMiddleware gin.HandlerFunc,
+) {
+	if !s.c.webdav.Enabled {
+		return
+	}
+	webdavRouter := router.Group("/webdav", mustAuthMiddleware)
+	s.webdavHandler = webdav.NewWebdavHandler(
+		s.c.fmgr,
+		s.c.webdav.Root,
+		webdavRouter.BasePath(),
+		webdav.Options{
+			Authorizer:         s.c.authorizer,
+			ExternalOrigins:    s.c.webdav.ExternalOrigins,
+			MaxUploadSize:      s.c.webdav.MaxUploadSize,
+			QuotaBytes:         s.c.webdav.QuotaBytes,
+			MaxMutationEntries: s.c.webdav.MaxMutationEntries,
+			SyncPageSize:       s.c.webdav.SyncPageSize,
+		},
+	)
+	for _, method := range webdav.AllowMethods {
+		webdavRouter.Handle(method, "/*all", s.webdavHandler.Handler)
 	}
 }
 
@@ -195,7 +222,7 @@ func (s *Server) noRoute(c *gin.Context) {
 	}
 	first, _, _ := strings.Cut(strings.TrimPrefix(c.Request.URL.Path, "/"), "/")
 	switch first {
-	case "", "_admin", "file", "static", "backup", "webdav":
+	case "", "_admin", "file", "backup", "webdav":
 		c.Status(http.StatusNotFound)
 		return
 	}
@@ -203,7 +230,11 @@ func (s *Server) noRoute(c *gin.Context) {
 		s.s3.NotImplemented(c)
 		return
 	}
-	if _, apiError := s.s3.Authorize(c, true); apiError != nil {
+	permission := authz.S3Write
+	if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead {
+		permission = authz.S3Read
+	}
+	if _, apiError := s.s3.Authorize(c, true, permission); apiError != nil {
 		s3base.WriteError(c, apiError)
 		return
 	}
@@ -215,6 +246,21 @@ func (s *Server) noRoute(c *gin.Context) {
 	)
 	apiError.Bucket = first
 	s3base.WriteError(c, apiError)
+}
+
+func (s *Server) permissionMiddleware(permission authz.Permission) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		user, ok := proxyutil.GetUserInfo(c.Request.Context())
+		if !ok {
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+		if !s.c.authorizer.Has(user.Username, permission) {
+			c.AbortWithStatus(http.StatusForbidden)
+			return
+		}
+		c.Next()
+	}
 }
 
 func (s *Server) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -297,11 +343,7 @@ func (s *Server) webDAVPutAuthorizationStatus(request *http.Request) int {
 		subtle.ConstantTimeCompare([]byte(password), []byte(expected)) != 1 {
 		return http.StatusUnauthorized
 	}
-	if len(s.c.webdav.Users) == 0 {
-		return 0
-	}
-	role, exists := s.c.webdav.Users[username]
-	if !exists || role != "read-write" {
+	if !s.c.authorizer.Has(username, authz.WebDAVWrite) {
 		return http.StatusForbidden
 	}
 	return 0
