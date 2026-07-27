@@ -474,6 +474,7 @@ func newAdminTestEnvironment(t *testing.T) adminTestEnvironment {
 		DisableL2Cache: true,
 	})
 	require.NoError(t, err)
+	registerIntegrationCacheCleanup(t, cache)
 	files := filemgr.NewFileManager(databaseClient, block, cache)
 	require.NoError(t, files.CreateFileLink(t.Context(), "/uploads", 0, 0, true))
 	manager, err := backupmgr.New(databaseClient, files, backupmgr.Options{

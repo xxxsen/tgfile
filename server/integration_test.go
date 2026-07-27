@@ -54,6 +54,7 @@ func newIntegrationEnvironment(t *testing.T) *integrationEnvironment {
 		DisableL2Cache: true,
 	})
 	require.NoError(t, err)
+	registerIntegrationCacheCleanup(t, cache)
 	manager := filemgr.NewFileManager(database, block, cache)
 	handler, err := server.New(
 		"127.0.0.1:0",
@@ -79,6 +80,15 @@ func newIntegrationEnvironment(t *testing.T) *integrationEnvironment {
 		database: database,
 		manager:  manager,
 	}
+}
+
+func registerIntegrationCacheCleanup(t *testing.T, cache filemgr.IFileIOCache) {
+	t.Helper()
+	t.Cleanup(func() {
+		closeContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		require.NoError(t, cache.Close(closeContext))
+	})
 }
 
 func newIntegrationServer(t *testing.T) *httptest.Server {

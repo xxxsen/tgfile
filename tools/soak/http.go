@@ -69,6 +69,35 @@ func (r *soakRunner) expectWebDAVStatus(
 	return result, nil
 }
 
+func (r *soakRunner) expectDirectStatus(
+	ctx context.Context,
+	fileKey string,
+	headers http.Header,
+	expected ...int,
+) (*httpResult, error) {
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		r.baseURL+"/file/download/"+url.PathEscape(fileKey),
+		nil,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create direct-link request: %w", err)
+	}
+	request.Header = headers.Clone()
+	if request.Header == nil {
+		request.Header = make(http.Header)
+	}
+	result, err := r.doRequest(request, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := expectStatus(result, expected...); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 func (r *soakRunner) doS3(
 	ctx context.Context,
 	method, key, rawQuery string,

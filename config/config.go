@@ -194,13 +194,149 @@ func (c *Config) Validate() error {
 	if err := c.validateWebDAV(); err != nil {
 		return err
 	}
+	if err := c.validateIOCache(); err != nil {
+		return err
+	}
 	if err := c.validateBackup(); err != nil {
 		return err
 	}
 	if err := c.validateAdmin(); err != nil {
 		return err
 	}
-	return c.validateBlockIO()
+	if err := c.validateBlockIO(); err != nil {
+		return err
+	}
+	return c.validateIOCachePathConflicts()
+}
+
+func (c *Config) validateIOCache() error {
+	if c.IOCache.EnableL1Cache &&
+		(c.IOCache.L1CacheSize <= 0 || c.IOCache.L1KeySizeLimit <= 0 ||
+			c.IOCache.L1KeySizeLimit > c.IOCache.L1CacheSize) {
+		return fmt.Errorf(
+			"%w: io_cache L1 size and per-key limit are inconsistent",
+			errInvalidConfig,
+		)
+	}
+	if !c.IOCache.EnableL2Cache {
+		return nil
+	}
+	if c.IOCache.L2CacheSize <= 0 || c.IOCache.L2KeySizeLimit <= 0 ||
+		c.IOCache.L2KeySizeLimit > c.IOCache.L2CacheSize {
+		return fmt.Errorf(
+			"%w: io_cache L2 size and per-key limit are inconsistent",
+			errInvalidConfig,
+		)
+	}
+	if strings.TrimSpace(c.IOCache.L2CacheDir) == "" {
+		return fmt.Errorf("%w: io_cache.l2_cache_dir must not be empty", errInvalidConfig)
+	}
+	absolute, err := filepath.Abs(c.IOCache.L2CacheDir)
+	if err != nil {
+		return fmt.Errorf("%w: resolve io_cache.l2_cache_dir: %w", errInvalidConfig, err)
+	}
+	canonical, err := canonicalPath(absolute)
+	if err != nil {
+		return fmt.Errorf("%w: canonicalize io_cache.l2_cache_dir: %w", errInvalidConfig, err)
+	}
+	c.IOCache.L2CacheDir = canonical
+	return nil
+}
+
+func (c *Config) validateIOCachePathConflicts() error {
+	if !c.IOCache.EnableL2Cache {
+		return nil
+	}
+	cacheDir, err := canonicalPath(c.IOCache.L2CacheDir)
+	if err != nil {
+		return fmt.Errorf("%w: canonicalize io_cache.l2_cache_dir: %w", errInvalidConfig, err)
+	}
+	paths := []struct {
+		name string
+		path string
+	}{
+		{name: "db_file", path: c.DBFile},
+		{name: "backup.work_dir", path: c.Backup.WorkDir},
+		{name: "webdav.upload_temp_dir", path: c.Webdav.UploadTempDir},
+	}
+	if c.BotKind == "localfile" {
+		var localConfig struct {
+			Dir        string `json:"dir"`
+			StorageDir string `json:"storage_dir"`
+		}
+		raw, err := json.Marshal(c.BotInfo)
+		if err != nil {
+			return fmt.Errorf("%w: encode localfile configuration: %w", errInvalidConfig, err)
+		}
+		if err := json.Unmarshal(raw, &localConfig); err != nil {
+			return fmt.Errorf("%w: decode localfile configuration: %w", errInvalidConfig, err)
+		}
+		backendDir := localConfig.Dir
+		if backendDir == "" {
+			backendDir = localConfig.StorageDir
+		}
+		paths = append(paths, struct {
+			name string
+			path string
+		}{name: "bot_config.dir", path: backendDir})
+	}
+	for _, candidate := range paths {
+		if candidate.path == "" {
+			continue
+		}
+		absolute, err := filepath.Abs(candidate.path)
+		if err != nil {
+			return fmt.Errorf("%w: resolve %s: %w", errInvalidConfig, candidate.name, err)
+		}
+		canonical, err := canonicalPath(absolute)
+		if err != nil {
+			return fmt.Errorf("%w: canonicalize %s: %w", errInvalidConfig, candidate.name, err)
+		}
+		if pathsOverlap(cacheDir, canonical) {
+			return fmt.Errorf(
+				"%w: io_cache.l2_cache_dir overlaps %s",
+				errInvalidConfig,
+				candidate.name,
+			)
+		}
+	}
+	return nil
+}
+
+func canonicalPath(path string) (string, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute path: %w", err)
+	}
+	current := filepath.Clean(absolute)
+	remaining := make([]string, 0, 4)
+	for {
+		resolved, resolveErr := filepath.EvalSymlinks(current)
+		if resolveErr == nil {
+			parts := append([]string{resolved}, remaining...)
+			return filepath.Clean(filepath.Join(parts...)), nil
+		}
+		if !errors.Is(resolveErr, os.ErrNotExist) {
+			return "", fmt.Errorf("resolve path symlinks: %w", resolveErr)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return filepath.Clean(absolute), nil
+		}
+		remaining = append([]string{filepath.Base(current)}, remaining...)
+		current = parent
+	}
+}
+
+func pathsOverlap(left, right string) bool {
+	leftToRight, leftErr := filepath.Rel(left, right)
+	rightToLeft, rightErr := filepath.Rel(right, left)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return leftToRight == "." || rightToLeft == "." ||
+		(leftToRight != ".." && !strings.HasPrefix(leftToRight, ".."+string(filepath.Separator))) ||
+		(rightToLeft != ".." && !strings.HasPrefix(rightToLeft, ".."+string(filepath.Separator)))
 }
 
 func (c *Config) validateAdmin() error {

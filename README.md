@@ -137,6 +137,27 @@ worker，但不会暴露 `/backup/v2` Basic Auth API。`backup.work_dir` 仍必�
 volume，并为导入归档和导出 artifact 预留足够空间。反向代理的请求体上限和读写超时必须
 覆盖 `admin.max_upload_size` 与 `backup.max_archive_bytes`。
 
+`io_cache` 的 L1 和 L2 独立启用，`*_key_size_limit` 是包含边界的单文件上限。启用某层时，
+总容量和单文件上限都必须大于 0，且单文件上限不能超过总容量；禁用层遗留的容量值不参与
+校验或读取资格判断。L1 保存进程内不可变字节副本，重启后为空。L2 保存可跨重启恢复的
+整文件副本，实际磁盘路径位于 `l2_cache_dir/v2/`；除容量上限外，还应预留一个正在回填的
+最大文件所需的临时空间。
+
+`l2_cache_dir` 必须是当前实例专用的持久化目录：不能与 SQLite、localfile 后端、
+`backup.work_dir` 或 `webdav.upload_temp_dir` 相同、互为祖先或通过已有 symlink 重叠，
+也不能由多个 tgfile 进程或容器副本共享。服务会在 `v2/` 取得非阻塞独占锁；锁已被占用时
+启动失败。需要多副本部署时，每个副本必须配置独立子目录。
+
+L2 v2 只复用同时匹配当前 SQLite 文件身份、BlockIO 配置、rotate 参数和完整 File 版本身份
+的副本。更换数据库文件、后端或凭据会自然冷缓存；原地恢复 SQLite、但保留同一 OS 文件
+身份时，运维必须先停止服务并清空该实例的专用缓存目录。缓存文件缺失、损坏、超限或本地
+写入失败会自动失效并回源，不会修改 SQLite、localfile/Telegram 原始内容或删除 outbox。
+
+从旧版 L2 升级会发生一次冷缓存。升级共享旧 cache volume 时必须先停止旧实例，再启动
+新实例；新版本只接管 `v2/` 格式，并只清理由严格目录和文件名规则识别出的旧缓存文件。
+回滚也不需要数据库迁移；应在所有实例停止后再清空专用 cache volume，避免新旧进程同时
+管理缓存文件。
+
 启动前可执行无副作用校验；该命令不会初始化日志、SQLite、Telegram、缓存或 HTTP：
 
 ```bash
@@ -379,9 +400,13 @@ make soak SOAK_CLIENT_DELAY=20ms SOAK_BACKEND_DELAY=50ms
 延迟 5 ms，用于模拟服务端访问 Telegram 变慢。延迟可分别通过 `SOAK_CLIENT_DELAY` 和
 `SOAK_BACKEND_DELAY` 调整，设置为 `0s` 可关闭。
 
-测试覆盖 S3 SigV4 普通上传、Multipart、WebDAV 上传、复制、移动、锁、删除、慢速客户端和
-跨协议读取，并在结束时检查 SQLite 完整性、未完成删除状态、孤儿属性/锁/对象元数据、残留
-Mapping、localfile block 和 spool 文件。失败时临时工作目录会保留并输出；成功时自动删除。
+测试使用小容量 L1/L2 缓存持续制造命中、回填和淘汰，覆盖 S3 SigV4 普通上传、Multipart、
+WebDAV 上传、复制、移动、锁、删除、文件直链、慢速客户端和跨协议读取。启动 preflight 会
+确定性验证同一 File 的并发 S3 GET/Range、WebDAV 和直链冷读只触发一次 mock BlockIO 下载，
+并截断一个受管 L2 文件以验证回源恢复；缓存读取或损坏恢复不得改变业务表或触发后端删除。
+结束时除 SQLite 完整性、删除状态、孤儿属性/锁/对象元数据、残留 Mapping、localfile block
+和 spool 外，还会校验 L2 文件名、shard、大小、摘要、总容量和 temp 残留。进度和最终摘要会
+输出后端调用数及 L2 文件/字节数。失败时临时工作目录会保留并输出；成功时自动删除。
 `SOAK_SEED` 可用于复现相同的数据和场景顺序。
 
 S3/WebDAV 本地压力测试同样只允许用户手动执行，不属于 `make check` 或 CI。它默认关闭

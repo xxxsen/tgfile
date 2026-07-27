@@ -823,6 +823,11 @@ func newBackupTestStorage(
 		DisableL1Cache: true, DisableL2Cache: true,
 	})
 	require.NoError(t, err)
+	t.Cleanup(func() {
+		closeContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		require.NoError(t, cache.Close(closeContext))
+	})
 	return databaseClient, filemgr.NewFileManager(databaseClient, block, cache)
 }
 

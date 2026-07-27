@@ -29,6 +29,8 @@ var (
 	errUnexpectedServiceExit = errors.New("service component exited unexpectedly")
 )
 
+const cacheShutdownTimeout = 30 * time.Second
+
 type componentResult struct {
 	name string
 	err  error
@@ -104,24 +106,32 @@ func runServer(ctx context.Context, serviceConfig *config.Config) error {
 }
 
 func runHTTPServer(ctx context.Context, serviceConfig *config.Config, appLogger *zap.Logger) error {
-	fileManager, err := buildFileManager(ctx, serviceConfig)
+	fileManager, ioCache, err := buildFileManager(ctx, serviceConfig)
 	if err != nil {
 		return fmt.Errorf("init storage: %w", err)
 	}
-	logServerFeatures(serviceConfig, appLogger)
-	var backupManager *backupmgr.Manager
-	if serviceConfig.Backup.Enable || serviceConfig.Admin.Enable {
-		backupManager, err = buildBackupManager(serviceConfig, fileManager)
-		if err != nil {
-			return err
+	runErr := func() error {
+		logServerFeatures(serviceConfig, appLogger)
+		var backupManager *backupmgr.Manager
+		if serviceConfig.Backup.Enable || serviceConfig.Admin.Enable {
+			backupManager, err = buildBackupManager(serviceConfig, fileManager)
+			if err != nil {
+				return err
+			}
 		}
-	}
-	httpServer, err := buildHTTPServer(serviceConfig, fileManager, backupManager)
-	if err != nil {
-		return err
-	}
-	appLogger.Info("init server succ, start it...")
-	return runServerComponents(ctx, httpServer, fileManager, backupManager)
+		httpServer, buildErr := buildHTTPServer(serviceConfig, fileManager, backupManager)
+		if buildErr != nil {
+			return buildErr
+		}
+		appLogger.Info("init server succ, start it...")
+		return runServerComponents(ctx, httpServer, fileManager, backupManager)
+	}()
+	closeErr := func() error {
+		closeContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), cacheShutdownTimeout)
+		defer cancel()
+		return ioCache.Close(closeContext)
+	}()
+	return errors.Join(runErr, closeErr)
 }
 
 func logServerFeatures(serviceConfig *config.Config, appLogger *zap.Logger) {
@@ -334,10 +344,26 @@ func toServerS3Options(input config.S3Config) server.S3Options {
 	}
 }
 
-func buildFileManager(ctx context.Context, serviceConfig *config.Config) (filemgr.IFileManager, error) {
+func buildFileManager(
+	ctx context.Context,
+	serviceConfig *config.Config,
+) (filemgr.IFileManager, filemgr.IFileIOCache, error) {
+	var binding [32]byte
+	if serviceConfig.IOCache.EnableL1Cache || serviceConfig.IOCache.EnableL2Cache {
+		var err error
+		binding, err = filemgr.BuildStorageBinding(
+			serviceConfig.DBFile,
+			serviceConfig.BotKind,
+			serviceConfig.BotInfo,
+			serviceConfig.RotateStream,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build file cache binding: %w", err)
+		}
+	}
 	blockStorage, err := blockio.Create(serviceConfig.BotKind, serviceConfig.BotInfo)
 	if err != nil {
-		return nil, fmt.Errorf("init block io failed, kind:%s, err:%w", serviceConfig.BotKind, err)
+		return nil, nil, fmt.Errorf("init block io failed, kind:%s, err:%w", serviceConfig.BotKind, err)
 	}
 	blockStorage = blockio.NewRotateIO(blockStorage, serviceConfig.RotateStream)
 	cacheConfig := &filemgr.FileIOCacheConfig{
@@ -348,11 +374,12 @@ func buildFileManager(ctx context.Context, serviceConfig *config.Config) (filemg
 		L2CacheSize:    serviceConfig.IOCache.L2CacheSize,
 		L2KeySizeLimit: serviceConfig.IOCache.L2KeySizeLimit,
 		L2CacheDir:     serviceConfig.IOCache.L2CacheDir,
+		StorageBinding: binding,
 	}
 	ioCache, err := filemgr.NewFileIOCacheWithContext(ctx, cacheConfig)
 	if err != nil {
-		return nil, fmt.Errorf("create file io cache failed, err:%w", err)
+		return nil, nil, fmt.Errorf("create file io cache failed, err:%w", err)
 	}
 	fileManager := filemgr.NewFileManager(db.GetClient(), blockStorage, ioCache)
-	return fileManager, nil
+	return fileManager, ioCache, nil
 }

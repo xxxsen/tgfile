@@ -2,20 +2,28 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/xxxsen/common/database"
 )
 
 var (
-	errAuditInvariant = errors.New("soak audit invariant failed")
-	outputMutex       sync.Mutex
+	errAuditInvariant       = errors.New("soak audit invariant failed")
+	errInvalidCacheFileName = errors.New("invalid soak L2 cache filename")
+	outputMutex             sync.Mutex
 )
 
 type auditResult struct {
@@ -23,19 +31,110 @@ type auditResult struct {
 	deleteStateRows   int64
 	databaseBytes     int64
 	integrityChecked  bool
+	cacheFiles        int64
+	cacheBytes        int64
+	cacheTempFiles    int64
+}
+
+type cacheAuditResult struct {
+	files     int64
+	bytes     int64
+	tempFiles int64
+}
+
+type l2CacheInspector struct {
+	cacheDir    string
+	managedRoot string
+	seenKeys    map[string]string
+	result      cacheAuditResult
+}
+
+type trackedResources struct {
+	links           []string
+	linkDirectories []string
+	uploads         map[string]string
+	keys            []string
 }
 
 func (r *soakRunner) cleanupTrackedResources(ctx context.Context) error {
+	tracked := r.snapshotTrackedResources()
+	linkErr := r.cleanupTrackedLinks(ctx, tracked.links)
+	var directoryErr error
+	if linkErr == nil {
+		directoryErr = r.cleanupTrackedLinkDirectories(ctx, tracked.linkDirectories)
+	}
+	cleanupErr := errors.Join(
+		linkErr,
+		directoryErr,
+		r.cleanupTrackedUploads(ctx, tracked.uploads),
+		r.cleanupTrackedKeys(ctx, tracked.keys),
+	)
+	if cleanupErr != nil {
+		return cleanupErr
+	}
+	return r.waitForDeletionDrain(ctx)
+}
+
+func (r *soakRunner) snapshotTrackedResources() trackedResources {
 	r.activeMu.Lock()
-	uploads := make(map[string]string, len(r.activeUpload))
+	defer r.activeMu.Unlock()
+	tracked := trackedResources{
+		links:           make([]string, 0, len(r.activeLinks)),
+		linkDirectories: make([]string, 0, len(r.activeLinkDirs)),
+		uploads:         make(map[string]string, len(r.activeUpload)),
+		keys:            make([]string, 0, len(r.activeKeys)),
+	}
+	for link := range r.activeLinks {
+		tracked.links = append(tracked.links, link)
+	}
+	for link := range r.activeLinkDirs {
+		tracked.linkDirectories = append(tracked.linkDirectories, link)
+	}
 	for uploadID, key := range r.activeUpload {
-		uploads[uploadID] = key
+		tracked.uploads[uploadID] = key
 	}
-	keys := make([]string, 0, len(r.activeKeys))
 	for key := range r.activeKeys {
-		keys = append(keys, key)
+		tracked.keys = append(tracked.keys, key)
 	}
-	r.activeMu.Unlock()
+	return tracked
+}
+
+func (r *soakRunner) cleanupTrackedLinks(ctx context.Context, links []string) error {
+	var cleanupErr error
+	for _, link := range links {
+		if err := r.manager.RemoveFileLink(ctx, link); err != nil {
+			cleanupErr = errors.Join(
+				cleanupErr,
+				fmt.Errorf("remove tracked direct link %s: %w", link, err),
+			)
+			continue
+		}
+		r.untrackLink(link)
+	}
+	return cleanupErr
+}
+
+func (r *soakRunner) cleanupTrackedLinkDirectories(ctx context.Context, links []string) error {
+	sort.Slice(links, func(left, right int) bool {
+		return strings.Count(links[left], "/") > strings.Count(links[right], "/")
+	})
+	var cleanupErr error
+	for _, link := range links {
+		if err := r.manager.RemoveFileLink(ctx, link); err != nil {
+			cleanupErr = errors.Join(
+				cleanupErr,
+				fmt.Errorf("remove tracked direct-link directory %s: %w", link, err),
+			)
+			continue
+		}
+		r.activeMu.Lock()
+		delete(r.activeLinkDirs, link)
+		r.activeMu.Unlock()
+	}
+	return cleanupErr
+}
+
+func (r *soakRunner) cleanupTrackedUploads(ctx context.Context, uploads map[string]string) error {
 	var cleanupErr error
 	for uploadID, key := range uploads {
 		result, err := r.doS3(ctx, "DELETE", key, "uploadId="+uploadID, nil, nil)
@@ -51,6 +150,11 @@ func (r *soakRunner) cleanupTrackedResources(ctx context.Context) error {
 		}
 		r.untrackUpload(uploadID)
 	}
+	return cleanupErr
+}
+
+func (r *soakRunner) cleanupTrackedKeys(ctx context.Context, keys []string) error {
+	var cleanupErr error
 	for _, key := range keys {
 		result, err := r.doS3(ctx, "DELETE", key, "", nil, nil)
 		if err == nil {
@@ -65,10 +169,7 @@ func (r *soakRunner) cleanupTrackedResources(ctx context.Context) error {
 		}
 		r.untrackKey(key)
 	}
-	if cleanupErr != nil {
-		return cleanupErr
-	}
-	return r.waitForDeletionDrain(ctx)
+	return cleanupErr
 }
 
 func (r *soakRunner) waitForDeletionDrain(ctx context.Context) error {
@@ -120,6 +221,16 @@ func (r *soakRunner) audit(ctx context.Context) (auditResult, error) {
 	}
 	if err := r.auditEmptyStorage(); err != nil {
 		return result, err
+	}
+	cacheAudit, err := inspectL2CacheDirectory(r.cacheDir, soakL2CacheSize)
+	result.cacheFiles = cacheAudit.files
+	result.cacheBytes = cacheAudit.bytes
+	result.cacheTempFiles = cacheAudit.tempFiles
+	if err != nil {
+		return result, err
+	}
+	if result.cacheFiles == 0 {
+		return result, fmt.Errorf("%w: L2 cache contains no managed entries", errAuditInvariant)
 	}
 	result.changeJournalRows, err = queryInt64(
 		ctx,
@@ -284,6 +395,174 @@ func countDirectoryFiles(directory string) (int64, error) {
 		}
 	}
 	return count, nil
+}
+
+func inspectL2CacheDirectory(cacheDir string, maxBytes int64) (cacheAuditResult, error) {
+	inspector := &l2CacheInspector{
+		cacheDir:    cacheDir,
+		managedRoot: filepath.Join(cacheDir, "v2"),
+		seenKeys:    make(map[string]string),
+	}
+	err := filepath.WalkDir(cacheDir, inspector.visit)
+	if errors.Is(err, os.ErrNotExist) {
+		return inspector.result, fmt.Errorf("%w: L2 cache directory is missing", errAuditInvariant)
+	}
+	if err != nil {
+		return inspector.result, fmt.Errorf("walk L2 cache directory: %w", err)
+	}
+	if inspector.result.tempFiles != 0 {
+		return inspector.result, fmt.Errorf(
+			"%w: L2 cache temp files = %d",
+			errAuditInvariant,
+			inspector.result.tempFiles,
+		)
+	}
+	if inspector.result.bytes > maxBytes {
+		return inspector.result, fmt.Errorf(
+			"%w: L2 cache bytes = %d, limit = %d",
+			errAuditInvariant,
+			inspector.result.bytes,
+			maxBytes,
+		)
+	}
+	return inspector.result, nil
+}
+
+func (i *l2CacheInspector) visit(path string, entry os.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		return fmt.Errorf("visit L2 cache path: %w", walkErr)
+	}
+	if entry.Type()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: L2 cache contains symlink %s", errAuditInvariant, path)
+	}
+	if entry.IsDir() {
+		return auditCacheDirectoryLocation(i.cacheDir, i.managedRoot, path)
+	}
+	return i.visitFile(path, entry)
+}
+
+func (i *l2CacheInspector) visitFile(path string, entry os.DirEntry) error {
+	if strings.HasSuffix(entry.Name(), ".temp") {
+		i.result.tempFiles++
+		return nil
+	}
+	if path == filepath.Join(i.managedRoot, ".manifest") ||
+		path == filepath.Join(i.managedRoot, ".lock") {
+		return auditRegularCacheFile(entry, path)
+	}
+	if !strings.HasSuffix(entry.Name(), ".cache") {
+		return fmt.Errorf("%w: unexpected L2 cache file %s", errAuditInvariant, path)
+	}
+	return i.auditEntry(path, entry)
+}
+
+func (i *l2CacheInspector) auditEntry(path string, entry os.DirEntry) error {
+	key, size, digest, err := parseSoakCacheFileName(entry.Name())
+	if err != nil {
+		return errors.Join(errAuditInvariant, fmt.Errorf("parse L2 cache entry %s: %w", path, err))
+	}
+	if filepath.Base(filepath.Dir(path)) != key[:2] ||
+		filepath.Dir(filepath.Dir(path)) != i.managedRoot {
+		return fmt.Errorf("%w: invalid L2 cache shard for %s", errAuditInvariant, path)
+	}
+	if previous, exists := i.seenKeys[key]; exists {
+		return fmt.Errorf(
+			"%w: duplicate L2 cache key in %s and %s",
+			errAuditInvariant,
+			previous,
+			path,
+		)
+	}
+	i.seenKeys[key] = path
+	info, err := entry.Info()
+	if err != nil {
+		return fmt.Errorf("inspect L2 cache entry %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() || info.Size() != size || size < 0 || size > soakL2KeySizeLimit {
+		return fmt.Errorf("%w: invalid L2 cache entry size for %s", errAuditInvariant, path)
+	}
+	actualDigest, err := hashSoakCacheFile(path)
+	if err != nil {
+		return err
+	}
+	if actualDigest != digest {
+		return fmt.Errorf("%w: L2 cache digest mismatch for %s", errAuditInvariant, path)
+	}
+	i.result.files++
+	i.result.bytes += size
+	return nil
+}
+
+func auditCacheDirectoryLocation(cacheDir, managedRoot, location string) error {
+	if location == cacheDir || location == managedRoot {
+		return nil
+	}
+	if filepath.Dir(location) != managedRoot || !isLowerHex(filepath.Base(location), 2) {
+		return fmt.Errorf("%w: unexpected L2 cache directory %s", errAuditInvariant, location)
+	}
+	return nil
+}
+
+func auditRegularCacheFile(entry os.DirEntry, path string) error {
+	info, err := entry.Info()
+	if err != nil {
+		return fmt.Errorf("inspect L2 cache metadata file %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: invalid L2 cache metadata file %s", errAuditInvariant, path)
+	}
+	return nil
+}
+
+func parseSoakCacheFileName(name string) (string, int64, [sha256.Size]byte, error) {
+	var digest [sha256.Size]byte
+	base, found := strings.CutSuffix(name, ".cache")
+	if !found {
+		return "", 0, digest, fmt.Errorf("%w: suffix", errInvalidCacheFileName)
+	}
+	parts := strings.Split(base, ".")
+	if len(parts) != 4 || !isLowerHex(parts[0], sha256.Size*2) {
+		return "", 0, digest, fmt.Errorf("%w: key", errInvalidCacheFileName)
+	}
+	generation, err := uuid.Parse(parts[1])
+	if err != nil || generation.String() != parts[1] {
+		return "", 0, digest, fmt.Errorf("%w: generation", errInvalidCacheFileName)
+	}
+	size, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || size < 0 || strconv.FormatInt(size, 10) != parts[2] {
+		return "", 0, digest, fmt.Errorf("%w: size", errInvalidCacheFileName)
+	}
+	if !isLowerHex(parts[3], sha256.Size*2) {
+		return "", 0, digest, fmt.Errorf("%w: digest", errInvalidCacheFileName)
+	}
+	rawDigest, _ := hex.DecodeString(parts[3])
+	copy(digest[:], rawDigest)
+	return parts[0], size, digest, nil
+}
+
+func isLowerHex(value string, length int) bool {
+	if len(value) != length || strings.ToLower(value) != value {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+func hashSoakCacheFile(path string) ([sha256.Size]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return [sha256.Size]byte{}, fmt.Errorf("open L2 cache entry %s: %w", path, err)
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return [sha256.Size]byte{}, fmt.Errorf("hash L2 cache entry %s: %w", path, err)
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], hash.Sum(nil))
+	return digest, nil
 }
 
 func countOpenFileHandles() int64 {

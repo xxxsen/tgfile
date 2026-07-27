@@ -27,6 +27,7 @@ func newPurgeTestManager(t *testing.T) IFileManager {
 		DisableL2Cache: true,
 	})
 	require.NoError(t, err)
+	registerCacheCleanup(t, cache)
 	logger.Init("", "debug", 0, 0, 0, true)
 	return NewFileManager(database, blkio, cache)
 }

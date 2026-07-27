@@ -39,6 +39,7 @@ func newWebDAVIntegrationEnvironment(
 		DisableL2Cache: true,
 	})
 	require.NoError(t, err)
+	registerIntegrationCacheCleanup(t, cache)
 	manager := filemgr.NewFileManager(databaseClient, block, cache)
 	options.Enabled = true
 	if options.Root == "" {

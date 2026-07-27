@@ -298,6 +298,28 @@ GetObject、HeadObject 和 GetObjectAttributes 记录低基数的 operation、re
 attributes 集合、manifest checksum state 和分页状态；日志不记录完整对象 key、response
 override 值或 presigned query。
 
+### 5.4 内容缓存与读取失败语义
+
+S3 完整对象/Range、文件直链、WebDAV、静态目录和备份最终都通过同一个
+`FileManager.OpenFile`，因而共享 File 版本身份和 L1/L2 内容缓存；layout v1 与 layout v2
+使用相同语义。HEAD、GetObjectAttributes、List 和 PROPFIND 只读取元数据，不为提高命中率
+打开内容或触发回填。
+
+对符合缓存阈值的冷读，缓存按声明的完整 File 大小回填后再由协议层 Seek/读取，因此 Range
+仍能得到标准 206 和 Content-Range，但首次回源可能读取完整 File。同一 File 版本的并发
+S3、直链或 WebDAV 冷读合并为一个回填；每个响应取得独立 reader，取消其中一个等待请求
+不影响其他请求。
+
+缓存命中和回填不改变 ETag、checksum、Last-Modified、Content-Length、条件请求或 Range
+语义。L2 文件丢失、截断、扩展、摘要不符或本地写/open/rename 失败时，该 entry 只会失效并
+进入正常回源；回源成功时协议响应仍成功。BlockIO/Composite 数据源短于声明大小时错误链
+包含 `io.ErrUnexpectedEOF`，长于声明大小时返回 source-size mismatch；两者都不发布 L1、
+L2 或残留 temp。请求 context 取消优先返回取消错误，已取消请求不会为了完成缓存回填继续
+阻塞。
+
+任何读取、命中、miss、损坏清理或回填降级都不能修改 File、Part、Mapping、S3/WebDAV
+元数据或 durable delete outbox，也不能调用 BlockIO 删除。
+
 ## 6. ListObjects V1 与 V2
 
 ListObjects V1 用于兼容仍使用旧列表协议的客户端。支持 `prefix`、空 delimiter 或 `/`、

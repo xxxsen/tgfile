@@ -75,6 +75,7 @@ func newDeleteWorkerTestManager(
 		DisableL2Cache: true,
 	})
 	require.NoError(t, err)
+	registerCacheCleanup(t, cache)
 	manager, ok := NewFileManager(databaseClient, block, cache).(*defaultFileManager)
 	require.True(t, ok)
 	return manager, databaseClient

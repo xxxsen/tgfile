@@ -1,155 +1,304 @@
 package filemgr
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/xxxsen/common/logger"
-
-	"github.com/xxxsen/tgfile/cacheapi"
 )
 
-func TestFileIOCache(t *testing.T) {
-	logger.Init("", "debug", 0, 0, 0, true)
-	cc, err := NewFileIOCache(&FileIOCacheConfig{
-		DisableL1Cache: false,
-		L1CacheSize:    10,
-		L1KeySizeLimit: 5,
-		DisableL2Cache: false,
-		L2CacheSize:    30,
-		L2KeySizeLimit: 10,
+func testCacheIdentity(fileID uint64, size int64) FileCacheIdentity {
+	return FileCacheIdentity{
+		FileID:        fileID,
+		Size:          size,
+		PartCount:     1,
+		State:         1,
+		LayoutVersion: 1,
+		Ctime:         100,
+		Mtime:         200,
+		ExtInfo:       `{"md5":"test"}`,
+	}
+}
+
+func closeTestCache(t *testing.T, cache IFileIOCache) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, cache.Close(ctx))
+}
+
+func registerCacheCleanup(t *testing.T, cache IFileIOCache) {
+	t.Helper()
+	t.Cleanup(func() { closeTestCache(t, cache) })
+}
+
+func TestFileIOCacheTierSelectionAndHits(t *testing.T) {
+	cache, err := NewFileIOCache(&FileIOCacheConfig{
+		L1CacheSize:    16,
+		L1KeySizeLimit: 4,
+		L2CacheSize:    64,
+		L2KeySizeLimit: 16,
 		L2CacheDir:     filepath.Join(t.TempDir(), "cache"),
 	})
 	require.NoError(t, err)
-	ctx := context.Background()
+	registerCacheCleanup(t, cache)
+	implementation := cache.(*fileIOCacheImpl)
 
-	dataReader := func(sz int) func(ctx context.Context) (io.ReadSeekCloser, error) {
-		return func(_ context.Context) (io.ReadSeekCloser, error) {
-			buf := make([]byte, sz)
-			for i := 0; i < sz; i++ {
-				buf[i] = byte(i % 256) // 填充一些数据
+	tests := []struct {
+		name       string
+		fileID     uint64
+		data       []byte
+		wantL1     bool
+		wantL2     bool
+		loaderHits int
+	}{
+		{name: "both tiers", fileID: 1, data: []byte("1234"), wantL1: true, wantL2: true, loaderHits: 1},
+		{name: "L2 only", fileID: 2, data: []byte("12345678"), wantL2: true, loaderHits: 1},
+		{name: "uncacheable", fileID: 3, data: bytes.Repeat([]byte("x"), 17), loaderHits: 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			identity := testCacheIdentity(test.fileID, int64(len(test.data)))
+			var calls int
+			loader := func(context.Context) (io.ReadSeekCloser, error) {
+				calls++
+				return newBytesStream(test.data), nil
 			}
-			return newBytesStream(buf), nil
-		}
-	}
-	impl := cc.(*fileIOCacheImpl)
-	{ // 内存有, 文件有
-		reader, loadErr := cc.Load(ctx, 1, 1, dataReader(1))
-		require.NoError(t, loadErr)
-		require.NoError(t, reader.Close())
-		val, err := impl.l1.Get(ctx, uint64(1))
-		assert.NoError(t, err)
-		assert.Len(t, val, 1)
-		_, err = impl.l2.Get(ctx, uint64(1))
-		assert.NoError(t, err)
-	}
-	{ // 内存无, 文件有
-		reader, loadErr := cc.Load(ctx, 2, 10, dataReader(10))
-		require.NoError(t, loadErr)
-		require.NoError(t, reader.Close())
-		_, err := impl.l1.Get(ctx, uint64(2))
-		assert.Error(t, err)
-		_, err = impl.l2.Get(ctx, uint64(2))
-		assert.NoError(t, err)
-	}
-	{ // 内存无, 文件无, 直接从数据源加载
-		reader, loadErr := cc.Load(ctx, 3, 100, dataReader(100))
-		require.NoError(t, loadErr)
-		require.NoError(t, reader.Close())
-		_, err := impl.l1.Get(ctx, uint64(3))
-		assert.Error(t, err)
-		_, err = impl.l2.Get(ctx, uint64(3))
-		assert.Error(t, err)
-	}
-	{ // 测试l2缓存淘汰
-		for i := 0; i < 40; i++ {
-			reader, loadErr := cc.Load(ctx, uint64(i+4), 10, dataReader(10))
-			require.NoError(t, loadErr)
-			require.NoError(t, reader.Close())
-		}
-	}
-	{ // 测试l1缓存淘汰
-		for i := 0; i < 20; i++ {
-			reader, loadErr := cc.Load(ctx, uint64(i+4), 2, dataReader(2))
-			require.NoError(t, loadErr)
-			require.NoError(t, reader.Close())
-		}
+			for range 2 {
+				reader, loadErr := cache.Load(t.Context(), identity, loader)
+				require.NoError(t, loadErr)
+				actual, readErr := io.ReadAll(reader)
+				require.NoError(t, readErr)
+				require.NoError(t, reader.Close())
+				require.True(t, bytes.Equal(test.data, actual))
+			}
+			require.Equal(t, test.loaderHits, calls)
+			key := buildFileCacheKey(withCacheBinding(identity, implementation.c.StorageBinding))
+			_, l1Found := implementation.readL1(key, identity.Size)
+			_, l2Found := implementation.l2.entryPath(key)
+			require.Equal(t, test.wantL1, l1Found)
+			require.Equal(t, test.wantL2, l2Found)
+		})
 	}
 }
 
-func TestEvit(t *testing.T) {
-	logger.Init("", "debug", 0, 0, 0, true)
-	cc, err := NewFileIOCache(&FileIOCacheConfig{
-		DisableL1Cache: false,
-		L1CacheSize:    10,
+func TestFileIOCacheExactSourceLength(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    []byte
+		wantErr error
+	}{
+		{name: "short", data: []byte("123"), wantErr: io.ErrUnexpectedEOF},
+		{name: "long", data: []byte("123456"), wantErr: ErrCacheSourceSizeMismatch},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cache, err := NewFileIOCache(&FileIOCacheConfig{
+				DisableL1Cache: false,
+				L1CacheSize:    16,
+				L1KeySizeLimit: 8,
+				DisableL2Cache: true,
+			})
+			require.NoError(t, err)
+			registerCacheCleanup(t, cache)
+			identity := testCacheIdentity(10, 5)
+			loader := func(context.Context) (io.ReadSeekCloser, error) {
+				return newBytesStream(test.data), nil
+			}
+			for range 2 {
+				_, loadErr := cache.Load(t.Context(), identity, loader)
+				require.ErrorIs(t, loadErr, test.wantErr)
+			}
+			implementation := cache.(*fileIOCacheImpl)
+			key := buildFileCacheKey(withCacheBinding(identity, implementation.c.StorageBinding))
+			_, found := implementation.readL1(key, identity.Size)
+			require.False(t, found)
+		})
+	}
+}
+
+func TestFileIOCacheConfigurationValidation(t *testing.T) {
+	_, err := NewFileIOCache(nil)
+	require.ErrorIs(t, err, ErrInvalidCache)
+
+	_, err = NewFileIOCache(&FileIOCacheConfig{
+		L1CacheSize:    4,
 		L1KeySizeLimit: 5,
 		DisableL2Cache: true,
 	})
-	require.NoError(t, err)
-	dataReader := func(sz int) func(ctx context.Context) (io.ReadSeekCloser, error) {
-		return func(_ context.Context) (io.ReadSeekCloser, error) {
-			buf := make([]byte, sz)
-			for i := 0; i < sz; i++ {
-				buf[i] = byte(i % 256) // 填充一些数据
-			}
-			return newBytesStream(buf), nil
-		}
-	}
+	require.ErrorIs(t, err, ErrInvalidCache)
 
-	for i := 0; i < 30; i++ {
-		reader, err := cc.Load(context.Background(), uint64(i), 3, dataReader(3))
-		require.NoError(t, err)
-		require.NoError(t, reader.Close())
-		time.Sleep(100 * time.Millisecond)
+	_, err = NewFileIOCache(&FileIOCacheConfig{
+		DisableL1Cache: true,
+		L2CacheSize:    4,
+		L2KeySizeLimit: 5,
+		L2CacheDir:     t.TempDir(),
+	})
+	require.ErrorIs(t, err, ErrInvalidCache)
+}
+
+func TestFileIOCacheRejectsLoadsAfterClose(t *testing.T) {
+	cache, err := NewFileIOCache(&FileIOCacheConfig{
+		DisableL1Cache: false,
+		L1CacheSize:    16,
+		L1KeySizeLimit: 8,
+		DisableL2Cache: true,
+	})
+	require.NoError(t, err)
+	closeTestCache(t, cache)
+	_, err = cache.Load(t.Context(), testCacheIdentity(1, 1), func(context.Context) (io.ReadSeekCloser, error) {
+		return newBytesStream([]byte("x")), nil
+	})
+	require.ErrorIs(t, err, ErrCacheClosed)
+	require.NoError(t, cache.Close(t.Context()))
+}
+
+func TestFileIOCachePreservesErrorChains(t *testing.T) {
+	sentinel := errors.New("source failed")
+	cache, err := NewFileIOCache(&FileIOCacheConfig{
+		DisableL1Cache: false,
+		L1CacheSize:    16,
+		L1KeySizeLimit: 8,
+		DisableL2Cache: true,
+	})
+	require.NoError(t, err)
+	registerCacheCleanup(t, cache)
+	_, err = cache.Load(t.Context(), testCacheIdentity(1, 1), func(context.Context) (io.ReadSeekCloser, error) {
+		return nil, sentinel
+	})
+	require.ErrorIs(t, err, sentinel)
+}
+
+func TestFileIOCacheTierEligibilityBoundaries(t *testing.T) {
+	tests := []struct {
+		name       string
+		config     FileIOCacheConfig
+		data       []byte
+		loaderHits int32
+	}{
+		{
+			name: "both disabled",
+			config: FileIOCacheConfig{
+				DisableL1Cache: true,
+				DisableL2Cache: true,
+			},
+			data:       []byte("x"),
+			loaderHits: 2,
+		},
+		{
+			name: "L1 exact boundary",
+			config: FileIOCacheConfig{
+				L1CacheSize:    8,
+				L1KeySizeLimit: 4,
+				DisableL2Cache: true,
+			},
+			data:       []byte("1234"),
+			loaderHits: 1,
+		},
+		{
+			name: "L2 exact boundary",
+			config: FileIOCacheConfig{
+				DisableL1Cache: true,
+				L2CacheSize:    8,
+				L2KeySizeLimit: 4,
+			},
+			data:       []byte("1234"),
+			loaderHits: 1,
+		},
+		{
+			name: "zero byte in both tiers",
+			config: FileIOCacheConfig{
+				L1CacheSize:    8,
+				L1KeySizeLimit: 4,
+				L2CacheSize:    8,
+				L2KeySizeLimit: 4,
+			},
+			data:       nil,
+			loaderHits: 1,
+		},
+		{
+			name: "over both limits",
+			config: FileIOCacheConfig{
+				L1CacheSize:    8,
+				L1KeySizeLimit: 2,
+				L2CacheSize:    8,
+				L2KeySizeLimit: 3,
+			},
+			data:       []byte("1234"),
+			loaderHits: 2,
+		},
 	}
-	impl := cc.(*fileIOCacheImpl)
-	ctx := context.Background()
-	for i := 0; i < 30; i++ {
-		_, err := impl.l1.Get(ctx, uint64(i))
-		t.Logf("%d=>err:%v", i, err)
+	fileID := uint64(100)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if !test.config.DisableL2Cache {
+				test.config.L2CacheDir = filepath.Join(t.TempDir(), "cache")
+			}
+			cache, err := NewFileIOCache(&test.config)
+			require.NoError(t, err)
+			registerCacheCleanup(t, cache)
+			identity := testCacheIdentity(fileID, int64(len(test.data)))
+			var loaderCalls int32
+			for range 2 {
+				reader, loadErr := cache.Load(t.Context(), identity, func(context.Context) (io.ReadSeekCloser, error) {
+					loaderCalls++
+					return newBytesStream(test.data), nil
+				})
+				require.NoError(t, loadErr)
+				actual, readErr := io.ReadAll(reader)
+				require.NoError(t, readErr)
+				require.NoError(t, reader.Close())
+				require.True(t, bytes.Equal(test.data, actual))
+			}
+			require.Equal(t, test.loaderHits, loaderCalls)
+		})
+		fileID++
 	}
 }
 
-func TestCacheRejectionDoesNotBreakCurrentRead(t *testing.T) {
-	logger.Init("", "debug", 0, 0, 0, true)
-	cacheDir := filepath.Join(t.TempDir(), "cache")
+func TestFileIOCacheCancellationWinsOverCompletedSourceRead(t *testing.T) {
 	cache, err := NewFileIOCache(&FileIOCacheConfig{
-		DisableL1Cache: true,
-		DisableL2Cache: false,
-		L2CacheSize:    5,
-		L2KeySizeLimit: 10,
-		L2CacheDir:     cacheDir,
+		L1CacheSize:    8,
+		L1KeySizeLimit: 4,
+		DisableL2Cache: true,
 	})
 	require.NoError(t, err)
-	expected := []byte("0123456789")
-
-	reader, err := cache.Load(context.Background(), 99, int64(len(expected)), func(context.Context) (io.ReadSeekCloser, error) {
-		return newBytesStream(expected), nil
+	registerCacheCleanup(t, cache)
+	ctx, cancel := context.WithCancel(t.Context())
+	identity := testCacheIdentity(200, 4)
+	_, err = cache.Load(ctx, identity, func(context.Context) (io.ReadSeekCloser, error) {
+		return &cancelOnReadSeekCloser{
+			ReadSeekCloser: newBytesStream([]byte("data")),
+			cancel:         cancel,
+		}, nil
 	})
-	require.NoError(t, err)
-	actual, err := io.ReadAll(reader)
-	require.NoError(t, err)
-	require.Equal(t, expected, actual)
-	require.NoError(t, reader.Close())
+	require.ErrorIs(t, err, context.Canceled)
+	key := buildFileCacheKey(identity)
+	_, found := cache.(*fileIOCacheImpl).readL1(key, identity.Size)
+	require.False(t, found)
+}
 
-	implementation := cache.(*fileIOCacheImpl)
-	_, err = implementation.l2.Get(context.Background(), 99)
-	require.ErrorIs(t, err, cacheapi.ErrCacheKeyNotExist)
-	var cacheFiles []string
-	require.NoError(t, filepath.Walk(cacheDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			cacheFiles = append(cacheFiles, path)
-		}
-		return nil
-	}))
-	require.Empty(t, cacheFiles)
+type cancelOnReadSeekCloser struct {
+	io.ReadSeekCloser
+	cancel func()
+	once   bool
+}
+
+func (r *cancelOnReadSeekCloser) Read(buffer []byte) (int, error) {
+	count, err := r.ReadSeekCloser.Read(buffer)
+	if !r.once {
+		r.once = true
+		r.cancel()
+	}
+	return count, err
+}
+
+func withCacheBinding(identity FileCacheIdentity, binding [32]byte) FileCacheIdentity {
+	identity.StorageBinding = binding
+	return identity
 }

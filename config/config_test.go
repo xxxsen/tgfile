@@ -403,3 +403,99 @@ func TestValidateRootExternalOriginsForWebDAV(t *testing.T) {
 	withoutOrigins.ExternalOrigins = nil
 	require.NoError(t, withoutOrigins.Validate())
 }
+
+func TestValidateIOCacheConfigurationAndPaths(t *testing.T) {
+	root := t.TempDir()
+	newConfig := func() *Config {
+		return &Config{
+			BotKind: "localfile",
+			BotInfo: map[string]any{
+				"dir": filepath.Join(root, "blocks"),
+			},
+			DBFile: filepath.Join(root, "data", "data.db"),
+			IOCache: IOCacheConfig{
+				EnableL1Cache:  true,
+				L1CacheSize:    16,
+				L1KeySizeLimit: 8,
+				EnableL2Cache:  true,
+				L2CacheSize:    64,
+				L2KeySizeLimit: 16,
+				L2CacheDir:     filepath.Join(root, "cache"),
+			},
+			Backup: BackupConfig{WorkDir: filepath.Join(root, "backup")},
+			Webdav: WebdavConfig{UploadTempDir: filepath.Join(root, "spool")},
+		}
+	}
+	require.NoError(t, newConfig().Validate())
+
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "L1 zero size", mutate: func(config *Config) { config.IOCache.L1CacheSize = 0 }},
+		{name: "L1 zero limit", mutate: func(config *Config) { config.IOCache.L1KeySizeLimit = 0 }},
+		{name: "L1 limit over capacity", mutate: func(config *Config) { config.IOCache.L1KeySizeLimit = 17 }},
+		{name: "L2 zero size", mutate: func(config *Config) { config.IOCache.L2CacheSize = 0 }},
+		{name: "L2 zero limit", mutate: func(config *Config) { config.IOCache.L2KeySizeLimit = 0 }},
+		{name: "L2 limit over capacity", mutate: func(config *Config) { config.IOCache.L2KeySizeLimit = 65 }},
+		{name: "L2 empty directory", mutate: func(config *Config) { config.IOCache.L2CacheDir = "" }},
+		{name: "database overlap", mutate: func(config *Config) { config.IOCache.L2CacheDir = filepath.Dir(config.DBFile) }},
+		{name: "backup overlap", mutate: func(config *Config) { config.IOCache.L2CacheDir = config.Backup.WorkDir }},
+		{name: "spool overlap", mutate: func(config *Config) { config.IOCache.L2CacheDir = config.Webdav.UploadTempDir }},
+		{name: "backend overlap", mutate: func(config *Config) { config.IOCache.L2CacheDir = config.BotInfo.(map[string]any)["dir"].(string) }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value := newConfig()
+			test.mutate(value)
+			require.ErrorIs(t, value.Validate(), errInvalidConfig)
+		})
+	}
+}
+
+func TestValidateIOCacheNormalizesRelativeDirectoryAndIgnoresDisabledTierValues(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	value := &Config{
+		BotKind: "localfile",
+		BotInfo: map[string]any{
+			"dir": filepath.Join(root, "blocks"),
+		},
+		DBFile: filepath.Join(root, "data.db"),
+		IOCache: IOCacheConfig{
+			EnableL1Cache:  false,
+			L1CacheSize:    -1,
+			L1KeySizeLimit: -1,
+			EnableL2Cache:  true,
+			L2CacheSize:    64,
+			L2KeySizeLimit: 16,
+			L2CacheDir:     "cache",
+		},
+		Backup: BackupConfig{WorkDir: filepath.Join(root, "backup")},
+	}
+	require.NoError(t, value.Validate())
+	require.Equal(t, filepath.Join(root, "cache"), value.IOCache.L2CacheDir)
+}
+
+func TestValidateIOCacheRejectsOverlapThroughSymlinkAncestor(t *testing.T) {
+	root := t.TempDir()
+	backend := filepath.Join(root, "blocks")
+	require.NoError(t, os.MkdirAll(backend, 0o700))
+	alias := filepath.Join(root, "block-alias")
+	if err := os.Symlink(backend, alias); err != nil {
+		t.Skipf("symlink is unavailable: %v", err)
+	}
+	value := &Config{
+		BotKind: "localfile",
+		BotInfo: map[string]any{"dir": backend},
+		DBFile:  filepath.Join(root, "data.db"),
+		IOCache: IOCacheConfig{
+			EnableL2Cache:  true,
+			L2CacheSize:    64,
+			L2KeySizeLimit: 16,
+			L2CacheDir:     filepath.Join(alias, "cache"),
+		},
+		Backup: BackupConfig{WorkDir: filepath.Join(root, "backup")},
+	}
+	require.ErrorIs(t, value.Validate(), errInvalidConfig)
+}

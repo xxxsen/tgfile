@@ -187,7 +187,16 @@ func (d *defaultFileManager) OpenFile(ctx context.Context, fileid uint64) (io.Re
 	default:
 		return nil, fmt.Errorf("%w: file=%d layout=%d", ErrInvalidFileLayout, fileid, finfo.FileLayoutVersion)
 	}
-	rsc, err := d.ioc.Load(ctx, fileid, finfo.FileSize, loader)
+	rsc, err := d.ioc.Load(ctx, FileCacheIdentity{
+		FileID:        finfo.FileId,
+		Size:          finfo.FileSize,
+		PartCount:     finfo.FilePartCount,
+		State:         finfo.FileState,
+		LayoutVersion: finfo.FileLayoutVersion,
+		Ctime:         finfo.Ctime,
+		Mtime:         finfo.Mtime,
+		ExtInfo:       finfo.Extinfo,
+	}, loader)
 	if err != nil {
 		return nil, fmt.Errorf("open file %d content: %w", fileid, err)
 	}

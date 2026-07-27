@@ -1,173 +1,52 @@
 package filemgr
 
 import (
+	"bytes"
 	"context"
-	"encoding/hex"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
-	"strconv"
-	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/dgraph-io/ristretto/v2"
 	"github.com/xxxsen/common/logutil"
 	"go.uber.org/zap"
-
-	"github.com/xxxsen/tgfile/cacheapi"
-	cachewrap "github.com/xxxsen/tgfile/cacheapi/adaptor"
-	"github.com/xxxsen/tgfile/utils"
 )
 
 const (
-	defaultFileDelimiter       = "#"
 	defaultMaxAllowKeySizeToL1 = 4 * 1024
-	defaultMaxAllowKeySizeToL2 = 512 * 1024 // 512k
+	defaultMaxAllowKeySizeToL2 = 512 * 1024
+	fileCacheKeyFormatVersion  = uint32(2)
+	cacheWarningInterval       = time.Minute
 )
+
+type FileCacheIdentity struct {
+	StorageBinding [sha256.Size]byte
+	FileID         uint64
+	Size           int64
+	PartCount      int32
+	State          uint32
+	LayoutVersion  int32
+	Ctime          int64
+	Mtime          int64
+	ExtInfo        string
+}
+
+type fileCacheKey [sha256.Size]byte
 
 type IFileIOCache interface {
 	Load(
 		ctx context.Context,
-		fileid uint64,
-		size int64,
-		cb func(ctx context.Context) (io.ReadSeekCloser, error),
+		identity FileCacheIdentity,
+		loader func(ctx context.Context) (io.ReadSeekCloser, error),
 	) (io.ReadSeekCloser, error)
-}
-
-type fileIOCacheImpl struct {
-	ctx context.Context
-	c   *FileIOCacheConfig
-	l1  cacheapi.ICache[uint64, []byte] // fileid=>[]byte, 内存缓存，速度快，适合小文件
-	l2  cacheapi.ICache[uint64, string] // fileid=>filename, 磁盘缓存，速度慢，适合大文件
-}
-
-type removeOnCloseFile struct {
-	*os.File
-	location string
-}
-
-func (f *removeOnCloseFile) Close() error {
-	closeErr := f.File.Close()
-	removeErr := os.Remove(f.location)
-	if removeErr != nil && !os.IsNotExist(removeErr) {
-		return errors.Join(closeErr, removeErr)
-	}
-	return errors.Join(closeErr)
-}
-
-func (f *fileIOCacheImpl) isCacheable(size int64) bool {
-	if (int64(f.c.L2KeySizeLimit) > 0 && size > int64(f.c.L2KeySizeLimit)) || (f.c.DisableL1Cache && f.c.DisableL2Cache) {
-		return false
-	}
-	return true
-}
-
-func (f *fileIOCacheImpl) readL1Cache(
-	ctx context.Context,
-	fileid uint64,
-	size int64,
-	onMiss func(ctx context.Context) (io.ReadSeekCloser, error),
-) (io.ReadSeekCloser, error) {
-	if f.c.DisableL1Cache || size > int64(f.c.L1KeySizeLimit) {
-		stream, err := onMiss(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("load file without L1 cache: %w", err)
-		}
-		return stream, nil
-	}
-	val, err := f.l1.Get(ctx, fileid)
-	if err == nil {
-		logutil.GetLogger(ctx).Debug("read fileid from l1 cache", zap.Uint64("fileid", fileid))
-		return newBytesStream(val), nil // 直接返回缓存的字节流
-	}
-	rsc, err := onMiss(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("load L1 cache miss: %w", err)
-	}
-	raw, err := io.ReadAll(rsc)
-	_ = rsc.Close() // 无论如何都需要直接关闭
-	if err != nil {
-		return nil, fmt.Errorf("read L1 cache source: %w", err)
-	}
-	// 将读取到的内容存入L1缓存
-	if err := f.l1.Set(ctx, fileid, raw); err != nil {
-		logutil.GetLogger(ctx).Debug("l1 cache set rejected", zap.Uint64("fileid", fileid), zap.Error(err))
-	}
-	// 之后直接通过读到的内存重建字节流返回
-	return newBytesStream(raw), nil
-}
-
-func (f *fileIOCacheImpl) readL2Cache(
-	ctx context.Context,
-	fileid uint64,
-	size int64,
-	onMiss func(ctx context.Context) (io.ReadSeekCloser, error),
-) (io.ReadSeekCloser, error) {
-	if f.c.DisableL2Cache || size > int64(f.c.L2KeySizeLimit) {
-		stream, err := onMiss(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("load file without L2 cache: %w", err)
-		}
-		return stream, nil
-	}
-	val, err := f.l2.Get(ctx, fileid)
-	if err == nil { // fileid缓存存在, 且对应的文件也存在, 则直接返回文件句柄
-		fio, err := os.Open(val) // 如果打开失败, 那么对应的文件可能已经无了, 这里直接忽略错误, 从底层io再换回数据流
-		if err == nil {
-			logutil.GetLogger(ctx).Debug("read fileid from l2 cache", zap.Uint64("fileid", fileid))
-			return fio, nil // 返回文件句柄
-		}
-		_ = f.l2.Del(ctx, fileid)
-	}
-	// 如果L2缓存没有命中，调用回调函数获取数据源
-	rsc, err := onMiss(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("load L2 cache miss: %w", err)
-	}
-	defer func() {
-		_ = rsc.Close()
-	}()
-	// 读取数据并存储到临时变量
-	location := f.buildFileIdLocation(fileid, size)
-	if err := utils.SafeSaveIOToFile(location, rsc); err != nil {
-		return nil, fmt.Errorf("failed to save file to local: %w", err)
-	}
-	fio, err := os.Open(location)
-	if err != nil {
-		return nil, fmt.Errorf("open L2 cache file: %w", err)
-	}
-	// 将文件路径加入到L2缓存。先打开文件，确保策略拒绝并删除路径时，
-	// 当前请求仍可使用已经打开的句柄完成读取。
-	if err := f.l2.Set(ctx, fileid, location); err != nil {
-		logutil.GetLogger(ctx).Debug(
-			"l2 cache set rejected",
-			zap.Uint64("fileid", fileid),
-			zap.String("location", location),
-			zap.Error(err),
-		)
-		return &removeOnCloseFile{File: fio, location: location}, nil
-	}
-	return fio, nil
-}
-
-func (f *fileIOCacheImpl) Load(
-	ctx context.Context,
-	fileid uint64,
-	size int64,
-	cb func(context.Context) (io.ReadSeekCloser, error),
-) (io.ReadSeekCloser, error) {
-	if !f.isCacheable(size) {
-		stream, err := cb(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("load uncacheable file: %w", err)
-		}
-		return stream, nil
-	}
-	return f.readL1Cache(ctx, fileid, size, func(ctx context.Context) (io.ReadSeekCloser, error) {
-		return f.readL2Cache(ctx, fileid, size, cb)
-	})
+	Close(context.Context) error
 }
 
 type FileIOCacheConfig struct {
@@ -177,288 +56,712 @@ type FileIOCacheConfig struct {
 	DisableL2Cache bool
 	L2CacheSize    int
 	L2KeySizeLimit int
-	L2CacheDir     string // 文件缓存目录，必须存在
+	L2CacheDir     string
+	StorageBinding [sha256.Size]byte
+}
+
+type fillCall struct {
+	done chan struct{}
+}
+
+type fileIOCacheStats struct {
+	l1Hit            atomic.Uint64
+	l2Hit            atomic.Uint64
+	miss             atomic.Uint64
+	fillLeader       atomic.Uint64
+	fillFollower     atomic.Uint64
+	sourceMismatch   atomic.Uint64
+	invalidPersisted atomic.Uint64
+	evict            atomic.Uint64
+	reject           atomic.Uint64
+	fallback         atomic.Uint64
+	cleanupFailure   atomic.Uint64
+}
+
+type cacheWarningLimiter struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+type fileIOCacheImpl struct {
+	ctx context.Context
+	c   FileIOCacheConfig
+	l1  *ristretto.Cache[string, []byte]
+	l2  *diskCache
+
+	fillMu   sync.Mutex
+	fills    map[fileCacheKey]*fillCall
+	loads    sync.WaitGroup
+	closeCh  chan struct{}
+	closing  bool
+	closed   bool
+	stats    fileIOCacheStats
+	warnings cacheWarningLimiter
 }
 
 func NewDefaultFileIOCacheConfig() *FileIOCacheConfig {
 	return &FileIOCacheConfig{
 		DisableL1Cache: false,
 		L1CacheSize:    16 * 1024 * 1024,
-		L1KeySizeLimit: 4 * 1024,
+		L1KeySizeLimit: defaultMaxAllowKeySizeToL1,
 		DisableL2Cache: false,
 		L2CacheSize:    5 * 1024 * 1024 * 1024,
-		L2KeySizeLimit: 512 * 1024,                              // 512k, 最终占用磁盘空间5G
-		L2CacheDir:     path.Join(os.TempDir(), "tgfile-cache"), // 默认使用系统临时目录
+		L2KeySizeLimit: defaultMaxAllowKeySizeToL2,
+		L2CacheDir:     filepath.Join(os.TempDir(), "tgfile-cache"),
 	}
 }
 
-func (f *fileIOCacheImpl) onL1Evict(key uint64, _ []byte) {
-	logutil.GetLogger(f.ctx).Debug("evict from l1 cache", zap.Uint64("key_hash", key))
+func NewFileIOCache(config *FileIOCacheConfig) (IFileIOCache, error) {
+	return NewFileIOCacheWithContext(context.Background(), config)
 }
 
-func (f *fileIOCacheImpl) removeL2File(action, location string) {
-	size, fileid, err := f.extractFileIdLocationInfo(location)
-	if err != nil {
-		logutil.GetLogger(f.ctx).Error(
-			"extract file location for delete failed",
-			zap.Error(err),
-			zap.String("location", location),
+func NewFileIOCacheWithContext(ctx context.Context, config *FileIOCacheConfig) (IFileIOCache, error) {
+	if config == nil {
+		return nil, fmt.Errorf("%w: config is nil", ErrInvalidCache)
+	}
+	if ctx == nil {
+		return nil, fmt.Errorf("%w: context is nil", ErrInvalidCache)
+	}
+	copied := *config
+	if err := validateFileIOCacheConfig(&copied); err != nil {
+		return nil, err
+	}
+	cache := &fileIOCacheImpl{
+		ctx:     ctx,
+		c:       copied,
+		fills:   make(map[fileCacheKey]*fillCall),
+		closeCh: make(chan struct{}, 1),
+	}
+	cache.closeCh <- struct{}{}
+	if err := cache.buildL1Cache(); err != nil {
+		return nil, err
+	}
+	if !copied.DisableL2Cache {
+		disk, err := newDiskCache(
+			ctx,
+			copied.L2CacheDir,
+			int64(copied.L2CacheSize),
+			int64(copied.L2KeySizeLimit),
+			copied.StorageBinding,
+			&cache.stats,
+			&cache.warnings,
 		)
-		return
+		if err != nil {
+			if cache.l1 != nil {
+				cache.l1.Close()
+			}
+			return nil, fmt.Errorf("initialize L2 cache: %w", err)
+		}
+		cache.l2 = disk
 	}
-	removeErr := os.Remove(location)
-	if removeErr != nil && !os.IsNotExist(removeErr) {
-		logutil.GetLogger(f.ctx).Error(
-			"remove l2 file cache failed",
-			zap.String("action", action),
-			zap.Uint64("fileid", fileid),
-			zap.String("path", location),
-			zap.Int64("size", size),
-			zap.Error(removeErr),
-		)
-		return
-	}
-	logutil.GetLogger(f.ctx).Debug(
-		"remove l2 file cache",
-		zap.String("action", action),
-		zap.Uint64("fileid", fileid),
-		zap.String("path", location),
-		zap.Int64("size", size),
-	)
+	return cache, nil
 }
 
-func (f *fileIOCacheImpl) onL2Evict(_ uint64, location string) {
-	f.removeL2File("evict", location)
-}
-
-func (f *fileIOCacheImpl) onL2Reject(_ uint64, location string) {
-	f.removeL2File("reject", location)
-}
-
-func (f *fileIOCacheImpl) extractFileIdLocationInfo(location string) (int64, uint64, error) {
-	filename := path.Base(location)
-	idx := strings.Index(filename, defaultFileDelimiter)
-	if idx < 0 {
-		return 0, 0, ErrInvalidCachePath
+func validateFileIOCacheConfig(config *FileIOCacheConfig) error {
+	if !config.DisableL1Cache {
+		if config.L1CacheSize <= 0 || config.L1KeySizeLimit <= 0 || config.L1KeySizeLimit > config.L1CacheSize {
+			return fmt.Errorf("%w: L1 size and per-key limit are inconsistent", ErrInvalidCache)
+		}
 	}
-	size, err := strconv.ParseInt(filename[:idx], 10, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("decode size failed, err:%w", err)
-	}
-	fileIDText := strings.TrimSuffix(filename[idx+1:], ".cache")
-	fileID, err := strconv.ParseUint(fileIDText, 10, 64)
-	if err != nil {
-		return 0, 0, fmt.Errorf("decode file id failed, err:%w", err)
-	}
-	return size, fileID, nil
-}
-
-func (f *fileIOCacheImpl) buildFileIdLocation(fileid uint64, size int64) string {
-	// 文件格式: filename := fileid-expire.cache
-	// 文件路径:
-	// hash := hex.EncodeToString(binary(fileid))
-	// fullpath := basedir + "/" + hash[:2] + "/" + filename
-	data := hex.EncodeToString(utils.FileIdToHash(fileid))
-	filename := fmt.Sprintf("%d.cache", fileid)
-	// 一层结构即可, 假设每个桶存储1000个文件, 36*36*1000 能够存储129.6w个文件
-	return path.Join(f.c.L2CacheDir, data[:2], strconv.FormatInt(size, 10)+defaultFileDelimiter+filename)
-}
-
-func parseCacheFileName(filename string) (int64, uint64, bool) {
-	base, found := strings.CutSuffix(filename, ".cache")
-	if !found {
-		return 0, 0, false
-	}
-	sizeText, fileIDText, found := strings.Cut(base, defaultFileDelimiter)
-	if !found {
-		return 0, 0, false
-	}
-	size, err := strconv.ParseInt(sizeText, 10, 64)
-	if err != nil {
-		return 0, 0, false
-	}
-	fileID, err := strconv.ParseUint(fileIDText, 10, 64)
-	if err != nil {
-		return 0, 0, false
-	}
-	return size, fileID, true
-}
-
-func (f *fileIOCacheImpl) loadL2FromDisk() error {
-	// 1. 遍历f.c.FileCacheDir下的所有文件
-	// 2. 对每个文件，解析出fileid和expire
-	// 3. 将解析出的fileid和文件路径加入到f.l2缓存中
-	if f.c.DisableL2Cache {
+	if config.DisableL2Cache {
 		return nil
 	}
-	if f.l2 == nil {
-		return fmt.Errorf("%w: L2 cache is not initialized", ErrInvalidCache)
+	if config.L2CacheSize <= 0 || config.L2KeySizeLimit <= 0 || config.L2KeySizeLimit > config.L2CacheSize {
+		return fmt.Errorf("%w: L2 size and per-key limit are inconsistent", ErrInvalidCache)
 	}
-	// 遍历文件目录加载已有的缓存
-	if f.c.L2CacheDir == "" {
+	if config.L2CacheDir == "" {
 		return fmt.Errorf("%w: L2 directory is empty", ErrInvalidCache)
 	}
-	if err := os.MkdirAll(f.c.L2CacheDir, 0o755); err != nil {
-		return fmt.Errorf("create l2 cache directory: %w", err)
-	}
-	var temporaryFiles []string
-	// 递归读取文件目录下的所有文件
-	err := filepath.Walk(f.c.L2CacheDir, func(cachePath string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return fmt.Errorf("walk L2 cache: %w", walkErr)
-		}
-		if info.IsDir() {
-			return nil // 跳过目录
-		}
-		if strings.HasSuffix(info.Name(), ".temp") { // 之前未写入完成的文件, 直接干掉
-			temporaryFiles = append(temporaryFiles, cachePath)
-			return nil
-		}
-		if !strings.HasSuffix(info.Name(), ".cache") {
-			logutil.GetLogger(f.ctx).Debug("skip non-cache file", zap.String("file", info.Name()))
-			return nil
-		}
-		// 解析文件名获取fileid和expire
-		_, fileid, valid := parseCacheFileName(info.Name())
-		if !valid {
-			return nil
-		}
-		if err := f.l2.Set(f.ctx, fileid, cachePath); err != nil {
-			logutil.GetLogger(f.ctx).Debug(
-				"existing l2 cache entry rejected",
-				zap.Uint64("fileid", fileid),
-				zap.String("path", cachePath),
-				zap.Error(err),
-			)
-			return nil
-		}
-		logutil.GetLogger(f.ctx).Debug(
-			"load file to l2 cache",
-			zap.Uint64("fileid", fileid),
-			zap.String("path", cachePath),
-		)
-		return nil
-	})
+	absolute, err := filepath.Abs(config.L2CacheDir)
 	if err != nil {
-		// 如果遍历目录失败，返回错误
-		return fmt.Errorf("failed to load l2 cache from disk: %w", err)
+		return fmt.Errorf("%w: resolve L2 directory: %w", ErrInvalidCache, err)
 	}
-	for _, temporaryFile := range temporaryFiles {
-		logutil.GetLogger(f.ctx).Error(
-			"remove unfinished cache temp file",
-			zap.String("path", temporaryFile),
-		)
-		if err := os.Remove(temporaryFile); err != nil && !os.IsNotExist(err) {
-			logutil.GetLogger(f.ctx).Error(
-				"remove unfinished cache temp file failed",
-				zap.String("path", temporaryFile),
-				zap.Error(err),
-			)
-		}
-	}
+	config.L2CacheDir = filepath.Clean(absolute)
 	return nil
 }
 
-func (f *fileIOCacheImpl) buildL1Cache(c *FileIOCacheConfig) error {
-	if c.DisableL1Cache {
+func (f *fileIOCacheImpl) buildL1Cache() error {
+	if f.c.DisableL1Cache {
 		return nil
 	}
-	numCounters := max(int64(c.L1CacheSize/c.L1KeySizeLimit)*10, 10)
-	cc, err := ristretto.NewCache(&ristretto.Config[uint64, []byte]{
+	numCounters := max(int64(f.c.L1CacheSize/f.c.L1KeySizeLimit)*10, 10)
+	cache, err := ristretto.NewCache(&ristretto.Config[string, []byte]{
 		NumCounters:        numCounters,
-		MaxCost:            int64(c.L1CacheSize),
+		MaxCost:            int64(f.c.L1CacheSize),
 		BufferItems:        64,
 		IgnoreInternalCost: true,
 		Cost: func(value []byte) int64 {
 			return int64(len(value))
 		},
-		OnEvict: func(item *ristretto.Item[[]byte]) {
-			f.onL1Evict(item.Key, item.Value)
-		},
 		OnReject: func(item *ristretto.Item[[]byte]) {
-			logutil.GetLogger(f.ctx).Debug(
-				"l1 cache reject",
-				zap.Uint64("key_hash", item.Key),
-				zap.Int("cost", len(item.Value)),
-			)
+			f.stats.reject.Add(1)
+			logutil.GetLogger(f.ctx).Debug("L1 cache admission rejected", zap.Int("cost", len(item.Value)))
+		},
+		OnEvict: func(*ristretto.Item[[]byte]) {
+			f.stats.evict.Add(1)
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("create L1 cache: %w", err)
+		return fmt.Errorf("initialize L1 cache: %w", err)
 	}
-	f.l1 = cachewrap.WrapRistrttoCache(cc)
+	f.l1 = cache
 	return nil
 }
 
-func (f *fileIOCacheImpl) buildL2Cache(c *FileIOCacheConfig) error {
-	if c.DisableL2Cache {
+func (f *fileIOCacheImpl) Load(
+	ctx context.Context,
+	identity FileCacheIdentity,
+	loader func(context.Context) (io.ReadSeekCloser, error),
+) (io.ReadSeekCloser, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("%w: context is nil", ErrInvalidCache)
+	}
+	if loader == nil {
+		return nil, fmt.Errorf("%w: loader is nil", ErrInvalidCache)
+	}
+	if identity.Size < 0 {
+		return nil, fmt.Errorf("%w: %d", ErrInvalidFileSize, identity.Size)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("load file cache: %w", err)
+	}
+	if err := f.beginLoad(); err != nil {
+		return nil, err
+	}
+	defer f.loads.Done()
+
+	l1Eligible := !f.c.DisableL1Cache && identity.Size <= int64(f.c.L1KeySizeLimit)
+	l2Eligible := !f.c.DisableL2Cache && identity.Size <= int64(f.c.L2KeySizeLimit)
+	if !l1Eligible && !l2Eligible {
+		return loadUncacheable(ctx, loader)
+	}
+	identity.StorageBinding = f.c.StorageBinding
+	return f.loadCacheable(ctx, buildFileCacheKey(identity), identity.Size, l1Eligible, l2Eligible, loader)
+}
+
+func (f *fileIOCacheImpl) loadCacheable(
+	ctx context.Context,
+	key fileCacheKey,
+	size int64,
+	l1Eligible, l2Eligible bool,
+	loader func(context.Context) (io.ReadSeekCloser, error),
+) (io.ReadSeekCloser, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("wait for file cache: %w", err)
+		}
+		reader, found, err := f.lookup(ctx, key, size, l1Eligible, l2Eligible)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			return reader, nil
+		}
+
+		f.stats.miss.Add(1)
+		call, leader, err := f.beginFill(key)
+		if err != nil {
+			return nil, err
+		}
+		if !leader {
+			f.stats.fillFollower.Add(1)
+			select {
+			case <-ctx.Done():
+				return nil, fmt.Errorf("wait for cache fill: %w", ctx.Err())
+			case <-call.done:
+				continue
+			}
+		}
+		f.stats.fillLeader.Add(1)
+		return f.runFillLeader(ctx, key, size, l1Eligible, l2Eligible, loader, call)
+	}
+}
+
+func loadUncacheable(
+	ctx context.Context,
+	loader func(context.Context) (io.ReadSeekCloser, error),
+) (io.ReadSeekCloser, error) {
+	stream, err := loader(ctx)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, errors.Join(
+			fmt.Errorf("load uncacheable file: %w", ctxErr),
+			closeLoadedStream(stream),
+		)
+	}
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("load uncacheable file: %w", err),
+			closeLoadedStream(stream),
+		)
+	}
+	if stream == nil {
+		return nil, fmt.Errorf("%w: uncacheable loader returned a nil stream", errCacheSourceRead)
+	}
+	return stream, nil
+}
+
+func (f *fileIOCacheImpl) lookup(
+	ctx context.Context,
+	key fileCacheKey,
+	size int64,
+	l1Eligible, l2Eligible bool,
+) (io.ReadSeekCloser, bool, error) {
+	if l1Eligible {
+		if raw, found := f.readL1(key, size); found {
+			f.stats.l1Hit.Add(1)
+			return newBytesStream(raw), true, nil
+		}
+	}
+	if !l2Eligible {
+		return nil, false, nil
+	}
+	reader, found, err := f.l2.open(ctx, key, size)
+	if err != nil || !found {
+		return nil, false, err
+	}
+	f.stats.l2Hit.Add(1)
+	if !l1Eligible {
+		return reader, true, nil
+	}
+	raw, readErr := readExactBytes(ctx, reader, size)
+	closeErr := reader.Close()
+	if readErr == nil && closeErr == nil {
+		f.writeL1(key, raw)
+		return newBytesStream(raw), true, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, false, fmt.Errorf("read L2 cache entry: %w", ctxErr)
+	}
+	if diskReader, ok := reader.(*diskCacheReader); ok {
+		f.l2.invalidate(diskReader.entry)
+	}
+	f.warn(ctx, "discard unreadable L2 cache entry", errors.Join(readErr, closeErr))
+	return nil, false, nil
+}
+
+func (f *fileIOCacheImpl) runFillLeader(
+	ctx context.Context,
+	key fileCacheKey,
+	size int64,
+	l1Eligible, l2Eligible bool,
+	loader func(context.Context) (io.ReadSeekCloser, error),
+	call *fillCall,
+) (io.ReadSeekCloser, error) {
+	defer f.finishFill(key, call)
+	reader, found, err := f.lookup(ctx, key, size, l1Eligible, l2Eligible)
+	if err != nil || found {
+		return reader, err
+	}
+	return f.fill(ctx, key, size, l1Eligible, l2Eligible, loader)
+}
+
+func (f *fileIOCacheImpl) fill(
+	ctx context.Context,
+	key fileCacheKey,
+	size int64,
+	l1Eligible, l2Eligible bool,
+	loader func(context.Context) (io.ReadSeekCloser, error),
+) (io.ReadSeekCloser, error) {
+	if l1Eligible {
+		return f.fillBuffered(ctx, key, size, l2Eligible, loader)
+	}
+	return f.fillDisk(ctx, key, size, loader)
+}
+
+func (f *fileIOCacheImpl) fillBuffered(
+	ctx context.Context,
+	key fileCacheKey,
+	size int64,
+	l2Eligible bool,
+	loader func(context.Context) (io.ReadSeekCloser, error),
+) (io.ReadSeekCloser, error) {
+	source, err := loadCacheSource(ctx, loader)
+	if err != nil {
+		return nil, err
+	}
+	raw, readErr := readExactBytes(ctx, source, size)
+	closeErr := source.Close()
+	if readErr != nil || closeErr != nil {
+		f.recordSourceError(readErr)
+		return nil, errors.Join(readErr, closeErr)
+	}
+	if l2Eligible {
+		if err := f.fillL2FromBytes(ctx, key, size, raw); err != nil {
+			return nil, err
+		}
+	}
+	f.writeL1(key, raw)
+	return newBytesStream(raw), nil
+}
+
+func (f *fileIOCacheImpl) fillL2FromBytes(
+	ctx context.Context,
+	key fileCacheKey,
+	size int64,
+	raw []byte,
+) error {
+	candidate, err := f.l2.writeCandidate(ctx, key, size, bytes.NewReader(raw))
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("fill L2 cache: %w", ctxErr)
+		}
+		f.stats.fallback.Add(1)
+		f.warn(ctx, "skip L2 cache fill", err)
 		return nil
 	}
-	numCounters := max(int64(c.L2CacheSize/c.L2KeySizeLimit)*10, 10)
-	cc, err := ristretto.NewCache(&ristretto.Config[uint64, string]{
-		NumCounters:        numCounters,
-		MaxCost:            int64(c.L2CacheSize),
-		BufferItems:        64,
-		IgnoreInternalCost: true,
-		Cost: func(value string) int64 {
-			size, _, err := f.extractFileIdLocationInfo(value)
-			if err != nil {
-				logutil.GetLogger(f.ctx).Error(
-					"extract file size from location failed, use default",
-					zap.Error(err),
-					zap.String("location", value),
-				)
-				size = defaultMaxAllowKeySizeToL2
-			}
-			logutil.GetLogger(f.ctx).Debug(
-				"add file to l2 cache",
-				zap.String("location", value),
-				zap.Int64("cost", size),
-			)
-			return size
-		},
-		OnEvict: func(item *ristretto.Item[string]) {
-			f.onL2Evict(item.Key, item.Value)
-		},
-		OnReject: func(item *ristretto.Item[string]) {
-			logutil.GetLogger(f.ctx).Debug(
-				"l2 cache reject",
-				zap.Uint64("key_hash", item.Key),
-				zap.String("location", item.Value),
-			)
-			f.onL2Reject(item.Key, item.Value)
-		},
-	})
+	if f.l2.admit(candidate) {
+		return nil
+	}
+	f.stats.reject.Add(1)
+	f.l2.cleanupPaths([]string{candidate.path})
+	return nil
+}
+
+func (f *fileIOCacheImpl) fillDisk(
+	ctx context.Context,
+	key fileCacheKey,
+	size int64,
+	loader func(context.Context) (io.ReadSeekCloser, error),
+) (io.ReadSeekCloser, error) {
+	source, err := loadCacheSource(ctx, loader)
 	if err != nil {
-		return fmt.Errorf("create L2 cache: %w", err)
+		return nil, err
 	}
-	f.l2 = cachewrap.WrapRistrttoCache(cc)
-	return f.loadL2FromDisk()
+	candidate, candidateErr := f.l2.writeCandidate(ctx, key, size, source)
+	if candidateErr != nil {
+		if !errors.Is(candidateErr, errCacheSourceRead) && ctx.Err() == nil {
+			f.stats.fallback.Add(1)
+			return f.fallbackSource(ctx, source, loader, candidateErr)
+		}
+		closeErr := source.Close()
+		f.recordSourceError(candidateErr)
+		return nil, errors.Join(candidateErr, closeErr)
+	}
+	if closeErr := source.Close(); closeErr != nil {
+		f.l2.cleanupPaths([]string{candidate.path})
+		return nil, fmt.Errorf("close cache source: %w", closeErr)
+	}
+	if f.l2.admit(candidate) {
+		reader, found, openErr := f.l2.open(ctx, key, size)
+		if openErr != nil {
+			return nil, openErr
+		}
+		if found {
+			return reader, nil
+		}
+		f.stats.fallback.Add(1)
+		return f.reloadWithoutCache(ctx, loader, fmt.Errorf("%w: admitted L2 entry cannot be opened", errCacheLocalIO))
+	}
+	f.stats.reject.Add(1)
+	file, openErr := os.Open(candidate.path)
+	if openErr == nil {
+		return &removeOnCloseFile{File: file, cache: f.l2, location: candidate.path}, nil
+	}
+	f.l2.cleanupPaths([]string{candidate.path})
+	f.stats.fallback.Add(1)
+	return f.reloadWithoutCache(ctx, loader, fmt.Errorf("%w: open rejected L2 candidate: %w", errCacheLocalIO, openErr))
 }
 
-func NewFileIOCache(c *FileIOCacheConfig) (IFileIOCache, error) {
-	return NewFileIOCacheWithContext(context.Background(), c)
+func loadCacheSource(
+	ctx context.Context,
+	loader func(context.Context) (io.ReadSeekCloser, error),
+) (io.ReadSeekCloser, error) {
+	source, err := loader(ctx)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, errors.Join(
+			fmt.Errorf("load cache source: %w", ctxErr),
+			closeLoadedStream(source),
+		)
+	}
+	if err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("load cache source: %w", err),
+			closeLoadedStream(source),
+		)
+	}
+	if source == nil {
+		return nil, fmt.Errorf("%w: cache loader returned a nil stream", errCacheSourceRead)
+	}
+	return source, nil
 }
 
-func NewFileIOCacheWithContext(ctx context.Context, c *FileIOCacheConfig) (IFileIOCache, error) {
-	impl := &fileIOCacheImpl{
-		ctx: ctx,
-		c:   c,
+func (f *fileIOCacheImpl) fallbackSource(
+	ctx context.Context,
+	source io.ReadSeekCloser,
+	loader func(context.Context) (io.ReadSeekCloser, error),
+	cacheErr error,
+) (io.ReadSeekCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(fmt.Errorf("serve cache fallback: %w", err), source.Close())
 	}
-	if !c.DisableL2Cache && len(c.L2CacheDir) == 0 {
-		return nil, fmt.Errorf("%w: L2 directory is empty", ErrInvalidCache)
+	if _, err := source.Seek(0, io.SeekStart); err == nil {
+		f.warn(ctx, "serve cache source after L2 failure", cacheErr)
+		return source, nil
 	}
-	if !c.DisableL1Cache && (c.L1CacheSize <= 0 || c.L1KeySizeLimit <= 0) {
-		return nil, fmt.Errorf("%w: L1 size and key limit must be positive", ErrInvalidCache)
+	closeErr := source.Close()
+	return f.reloadWithoutCache(ctx, loader, errors.Join(cacheErr, closeErr))
+}
+
+func (f *fileIOCacheImpl) reloadWithoutCache(
+	ctx context.Context,
+	loader func(context.Context) (io.ReadSeekCloser, error),
+	cacheErr error,
+) (io.ReadSeekCloser, error) {
+	stream, err := loader(ctx)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, errors.Join(
+			fmt.Errorf("reload cache source: %w", ctxErr),
+			closeLoadedStream(stream),
+		)
 	}
-	if !c.DisableL2Cache && (c.L2CacheSize <= 0 || c.L2KeySizeLimit <= 0) {
-		return nil, fmt.Errorf("%w: L2 size and key limit must be positive", ErrInvalidCache)
+	if err != nil {
+		closeErr := closeLoadedStream(stream)
+		return nil, errors.Join(cacheErr, fmt.Errorf("reload cache source: %w", err), closeErr)
 	}
-	if err := impl.buildL1Cache(c); err != nil {
-		return nil, fmt.Errorf("initialize L1 cache: %w", err)
+	if stream == nil {
+		return nil, errors.Join(cacheErr, fmt.Errorf("%w: cache reload returned a nil stream", errCacheSourceRead))
 	}
-	if err := impl.buildL2Cache(c); err != nil {
-		return nil, fmt.Errorf("initialize L2 cache: %w", err)
+	f.warn(ctx, "serve reloaded source after L2 failure", cacheErr)
+	return stream, nil
+}
+
+func closeLoadedStream(stream io.ReadSeekCloser) error {
+	if stream == nil {
+		return nil
 	}
-	return impl, nil
+	if err := stream.Close(); err != nil {
+		return fmt.Errorf("close cache source returned with error: %w", err)
+	}
+	return nil
+}
+
+func readExactBytes(ctx context.Context, source io.Reader, expected int64) ([]byte, error) {
+	maxInt := int64(^uint(0) >> 1)
+	if expected < 0 || expected > maxInt {
+		return nil, fmt.Errorf("%w: expected size %d cannot be buffered", ErrInvalidFileSize, expected)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, fmt.Errorf("read cache source: %w", err)
+	}
+	raw := make([]byte, int(expected))
+	count, err := io.ReadFull(source, raw)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, fmt.Errorf("read cache source: %w", ctxErr)
+	}
+	if err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return nil, fmt.Errorf("%w: expected=%d actual=%d", io.ErrUnexpectedEOF, expected, count)
+		}
+		return nil, fmt.Errorf("read cache source: %w", err)
+	}
+	var extra [1]byte
+	extraCount, trailerErr := io.ReadFull(source, extra[:])
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, fmt.Errorf("read cache source trailer: %w", ctxErr)
+	}
+	if extraCount != 0 || trailerErr == nil {
+		return nil, fmt.Errorf("%w: expected=%d", ErrCacheSourceSizeMismatch, expected)
+	}
+	if !errors.Is(trailerErr, io.EOF) {
+		return nil, fmt.Errorf("read cache source trailer: %w", trailerErr)
+	}
+	return raw, nil
+}
+
+func (f *fileIOCacheImpl) readL1(key fileCacheKey, expectedSize int64) ([]byte, bool) {
+	if f.l1 == nil {
+		return nil, false
+	}
+	value, found := f.l1.Get(key.hex())
+	if !found {
+		return nil, false
+	}
+	if int64(len(value)) != expectedSize {
+		f.l1.Del(key.hex())
+		f.l1.Wait()
+		return nil, false
+	}
+	return value, true
+}
+
+func (f *fileIOCacheImpl) writeL1(key fileCacheKey, raw []byte) {
+	if f.l1 == nil {
+		return
+	}
+	if !f.l1.Set(key.hex(), raw, int64(len(raw))) {
+		f.stats.reject.Add(1)
+		return
+	}
+	f.l1.Wait()
+}
+
+func buildFileCacheKey(identity FileCacheIdentity) fileCacheKey {
+	hash := sha256.New()
+	writeHashUint32(hash, fileCacheKeyFormatVersion)
+	_, _ = hash.Write(identity.StorageBinding[:])
+	writeHashUint64(hash, identity.FileID)
+	writeHashInt64(hash, identity.Size)
+	writeHashInt32(hash, identity.PartCount)
+	writeHashUint32(hash, identity.State)
+	writeHashInt32(hash, identity.LayoutVersion)
+	writeHashInt64(hash, identity.Ctime)
+	writeHashInt64(hash, identity.Mtime)
+	writeHashUint64(hash, uint64(len(identity.ExtInfo)))
+	_, _ = hash.Write([]byte(identity.ExtInfo))
+	var key fileCacheKey
+	copy(key[:], hash.Sum(nil))
+	return key
+}
+
+func writeHashUint32(writer io.Writer, value uint32) {
+	var buffer [4]byte
+	binary.BigEndian.PutUint32(buffer[:], value)
+	_, _ = writer.Write(buffer[:])
+}
+
+func writeHashUint64(writer io.Writer, value uint64) {
+	var buffer [8]byte
+	binary.BigEndian.PutUint64(buffer[:], value)
+	_, _ = writer.Write(buffer[:])
+}
+
+func writeHashInt32(writer io.Writer, value int32) {
+	_ = binary.Write(writer, binary.BigEndian, value)
+}
+
+func writeHashInt64(writer io.Writer, value int64) {
+	_ = binary.Write(writer, binary.BigEndian, value)
+}
+
+func (f *fileIOCacheImpl) beginFill(key fileCacheKey) (*fillCall, bool, error) {
+	f.fillMu.Lock()
+	defer f.fillMu.Unlock()
+	if f.closed {
+		return nil, false, ErrCacheClosed
+	}
+	if call, exists := f.fills[key]; exists {
+		return call, false, nil
+	}
+	call := &fillCall{done: make(chan struct{})}
+	f.fills[key] = call
+	return call, true, nil
+}
+
+func (f *fileIOCacheImpl) finishFill(key fileCacheKey, call *fillCall) {
+	f.fillMu.Lock()
+	if current, exists := f.fills[key]; exists && current == call {
+		delete(f.fills, key)
+		close(call.done)
+	}
+	f.fillMu.Unlock()
+}
+
+func (f *fileIOCacheImpl) beginLoad() error {
+	f.fillMu.Lock()
+	defer f.fillMu.Unlock()
+	if f.closing || f.closed {
+		return ErrCacheClosed
+	}
+	f.loads.Add(1)
+	return nil
+}
+
+func (f *fileIOCacheImpl) Close(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("%w: context is nil", ErrInvalidCache)
+	}
+	select {
+	case <-f.closeCh:
+	default:
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("acquire file cache close gate: %w", ctx.Err())
+		case <-f.closeCh:
+		}
+	}
+	defer func() { f.closeCh <- struct{}{} }()
+	f.fillMu.Lock()
+	if f.closed {
+		f.fillMu.Unlock()
+		return nil
+	}
+	f.closing = true
+	f.fillMu.Unlock()
+	if err := waitGroupContext(ctx, &f.loads); err != nil {
+		return err
+	}
+	var closeErr error
+	if f.l2 != nil {
+		closeErr = errors.Join(closeErr, f.l2.close(ctx))
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if f.l1 != nil {
+		f.l1.Close()
+	}
+	f.fillMu.Lock()
+	f.closed = true
+	f.fillMu.Unlock()
+	f.logStats()
+	return nil
+}
+
+func waitGroupContext(ctx context.Context, group *sync.WaitGroup) error {
+	done := make(chan struct{})
+	go func() {
+		group.Wait()
+		close(done)
+	}()
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("wait for file cache operations: %w", ctx.Err())
+	case <-done:
+		return nil
+	}
+}
+
+func (f *fileIOCacheImpl) recordSourceError(err error) {
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, ErrCacheSourceSizeMismatch) {
+		f.stats.sourceMismatch.Add(1)
+	}
+}
+
+func (f *fileIOCacheImpl) warn(ctx context.Context, message string, err error) {
+	reason := cacheReason(err)
+	if !f.warnings.allow(reason) {
+		return
+	}
+	logutil.GetLogger(ctx).Warn(message, zap.String("reason", reason))
+}
+
+func (f *fileIOCacheImpl) logStats() {
+	logutil.GetLogger(f.ctx).Debug(
+		"file cache statistics",
+		zap.Uint64("l1_hit", f.stats.l1Hit.Load()),
+		zap.Uint64("l2_hit", f.stats.l2Hit.Load()),
+		zap.Uint64("miss", f.stats.miss.Load()),
+		zap.Uint64("fill_leader", f.stats.fillLeader.Load()),
+		zap.Uint64("fill_follower", f.stats.fillFollower.Load()),
+		zap.Uint64("source_mismatch", f.stats.sourceMismatch.Load()),
+		zap.Uint64("invalid_persisted", f.stats.invalidPersisted.Load()),
+		zap.Uint64("evict", f.stats.evict.Load()),
+		zap.Uint64("reject", f.stats.reject.Load()),
+		zap.Uint64("fallback", f.stats.fallback.Load()),
+		zap.Uint64("cleanup_failure", f.stats.cleanupFailure.Load()),
+	)
+}
+
+func (l *cacheWarningLimiter) allow(reason string) bool {
+	now := time.Now()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.last == nil {
+		l.last = make(map[string]time.Time)
+	}
+	if previous, exists := l.last[reason]; exists && now.Sub(previous) < cacheWarningInterval {
+		return false
+	}
+	l.last[reason] = now
+	return true
 }
