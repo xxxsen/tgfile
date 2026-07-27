@@ -22,19 +22,20 @@ import (
 )
 
 const (
-	testModeSoak          = "soak"
-	testModeStress        = "stress"
-	defaultSoakDuration   = 15 * time.Minute
-	defaultSoakWorkers    = 4
-	defaultClientDelay    = 5 * time.Millisecond
-	defaultBackendDelay   = 5 * time.Millisecond
-	defaultDelayChunkSize = 32 * 1024
-	localBlockSize        = 20 * 1024 * 1024
-	soakL1CacheSize       = 256 * 1024
-	soakL1KeySizeLimit    = 4 * 1024
-	soakL2CacheSize       = 4 * 1024 * 1024
-	soakL2KeySizeLimit    = 512 * 1024
-	cacheCloseTimeout     = 30 * time.Second
+	testModeSoak            = "soak"
+	testModeStress          = "stress"
+	defaultSoakDuration     = 15 * time.Minute
+	defaultSoakWorkers      = 4
+	defaultClientDelay      = 5 * time.Millisecond
+	defaultBackendDelay     = 5 * time.Millisecond
+	defaultDelayChunkSize   = 32 * 1024
+	localBlockSize          = 20 * 1024 * 1024
+	soakL1CacheSize         = 256 * 1024
+	soakL1KeySizeLimit      = 4 * 1024
+	soakL2CacheSize         = 4 * 1024 * 1024
+	soakL2KeySizeLimit      = 512 * 1024
+	diskCacheAllocationUnit = 4 * 1024
+	cacheCloseTimeout       = 30 * time.Second
 )
 
 var (

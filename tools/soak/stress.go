@@ -49,6 +49,7 @@ type stressSummary struct {
 	BackendDeleteRefs   uint64              `json:"backend_delete_refs"`
 	L2CacheFiles        int64               `json:"l2_cache_files"`
 	L2CacheBytes        int64               `json:"l2_cache_bytes"`
+	L2CacheChargedBytes int64               `json:"l2_cache_charged_bytes"`
 	L2CacheTempFiles    int64               `json:"l2_cache_temp_files"`
 	FinalActiveKeys     int                 `json:"final_active_keys"`
 	FinalActiveLinks    int                 `json:"final_active_links"`
@@ -353,6 +354,7 @@ func (r *stressRunner) populateFinalSummary(
 	summary.BackendDeleteRefs = backend.deleteRefs
 	summary.L2CacheFiles = audit.cacheFiles
 	summary.L2CacheBytes = audit.cacheBytes
+	summary.L2CacheChargedBytes = audit.cacheChargedBytes
 	summary.L2CacheTempFiles = audit.cacheTempFiles
 	r.protocol.activeMu.Lock()
 	summary.FinalActiveKeys = len(r.protocol.activeKeys)

@@ -451,6 +451,24 @@ func TestValidateIOCacheConfigurationAndPaths(t *testing.T) {
 			require.ErrorIs(t, value.Validate(), errInvalidConfig)
 		})
 	}
+
+	for _, test := range []struct {
+		name    string
+		l1Limit int
+		l2Limit int
+	}{
+		{name: "equal limits disable L2", l1Limit: 16, l2Limit: 16},
+		{name: "greater L1 limit disables L2", l1Limit: 8, l2Limit: 4},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			value := newConfig()
+			value.IOCache.L1KeySizeLimit = test.l1Limit
+			value.IOCache.L2KeySizeLimit = test.l2Limit
+			value.IOCache.L2CacheDir = ""
+			require.NoError(t, value.Validate())
+			require.False(t, value.IOCache.EnableL2Cache)
+		})
+	}
 }
 
 func TestValidateIOCacheNormalizesRelativeDirectoryAndIgnoresDisabledTierValues(t *testing.T) {

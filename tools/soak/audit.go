@@ -33,13 +33,15 @@ type auditResult struct {
 	integrityChecked  bool
 	cacheFiles        int64
 	cacheBytes        int64
+	cacheChargedBytes int64
 	cacheTempFiles    int64
 }
 
 type cacheAuditResult struct {
-	files     int64
-	bytes     int64
-	tempFiles int64
+	files        int64
+	bytes        int64
+	chargedBytes int64
+	tempFiles    int64
 }
 
 type l2CacheInspector struct {
@@ -225,6 +227,7 @@ func (r *soakRunner) audit(ctx context.Context) (auditResult, error) {
 	cacheAudit, err := inspectL2CacheDirectory(r.cacheDir, soakL2CacheSize)
 	result.cacheFiles = cacheAudit.files
 	result.cacheBytes = cacheAudit.bytes
+	result.cacheChargedBytes = cacheAudit.chargedBytes
 	result.cacheTempFiles = cacheAudit.tempFiles
 	if err != nil {
 		return result, err
@@ -425,6 +428,14 @@ func inspectL2CacheDirectory(cacheDir string, maxBytes int64) (cacheAuditResult,
 			maxBytes,
 		)
 	}
+	if inspector.result.chargedBytes > maxBytes {
+		return inspector.result, fmt.Errorf(
+			"%w: L2 cache charged bytes = %d, limit = %d",
+			errAuditInvariant,
+			inspector.result.chargedBytes,
+			maxBytes,
+		)
+	}
 	return inspector.result, nil
 }
 
@@ -478,7 +489,8 @@ func (i *l2CacheInspector) auditEntry(path string, entry os.DirEntry) error {
 	if err != nil {
 		return fmt.Errorf("inspect L2 cache entry %s: %w", path, err)
 	}
-	if !info.Mode().IsRegular() || info.Size() != size || size < 0 || size > soakL2KeySizeLimit {
+	if !info.Mode().IsRegular() || info.Size() != size ||
+		size <= soakL1KeySizeLimit || size > soakL2KeySizeLimit {
 		return fmt.Errorf("%w: invalid L2 cache entry size for %s", errAuditInvariant, path)
 	}
 	actualDigest, err := hashSoakCacheFile(path)
@@ -490,7 +502,17 @@ func (i *l2CacheInspector) auditEntry(path string, entry os.DirEntry) error {
 	}
 	i.result.files++
 	i.result.bytes += size
+	i.result.chargedBytes += soakCacheEntryCost(size)
 	return nil
+}
+
+func soakCacheEntryCost(size int64) int64 {
+	logical := max(size, int64(1))
+	remainder := logical % diskCacheAllocationUnit
+	if remainder == 0 {
+		return logical
+	}
+	return logical + diskCacheAllocationUnit - remainder
 }
 
 func auditCacheDirectoryLocation(cacheDir, managedRoot, location string) error {

@@ -165,7 +165,7 @@ func newCacheIntegrationEnvironment(t *testing.T) *cacheIntegrationEnvironment {
 	t.Cleanup(func() { require.NoError(t, databaseClient.Close()) })
 	cacheDir := filepath.Join(root, "cache")
 	cache, err := filemgr.NewFileIOCache(&filemgr.FileIOCacheConfig{
-		L1CacheSize:    64,
+		L1CacheSize:    1024,
 		L1KeySizeLimit: 16,
 		L2CacheSize:    16 * 1024 * 1024,
 		L2KeySizeLimit: 8 * 1024 * 1024,

@@ -58,29 +58,30 @@ type soakRunner struct {
 }
 
 type soakSummary struct {
-	Elapsed            time.Duration `json:"elapsed"`
-	Requests           uint64        `json:"requests"`
-	Cycles             uint64        `json:"cycles"`
-	S3Cycles           uint64        `json:"s3_cycles"`
-	WebDAVCycles       uint64        `json:"webdav_cycles"`
-	LockCycles         uint64        `json:"lock_cycles"`
-	MultipartCycles    uint64        `json:"multipart_cycles"`
-	SlowNetworkCycles  uint64        `json:"slow_network_cycles"`
-	CacheCycles        uint64        `json:"cache_cycles"`
-	MaxHeapBytes       uint64        `json:"max_heap_bytes"`
-	MaxGoroutines      int64         `json:"max_goroutines"`
-	MaxFileHandles     int64         `json:"max_file_handles,omitempty"`
-	ChangeJournal      int64         `json:"change_journal_rows"`
-	DeleteStateRows    int64         `json:"delete_state_rows"`
-	DatabaseBytes      int64         `json:"database_bytes"`
-	IntegrityChecked   bool          `json:"integrity_checked"`
-	BackendUploads     uint64        `json:"backend_uploads"`
-	BackendDownloads   uint64        `json:"backend_downloads"`
-	BackendDeleteCalls uint64        `json:"backend_delete_calls"`
-	BackendDeleteRefs  uint64        `json:"backend_delete_refs"`
-	L2CacheFiles       int64         `json:"l2_cache_files"`
-	L2CacheBytes       int64         `json:"l2_cache_bytes"`
-	L2CacheTempFiles   int64         `json:"l2_cache_temp_files"`
+	Elapsed             time.Duration `json:"elapsed"`
+	Requests            uint64        `json:"requests"`
+	Cycles              uint64        `json:"cycles"`
+	S3Cycles            uint64        `json:"s3_cycles"`
+	WebDAVCycles        uint64        `json:"webdav_cycles"`
+	LockCycles          uint64        `json:"lock_cycles"`
+	MultipartCycles     uint64        `json:"multipart_cycles"`
+	SlowNetworkCycles   uint64        `json:"slow_network_cycles"`
+	CacheCycles         uint64        `json:"cache_cycles"`
+	MaxHeapBytes        uint64        `json:"max_heap_bytes"`
+	MaxGoroutines       int64         `json:"max_goroutines"`
+	MaxFileHandles      int64         `json:"max_file_handles,omitempty"`
+	ChangeJournal       int64         `json:"change_journal_rows"`
+	DeleteStateRows     int64         `json:"delete_state_rows"`
+	DatabaseBytes       int64         `json:"database_bytes"`
+	IntegrityChecked    bool          `json:"integrity_checked"`
+	BackendUploads      uint64        `json:"backend_uploads"`
+	BackendDownloads    uint64        `json:"backend_downloads"`
+	BackendDeleteCalls  uint64        `json:"backend_delete_calls"`
+	BackendDeleteRefs   uint64        `json:"backend_delete_refs"`
+	L2CacheFiles        int64         `json:"l2_cache_files"`
+	L2CacheBytes        int64         `json:"l2_cache_bytes"`
+	L2CacheChargedBytes int64         `json:"l2_cache_charged_bytes"`
+	L2CacheTempFiles    int64         `json:"l2_cache_temp_files"`
 }
 
 type progressEvent struct {
@@ -343,29 +344,30 @@ func (r *soakRunner) sampleResources() {
 func (r *soakRunner) summary(audit auditResult) *soakSummary {
 	backend := r.block.counts()
 	return &soakSummary{
-		Elapsed:            time.Since(r.startedAt).Round(time.Millisecond),
-		Requests:           r.requests.Load(),
-		Cycles:             r.cycles.Load(),
-		S3Cycles:           r.s3Cycles.Load(),
-		WebDAVCycles:       r.webDAVCycles.Load(),
-		LockCycles:         r.lockCycles.Load(),
-		MultipartCycles:    r.multiCycles.Load(),
-		SlowNetworkCycles:  r.slowCycles.Load(),
-		CacheCycles:        r.cacheCycles.Load(),
-		MaxHeapBytes:       r.maxHeapBytes.Load(),
-		MaxGoroutines:      r.maxGoroutine.Load(),
-		MaxFileHandles:     r.maxFDs.Load(),
-		ChangeJournal:      audit.changeJournalRows,
-		DeleteStateRows:    audit.deleteStateRows,
-		DatabaseBytes:      audit.databaseBytes,
-		IntegrityChecked:   audit.integrityChecked,
-		BackendUploads:     backend.uploads,
-		BackendDownloads:   backend.downloads,
-		BackendDeleteCalls: backend.deleteCalls,
-		BackendDeleteRefs:  backend.deleteRefs,
-		L2CacheFiles:       audit.cacheFiles,
-		L2CacheBytes:       audit.cacheBytes,
-		L2CacheTempFiles:   audit.cacheTempFiles,
+		Elapsed:             time.Since(r.startedAt).Round(time.Millisecond),
+		Requests:            r.requests.Load(),
+		Cycles:              r.cycles.Load(),
+		S3Cycles:            r.s3Cycles.Load(),
+		WebDAVCycles:        r.webDAVCycles.Load(),
+		LockCycles:          r.lockCycles.Load(),
+		MultipartCycles:     r.multiCycles.Load(),
+		SlowNetworkCycles:   r.slowCycles.Load(),
+		CacheCycles:         r.cacheCycles.Load(),
+		MaxHeapBytes:        r.maxHeapBytes.Load(),
+		MaxGoroutines:       r.maxGoroutine.Load(),
+		MaxFileHandles:      r.maxFDs.Load(),
+		ChangeJournal:       audit.changeJournalRows,
+		DeleteStateRows:     audit.deleteStateRows,
+		DatabaseBytes:       audit.databaseBytes,
+		IntegrityChecked:    audit.integrityChecked,
+		BackendUploads:      backend.uploads,
+		BackendDownloads:    backend.downloads,
+		BackendDeleteCalls:  backend.deleteCalls,
+		BackendDeleteRefs:   backend.deleteRefs,
+		L2CacheFiles:        audit.cacheFiles,
+		L2CacheBytes:        audit.cacheBytes,
+		L2CacheChargedBytes: audit.cacheChargedBytes,
+		L2CacheTempFiles:    audit.cacheTempFiles,
 	}
 }
 

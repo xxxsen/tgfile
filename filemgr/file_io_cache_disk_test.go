@@ -58,6 +58,131 @@ func TestFileIOCachePersistsValidatedL2EntryAcrossRestart(t *testing.T) {
 	require.Equal(t, data, actual)
 }
 
+func TestFileIOCacheL2ChargesMinimumAllocationAcrossRestart(t *testing.T) {
+	config := testL2Config(t, int(2*diskCacheAllocationUnit), 1024)
+	first, err := NewFileIOCache(config)
+	require.NoError(t, err)
+	implementation := first.(*fileIOCacheImpl)
+
+	identities := []FileCacheIdentity{
+		testCacheIdentity(110, 0),
+		testCacheIdentity(111, 1),
+		testCacheIdentity(112, 2),
+	}
+	contents := [][]byte{nil, {'a'}, {'b', 'c'}}
+	paths := make([]string, len(identities))
+	for index := range 2 {
+		reader, loadErr := first.Load(
+			t.Context(),
+			identities[index],
+			func(context.Context) (io.ReadSeekCloser, error) {
+				return newBytesStream(contents[index]), nil
+			},
+		)
+		require.NoError(t, loadErr)
+		require.NoError(t, reader.Close())
+		key := buildFileCacheKey(identities[index])
+		var found bool
+		paths[index], found = implementation.l2.entryPath(key)
+		require.True(t, found)
+	}
+	require.Equal(t, 2*diskCacheAllocationUnit, implementation.l2.cost())
+
+	reader, err := first.Load(
+		t.Context(),
+		identities[2],
+		func(context.Context) (io.ReadSeekCloser, error) {
+			return newBytesStream(contents[2]), nil
+		},
+	)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	thirdKey := buildFileCacheKey(identities[2])
+	var thirdFound bool
+	paths[2], thirdFound = implementation.l2.entryPath(thirdKey)
+	require.True(t, thirdFound)
+	require.Equal(t, 2*diskCacheAllocationUnit, implementation.l2.cost())
+	require.NoFileExists(t, paths[0])
+	_, firstFound := implementation.l2.entryPath(buildFileCacheKey(identities[0]))
+	require.False(t, firstFound)
+	closeTestCache(t, first)
+
+	second, err := NewFileIOCache(config)
+	require.NoError(t, err)
+	registerCacheCleanup(t, second)
+	recovered := second.(*fileIOCacheImpl)
+	require.Equal(t, 2*diskCacheAllocationUnit, recovered.l2.cost())
+	_, secondFound := recovered.l2.entryPath(buildFileCacheKey(identities[1]))
+	_, recoveredThirdFound := recovered.l2.entryPath(thirdKey)
+	require.True(t, secondFound)
+	require.True(t, recoveredThirdFound)
+}
+
+func TestFileIOCacheEnablingL1RemovesRedundantPersistedL2Entry(t *testing.T) {
+	config := testL2Config(t, int(2*diskCacheAllocationUnit), 16)
+	identity := testCacheIdentity(113, 4)
+	data := []byte("tiny")
+	first, err := NewFileIOCache(config)
+	require.NoError(t, err)
+	reader, err := first.Load(t.Context(), identity, func(context.Context) (io.ReadSeekCloser, error) {
+		return newBytesStream(data), nil
+	})
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	key := buildFileCacheKey(identity)
+	oldPath, found := first.(*fileIOCacheImpl).l2.entryPath(key)
+	require.True(t, found)
+	closeTestCache(t, first)
+
+	withL1 := *config
+	withL1.DisableL1Cache = false
+	withL1.L1CacheSize = 1024
+	withL1.L1KeySizeLimit = 4
+	second, err := NewFileIOCache(&withL1)
+	require.NoError(t, err)
+	registerCacheCleanup(t, second)
+	implementation := second.(*fileIOCacheImpl)
+	require.NoFileExists(t, oldPath)
+	require.Zero(t, implementation.l2.cost())
+
+	var loaderCalls atomic.Int32
+	for range 2 {
+		reader, loadErr := second.Load(t.Context(), identity, func(context.Context) (io.ReadSeekCloser, error) {
+			loaderCalls.Add(1)
+			return newBytesStream(data), nil
+		})
+		require.NoError(t, loadErr)
+		require.NoError(t, reader.Close())
+	}
+	require.Equal(t, int32(1), loaderCalls.Load())
+	_, l1Found := implementation.readL1(key, identity.Size)
+	require.True(t, l1Found)
+	_, l2Found := implementation.l2.entryPath(key)
+	require.False(t, l2Found)
+}
+
+func TestDiskCacheEntryCost(t *testing.T) {
+	tests := []struct {
+		name    string
+		size    int64
+		maxCost int64
+		want    int64
+	}{
+		{name: "negative", size: -1, maxCost: 8192},
+		{name: "zero", size: 0, maxCost: 8192, want: 4096},
+		{name: "one byte", size: 1, maxCost: 8192, want: 4096},
+		{name: "allocation boundary", size: 4096, maxCost: 8192, want: 4096},
+		{name: "round up", size: 4097, maxCost: 8192, want: 8192},
+		{name: "round over configured capacity", size: 4097, maxCost: 5000, want: 8192},
+		{name: "small configured capacity", size: 1, maxCost: 1024, want: 1024},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			require.Equal(t, test.want, diskCacheEntryCost(test.size, test.maxCost))
+		})
+	}
+}
+
 func TestFileIOCacheBindingMismatchInvalidatesPersistedEntries(t *testing.T) {
 	config := testL2Config(t, 1024, 1024)
 	data := []byte("old-binding")

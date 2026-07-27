@@ -15,23 +15,26 @@ import (
 func TestInspectL2CacheDirectory(t *testing.T) {
 	t.Run("valid entry", func(t *testing.T) {
 		cacheDir := t.TempDir()
-		content := []byte("valid soak cache entry")
+		content := make([]byte, soakL1KeySizeLimit+1)
 		writeSoakCacheEntry(t, cacheDir, content)
 
-		result, err := inspectL2CacheDirectory(cacheDir, int64(len(content)))
+		result, err := inspectL2CacheDirectory(cacheDir, 2*diskCacheAllocationUnit)
 
 		require.NoError(t, err)
 		require.Equal(t, int64(1), result.files)
 		require.Equal(t, int64(len(content)), result.bytes)
+		require.Equal(t, int64(2*diskCacheAllocationUnit), result.chargedBytes)
 		require.Zero(t, result.tempFiles)
 	})
 
 	t.Run("digest mismatch", func(t *testing.T) {
 		cacheDir := t.TempDir()
-		entry := writeSoakCacheEntry(t, cacheDir, []byte("original"))
-		require.NoError(t, os.WriteFile(entry, []byte("tampered"), 0o600))
+		content := make([]byte, soakL1KeySizeLimit+1)
+		entry := writeSoakCacheEntry(t, cacheDir, content)
+		content[0] = 1
+		require.NoError(t, os.WriteFile(entry, content, 0o600))
 
-		_, err := inspectL2CacheDirectory(cacheDir, 1024)
+		_, err := inspectL2CacheDirectory(cacheDir, 2*diskCacheAllocationUnit)
 
 		require.ErrorIs(t, err, errAuditInvariant)
 		require.ErrorContains(t, err, "digest mismatch")
@@ -39,11 +42,11 @@ func TestInspectL2CacheDirectory(t *testing.T) {
 
 	t.Run("temporary file", func(t *testing.T) {
 		cacheDir := t.TempDir()
-		entry := writeSoakCacheEntry(t, cacheDir, []byte("entry"))
+		entry := writeSoakCacheEntry(t, cacheDir, make([]byte, soakL1KeySizeLimit+1))
 		temporary := filepath.Join(filepath.Dir(entry), ".retired.temp")
 		require.NoError(t, os.WriteFile(temporary, nil, 0o600))
 
-		result, err := inspectL2CacheDirectory(cacheDir, 1024)
+		result, err := inspectL2CacheDirectory(cacheDir, 2*diskCacheAllocationUnit)
 
 		require.ErrorIs(t, err, errAuditInvariant)
 		require.Equal(t, int64(1), result.tempFiles)
@@ -51,13 +54,23 @@ func TestInspectL2CacheDirectory(t *testing.T) {
 
 	t.Run("capacity boundary", func(t *testing.T) {
 		cacheDir := t.TempDir()
-		content := []byte("capacity")
+		content := make([]byte, soakL1KeySizeLimit+1)
 		writeSoakCacheEntry(t, cacheDir, content)
 
-		_, err := inspectL2CacheDirectory(cacheDir, int64(len(content)-1))
+		_, err := inspectL2CacheDirectory(cacheDir, 2*diskCacheAllocationUnit-1)
 
 		require.ErrorIs(t, err, errAuditInvariant)
-		require.ErrorContains(t, err, "limit")
+		require.ErrorContains(t, err, "charged bytes")
+	})
+
+	t.Run("L1-sized entry", func(t *testing.T) {
+		cacheDir := t.TempDir()
+		writeSoakCacheEntry(t, cacheDir, make([]byte, soakL1KeySizeLimit))
+
+		_, err := inspectL2CacheDirectory(cacheDir, 2*diskCacheAllocationUnit)
+
+		require.ErrorIs(t, err, errAuditInvariant)
+		require.ErrorContains(t, err, "entry size")
 	})
 }
 
